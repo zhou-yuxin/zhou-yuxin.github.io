@@ -1,0 +1,64 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>IBM ThinkPad X40通过U盘安装XP</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">IBM ThinkPad X40通过U盘安装XP</h1>
+							</header>
+							<div class="entry-content">
+
+<p>最近在折腾树莓派。从官方网站下载下来的<a href="https://downloads.raspberrypi.org/raspbian/images/raspbian-2015-05-07/2015-05-05-raspbian-wheezy.zip">2015-05-05-raspbian-wheezy.zip</a>中的2015-05-05-raspbian-wheezy.img，把它用dd命令写入SD卡后，SD卡就有两个分区，一个是/boot，一个是/。所以可以得知，这个img文件其实就是一个磁盘镜像文件。</p>
+
+<p>现在我有一个需求，就是不写入SD卡，就查看这个磁盘镜像文件中到底有哪些文件。大致想到的办法就是mount挂载。但是到底怎么挂载呢？</p>
+
+<p>其实，挂载一个img磁盘镜像是分为两步的：</p>
+
+<p>1、使用fdisk命令得知这个img磁盘镜像中各个分区的起始位置，也就是偏移量；</p>
+
+<p>2、使用mount把磁盘镜像以回环设备的形式挂载到文件系统的某个目录上，需要指定分区的偏移量。</p>
+
+<p>假设2015-05-05-raspbian-wheezy.img已经存在于/home/zjs目录下。</p>
+
+<p>可以查看这个回环设备的分区信息：</p>
+
+<pre>
+cd ~
+sudo fdisk -lu 2015-05-05-raspbian-wheezy.img
+</pre>
+
+<p>运行结果如下：</p>
+
+<p><img src="1.jpg"></p>
+
+<p>可以得知第一个分区的起始位置是在整个磁盘的第8192扇区（从0计数），而每一个扇区大小是512字节，所以，第一个分区的偏移量是8192*512=4194304。</p>
+
+<p>其实，如果你预先已经知道了各个分区的偏移量，那么之前的这些操作都可以跳过，直接进行下面的操作。上面的这些操作，就是为了获知分区的偏移量的。</p>
+
+<p>为了挂载第一个分区，使用如下命令：</p>
+
+<pre>
+mkdir myloop1
+sudo mount -o loop,offset=4194304 2015-05-05-raspbian-wheezy.img myloop1
+</pre>
+
+<p>执行之后，img文件中的第一个分区就已经挂载在了myloop1目录上了。挂载第二个分区也是类似的。</p>
+
+							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>
