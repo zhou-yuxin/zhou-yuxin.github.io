@@ -3,16 +3,21 @@
 		<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
 		<title>博观而约取 厚积而薄发</title>
 		<script>
-			function show(a)
+			function viewArticle(a)
 			{
-				alert(a);
+				var url="./articles/"+a.innerHTML+"/index.html";
+				location.href=url;
 			}
 		</script >
 	</head>
 	<body>
 		<table>
 			<tr>
-				<td><a href=""# onclick="return show(this);">上拉电阻的作用</a></td>
+				<td><a href="javascript:;" onclick="viewArticle(this)">LCD1602的使用</a></td>
+				<td>2015年07月01日</td>
+			</tr>
+			<tr>
+				<td><a href="javascript:;" onclick="viewArticle(this)">上拉电阻的作用</a></td>
 				<td>2015年06月30日</td>
 			</tr>
 		</table>

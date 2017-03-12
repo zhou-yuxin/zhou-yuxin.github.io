@@ -1,0 +1,254 @@
+﻿<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title>上拉电阻的作用</title>
+    </head>
+    <body>
+    
+在嵌入式系统的设计中，常常使用LED的亮灭来表示信息，尤其是一些状态信息。然而，如果需要表示比较复杂的信息（例如显示温度），又如果需要做成最终的商业产品，那么使用液晶显示器则是不二之选。
+
+液晶显示器可以分为字符型液晶显示器和图形液晶显示器。字符型液晶显示器只能在一些预定的位置显示预定义的若干种字符，而图形液晶则可以控制任意一个像素的亮灭。
+
+这里介绍最简单也最常用的字符型液晶显示器LCD1602，外观如图：
+
+<p><img src="1.jpg"></p>
+
+<p><img src="2.jpg"></p>
+
+之所以叫做LCD1602，是因为这种字符型显示器，能显示16×2个字符，即每行16个字符，共2行。
+
+再来看一下LCD1602的引脚图：
+
+<p><img src="3.jpg"></p>
+
+依次为：<br>
+
+1、VSS，接地；<br>
+
+2、VCC，接电源正极（+5V）；<br>
+
+3、V0，对比度调节，通过输入的电压的大小可以调节字符显示的对比度，当V0接电源时，对比度最弱，当V0接地时，对比度最强；<br>
+
+4、RS，数据/指令寄存器选择端，当RS=1时，将对数据寄存器进行读写（比如写入一个字符，或读取是否处于忙状态），当RS=0时，将对指令寄存器进行读写（比如命令清屏，命令光标闪烁）；<br>
+
+5、R/W，读写选择端，当R/W=1时，表示进行读操作，当R/W=0时，表示进行写操作；通常RS与R/W一起使用，控制是数据寄存器读（RS=1，R/W=1）、对数据寄存器写（RS=1，R/W=0）、对指令存储器读（RS=0，R/W=1）、对指令存储器写（RS=0，R/W=0）；<br>
+
+6、E，使能端，当单片机准备好要写入的指令或数据时，通过让E产生一个负跳变（从高电平变为低电平），就可以把指令或数据写入LCD1602，而让E维持高电平时，LCD1602会把数据通过DB0~DB7输出；<br>
+
+7~14、DB0~DB7组成一个字节，与单品机的一组输出引脚（P0、P1、P2、P3等）相连，相当于一个并口输入输出；<br>
+
+15~16、BLA和BLK分别是背光正极与背光负极，它们之间的电压差决定了LCD1602背光亮度。<br>
+
+再来看看LCD1602与单片机的接口电路。本文采用Proteus这款电路仿真软件。在Proteus中，选用LM016L（Proteus中的LCD1602的型号）和AT89C2051单片机（当然，选用AT89C51或 AT89C52或其他的各种兼容的单片机都可以，本文使用AT89C2051仅仅是因为这款引脚少，看的清楚）。接口电路图如下：
+
+<p><img src="4.png"></p>
+
+好了，硬件上的事情已经OK啦，接下来看看软件上的事情。
+
+首先是LCD1602的操作时序。在一般的使用中，只需要用到向LCD1602写入指令和数据，几乎用不到读取数据的操作。方便起见，本文就只介绍写入指令和数据的操作。
+
+写入指令的步骤：<br>
+
+1、设置E=0；<br>
+
+2、设置RS=0（即操作指令寄存器）；<br>
+
+3、设置R/W=0（即写入）；<br>
+
+4、设置并口DB0~DB7（DB0~DB7表示字节即为要写入的指令）；<br>
+
+5、设置E=1（先拉高，为了待会儿拉低，产生一个负跳变）；<br>
+
+6、设置E=0（拉低，产生一个负跳变）；<br>
+
+经过以上6步，DB0~DB7组成的字节所表示的指令即被写入LCD1602。需要注意的是，为了避免由于LCD1602处理速度太慢而导致的失败，最好的每一个步骤前适当延时一下（具体延时看代码）。<br>
+
+写入数据也是类似的，唯一的区别就是设置RS=1：<br>
+
+1、设置E=0；<br>
+
+2、设置RS=1（即操作数据寄存器）；<br>
+
+3、设置R/W=0（即写入）；<br>
+
+4、设置并口DB0~DB7（DB0~DB7表示字节即为要写入的指令）；<br>
+
+5、设置E=1（先拉高，为了待会儿拉低，产生一个负跳变）；<br>
+
+6、设置E=0（拉低，产生一个负跳变）；<br>
+
+现在就可以把写入指令和写入数据的操作封装成函数，以方便接下来使用。
+
+<pre style="background:#EEE; color:#000">
+#include &lt;reg51.h&gt;
+
+typedef unsigned char uint8;
+typedef unsigned char bool;
+typedef unsigned int uint16;
+
+#define true 1
+#define false 0
+
+sbit LCD1602_RS=P3^4;
+sbit LCD1602_RW=P3^3;
+sbit LCD1602_E=P3^2;
+#define LCD1602_PORT P1
+
+static void lcd1602_delay(uint16 p_time)
+{
+    while(p_time--);
+}
+
+static void lcd1602_write_cmd(uint8 p_cmd)
+{
+    lcd1602_delay(100);
+    LCD1602_E=0;
+    lcd1602_delay(10);
+    LCD1602_RS=0;
+    lcd1602_delay(10);
+    LCD1602_RW=0;
+    lcd1602_delay(10);
+    LCD1602_PORT=p_cmd;
+    lcd1602_delay(10);
+    LCD1602_E=1;
+    lcd1602_delay(50);
+    LCD1602_E=0;
+}
+
+static void lcd1602_write_data(uint8 p_data)
+{
+    lcd1602_delay(100);
+    LCD1602_E=0;
+    lcd1602_delay(10);
+    LCD1602_RS=1;
+    lcd1602_delay(10);
+    LCD1602_RW=0;
+    lcd1602_delay(10);
+    LCD1602_PORT=p_data;
+    lcd1602_delay(10);
+    LCD1602_E=1;
+    lcd1602_delay(50);
+    LCD1602_E=0;
+}
+</pre>
+
+其中实现的lcd1602_write_cmd和lcd1602_write_data分别实现了向LCD1602写入一个字节的指令与写入一个字节的数据的功能。
+
+接下来就是要介绍一下如何通过指令来使用LCD1602的各个功能。以下7个函数是我封装完的几个最常用的功能，可以直接使用。如果接口电路不同，只需要修改上面的引脚定义部分：
+
+<pre style="background:#EEE; color:#000">
+sbit LCD1602_RS=P3^4;
+sbit LCD1602_RW=P3^3;
+sbit LCD1602_E=P3^2;
+#define LCD1602_PORT P1
+</pre>
+
+各个功能与相应的代码如下：
+
+1、初始化为16×2字符，每个字符5×8点阵的形式：
+
+<pre style="background:#EEE; color:#000">
+void lcd1602_init()
+{
+    uint8 t_cmd=0x38;
+    lcd1602_write_cmd(t_cmd);
+    t_cmd=0x06;
+    lcd1602_write_cmd(t_cmd);
+}
+</pre>
+
+2、显示/隐藏字符、显示/隐藏光标、闪烁/静止光标：
+
+<pre style="background:#EEE; color:#000">
+void lcd1602_display_switch(bool p_show_char,bool p_show_cursor,bool p_flash_cursor)
+{
+    uint8 t_cmd=0x08;
+    if(p_show_char)
+    {
+        t_cmd|=0x04;
+    }
+    if(p_show_cursor)
+    {
+        t_cmd|=0x02;
+    }
+    if(p_flash_cursor)
+    {
+        t_cmd|=0x01;
+    }
+    lcd1602_write_cmd(t_cmd);
+}
+</pre>
+
+3、向左/向右移动光标：
+
+<pre style="background:#EEE; color:#000">
+void lcd1602_cursor_shift(bool p_right)
+{
+    uint8 t_cmd;
+    if(p_right)
+    {
+        t_cmd=0x14;
+    }
+    else
+    {
+        t_cmd=0x10;
+    }
+    lcd1602_write_cmd(t_cmd);
+}
+</pre>
+
+4、清屏：
+
+<pre style="background:#EEE; color:#000">
+void lcd1602_clear()
+{
+    uint8 t_cmd=0x01;
+    lcd1602_write_cmd(t_cmd);
+}
+</pre>
+
+5、光标归位：
+
+<pre style="background:#EEE; color:#000">
+void lcd1602_cursor_return()
+{
+    uint8 t_cmd=0x02;
+    lcd1602_write_cmd(t_cmd);
+}
+</pre>
+
+6、在指定坐标设置字符（p_x=0~15,p_y=0~1）：
+
+<pre style="background:#EEE; color:#000">
+void lcd1602_char_set(uint8 p_x,uint8 p_y,char p_char)
+{
+    uint8 t_cmd=0x80;
+    p_x&amp;=0x0f;
+    p_y&amp;=0x01;
+    t_cmd|=p_x;
+    if(p_y)
+    {
+        t_cmd|=0x40;
+    }
+    lcd1602_write_cmd(t_cmd);
+    lcd1602_write_data(p_char);
+}
+</pre>
+
+7、从指定位置开始设置字符串（p_x=0~15，p_y=0~1，p_string必须是以0结尾的字符串）：
+
+<pre style="background:#EEE; color:#000">
+void lcd1602_string_set(uint8 p_x,uint8 p_y,const char* p_string)
+{
+    uint8 t_x,t_y;
+    p_x&amp;=0x0f;
+    p_y&amp;=0x01;
+    for(t_y=p_y;t_y&lt;2;t_y++)
+    {
+        for(t_x=p_x;t_x&lt;16&amp;&amp;(*p_string)!=0;t_x++)
+        {
+            lcd1602_char_set(t_x,t_y,*(p_string++));
+        }
+    }
+}
+</pre>
