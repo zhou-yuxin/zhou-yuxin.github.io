@@ -6,12 +6,24 @@
 			function viewArticle(a)
 			{
 				var url="./articles/"+a.innerHTML+"/index.html";
-				location.href=url;
+				window.open(url);
 			}
-		</script >
+		</script>
 	</head>
 	<body>
 		<table>
+			<tr>
+				<td><a href="javascript:;" onclick="viewArticle(this)">Arduino软件串口库的使用</a></td>
+				<td>2015年12月06日</td>
+			</tr>
+			<tr>
+				<td><a href="javascript:;" onclick="viewArticle(this)">从零开始构建最简树莓派linux</a></td>
+				<td>2015年11月09日</td>
+			</tr>
+			<tr>
+				<td><a href="javascript:;" onclick="viewArticle(this)">树莓派linux内核编译与升级</a></td>
+				<td>2015年11月05日</td>
+			</tr>
 			<tr>
 				<td><a href="javascript:;" onclick="viewArticle(this)">Linux挂载img磁盘镜像文件</a></td>
 				<td>2015年11月02日</td>
