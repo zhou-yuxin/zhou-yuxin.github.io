@@ -263,6 +263,25 @@ void lcd1602_string_set(uint8 p_x,uint8 p_y,const char* p_string)
 }
 </pre>
 
+<p>可以使用如下的测试程序</p>
+
+<pre>
+#include &lt;reg51.h&gt;
+#include &quot;lcd1602.h&quot;
+
+void main()
+{
+	lcd1602_init();
+	lcd1602_display_switch(true,true,true);
+	lcd1602_string_set(0,0,&quot;hello,&quot;);
+	lcd1602_string_set(4,1,&quot;world!&quot;);
+	while(1);
+}
+</pre>
+
+能够看到结果：
+<p><img src="5.jpg"></p>
+
                             </div>
                         </article>
                     </div>
