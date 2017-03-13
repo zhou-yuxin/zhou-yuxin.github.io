@@ -1,0 +1,556 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>pbkdf2-shaX摘要算法以及C语言实现</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">pbkdf2-shaX摘要算法以及C语言实现</h1>
+							</header>
+							<div class="entry-content">
+
+		<p>最近在研究WPA2破解算法，WPA2在4次握手的第一步就是使用pbkdf2-sha1算法生成PMK，所以有必要研究以下这个算法，至少要能够有C语言的实现可以使用。</p>
+
+<p>pbkdf2相比其他的摘要算法，亮点在于增加了一个“迭代次数”参数。pbkdf2可以选用某个具体的摘要算法，比如sha1、sha256或sha512。pbkdf2每一次迭代就把上一次迭代的结果重新放入摘要算法中运算。假设一次迭代需要0.1ms，那么一万次迭代就需要1s。对于正常的业务流程，多出1秒是可以忍受的，但是对于攻击者而言，从0.1ms到1s，攻击成本是一万倍的提升，足以让一般的攻击者望而却步。</p>
+
+<p>我在github上找到找到了pbkdf2算法的C语言实现，而且是一个改进过的版本。关于改进的原理，可以参考于飞、李晓华、兰天、吉庆兵、张李军等人发表的论文《PBKDF2函数的一种快速实现》。快速版本的速度是普通版本的2倍。</p>
+
+<p>先给出一个示例代码main.c：</p>
+
+<pre>#include &lt;stdio.h&gt;
+#include "fastpbkdf2.h"
+
+int main()
+{
+    uint8_t t_password[]={'p','a','s','s','w','o','r','d'};
+    uint8_t t_ssid[]={'s','s','i','d'};
+    uint8_t t_out[16];
+    fastpbkdf2_hmac_sha1(t_password,8,t_ssid,4,4096,t_out,16);
+    int t_i;
+    for(t_i=0;t_i&lt;16;t_i++)
+        printf("%x ",t_out[t_i]);
+    return 0;
+}
+</pre>
+
+<p>其中关键代码</p>
+
+<pre>fastpbkdf2_hmac_sha1(t_password,8,t_ssid,4,4096,t_out,16)</pre>
+
+<p>中的4096是迭代次数。因为WPA2中迭代次数是4096，所以这里就这么写了。</p>
+
+<p>makefile文件如下：</p>
+
+<pre>main: main.o fastpbkdf2.o
+	gcc main.o fastpbkdf2.o -lcrypto -o main
+
+main.o: main.c
+	gcc -c main.c -o main.o
+
+fastpbkdf2.o: fastpbkdf2.c
+	gcc -c fastpbkdf2.c -std=c99 -o fastpbkdf2.o
+</pre>
+
+<p>注意fastpbkdf2编译是需要使用c99标准。</p>
+
+<p>程序运行结果为：</p>
+
+<pre>44 11 6e a8 81 53 19 96 d8 a2 3a f5 8b 37 6d 70
+</pre>
+
+<p>main.c中用到了库fastpbkdf2，其中除了实现了fastpbkdf2_hmac_sha1外，还实现了fastpbkdf2_hmac_sha256和fastpbkdf2_hmac_sha512，参数列表完全相同。其共有fastpbkdf2.h和fastpbkdf2.c两个文件，下面给出这两个文件：</p>
+
+<p>fastpbkdf2.h</p>
+
+<pre>/*
+ * fastpbkdf2 - Faster PBKDF2-HMAC calculation
+ * Written in 2015 by Joseph Birr-Pixton &lt;jpixton@gmail.com&gt;
+ *
+ * To the extent possible under law, the author(s) have dedicated all
+ * copyright and related and neighboring rights to this software to the
+ * public domain worldwide. This software is distributed without any
+ * warranty.
+ *
+ * You should have received a copy of the CC0 Public Domain Dedication
+ * along with this software. If not, see
+ * &lt;http://creativecommons.org/publicdomain/zero/1.0/&gt;.
+ */
+
+#ifndef FASTPBKDF2_H
+#define FASTPBKDF2_H
+
+#include &lt;stdlib.h&gt;
+#include &lt;stdint.h&gt;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** Calculates PBKDF2-HMAC-SHA1.
+ *
+ *  @p npw bytes at @p pw are the password input.
+ *  @p nsalt bytes at @p salt are the salt input.
+ *  @p iterations is the PBKDF2 iteration count and must be non-zero.
+ *  @p nout bytes of output are written to @p out.  @p nout must be non-zero.
+ *
+ *  This function cannot fail; it does not report errors.
+ */
+void fastpbkdf2_hmac_sha1(const uint8_t *pw, size_t npw,
+                          const uint8_t *salt, size_t nsalt,
+                          uint32_t iterations,
+                          uint8_t *out, size_t nout);
+
+/** Calculates PBKDF2-HMAC-SHA256.
+ *
+ *  @p npw bytes at @p pw are the password input.
+ *  @p nsalt bytes at @p salt are the salt input.
+ *  @p iterations is the PBKDF2 iteration count and must be non-zero.
+ *  @p nout bytes of output are written to @p out.  @p nout must be non-zero.
+ *
+ *  This function cannot fail; it does not report errors.
+ */
+void fastpbkdf2_hmac_sha256(const uint8_t *pw, size_t npw,
+                            const uint8_t *salt, size_t nsalt,
+                            uint32_t iterations,
+                            uint8_t *out, size_t nout);
+
+/** Calculates PBKDF2-HMAC-SHA512.
+ *
+ *  @p npw bytes at @p pw are the password input.
+ *  @p nsalt bytes at @p salt are the salt input.
+ *  @p iterations is the PBKDF2 iteration count and must be non-zero.
+ *  @p nout bytes of output are written to @p out.  @p nout must be non-zero.
+ *
+ *  This function cannot fail; it does not report errors.
+ */
+void fastpbkdf2_hmac_sha512(const uint8_t *pw, size_t npw,
+                            const uint8_t *salt, size_t nsalt,
+                            uint32_t iterations,
+                            uint8_t *out, size_t nout);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+</pre>
+
+<p>fastpbkdf2.c</p>
+
+<pre>/*
+ * fast-pbkdf2 - Optimal PBKDF2-HMAC calculation
+ * Written in 2015 by Joseph Birr-Pixton &lt;jpixton@gmail.com&gt;
+ *
+ * To the extent possible under law, the author(s) have dedicated all
+ * copyright and related and neighboring rights to this software to the
+ * public domain worldwide. This software is distributed without any
+ * warranty.
+ *
+ * You should have received a copy of the CC0 Public Domain Dedication
+ * along with this software. If not, see
+ * &lt;http://creativecommons.org/publicdomain/zero/1.0/&gt;.
+ */
+
+#include "fastpbkdf2.h"
+
+#include &lt;assert.h&gt;
+#include &lt;string.h&gt;
+
+#include &lt;openssl/sha.h&gt;
+
+/* --- MSVC doesn't support C99 --- */
+#ifdef _MSC_VER
+#define restrict
+#define _Pragma __pragma
+#endif
+
+/* --- Common useful things --- */
+#define MIN(a, b) ((a) &gt; (b)) ? (b) : (a)
+
+static inline void write32_be(uint32_t n, uint8_t out[4])
+{
+#if defined(__GNUC__) &amp;&amp; __GNUC__ &gt;= 4 &amp;&amp; __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  *(uint32_t *)(out) = __builtin_bswap32(n);
+#else
+  out[0] = (n &gt;&gt; 24) &amp; 0xff;
+  out[1] = (n &gt;&gt; 16) &amp; 0xff;
+  out[2] = (n &gt;&gt; 8) &amp; 0xff;
+  out[3] = n &amp; 0xff;
+#endif
+}
+
+static inline void write64_be(uint64_t n, uint8_t out[8])
+{
+#if defined(__GNUC__) &amp;&amp;  __GNUC__ &gt;= 4 &amp;&amp; __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  *(uint64_t *)(out) = __builtin_bswap64(n);
+#else
+  write32_be((n &gt;&gt; 32) &amp; 0xffffffff, out);
+  write32_be(n &amp; 0xffffffff, out + 4);
+#endif
+}
+
+/* --- Optional OpenMP parallelisation of consecutive blocks --- */
+#ifdef WITH_OPENMP
+# define OPENMP_PARALLEL_FOR _Pragma("omp parallel for")
+#else
+# define OPENMP_PARALLEL_FOR
+#endif
+
+/* Prepare block (of blocksz bytes) to contain md padding denoting a msg-size
+ * message (in bytes).  block has a prefix of used bytes.
+ *
+ * Message length is expressed in 32 bits (so suitable for sha1, sha256, sha512). */
+static inline void md_pad(uint8_t *block, size_t blocksz, size_t used, size_t msg)
+{
+  memset(block + used, 0, blocksz - used - 4);
+  block[used] = 0x80;
+  block += blocksz - 4;
+  write32_be((uint32_t) (msg * 8), block);
+}
+
+/* Internal function/type names for hash-specific things. */
+#define HMAC_CTX(_name) HMAC_ ## _name ## _ctx
+#define HMAC_INIT(_name) HMAC_ ## _name ## _init
+#define HMAC_UPDATE(_name) HMAC_ ## _name ## _update
+#define HMAC_FINAL(_name) HMAC_ ## _name ## _final
+
+#define PBKDF2_F(_name) pbkdf2_f_ ## _name
+#define PBKDF2(_name) pbkdf2_ ## _name
+
+/* This macro expands to decls for the whole implementation for a given
+ * hash function.  Arguments are:
+ *
+ * _name like 'sha1', added to symbol names
+ * _blocksz block size, in bytes
+ * _hashsz digest output, in bytes
+ * _ctx hash context type
+ * _init hash context initialisation function
+ *    args: (_ctx *c)
+ * _update hash context update function
+ *    args: (_ctx *c, const void *data, size_t ndata)
+ * _final hash context finish function
+ *    args: (void *out, _ctx *c)
+ * _xform hash context raw block update function
+ *    args: (_ctx *c, const void *data)
+ * _xcpy hash context raw copy function (only need copy hash state)
+ *    args: (_ctx * restrict out, const _ctx *restrict in)
+ * _xtract hash context state extraction
+ *    args: args (_ctx *restrict c, uint8_t *restrict out)
+ * _xxor hash context xor function (only need xor hash state)
+ *    args: (_ctx *restrict out, const _ctx *restrict in)
+ *
+ * The resulting function is named PBKDF2(_name).
+ */
+#define DECL_PBKDF2(_name, _blocksz, _hashsz, _ctx,
+                    _init, _update, _xform, _final, _xcpy, _xtract, _xxor)
+  typedef struct {
+    _ctx inner;
+    _ctx outer;
+  } HMAC_CTX(_name);
+
+  static inline void HMAC_INIT(_name)(HMAC_CTX(_name) *ctx,
+                                      const uint8_t *key, size_t nkey)
+  {
+    /* Prepare key: */
+    uint8_t k[_blocksz];
+
+    /* Shorten long keys. */
+    if (nkey &gt; _blocksz)
+    {
+      _init(&amp;ctx-&gt;inner);
+      _update(&amp;ctx-&gt;inner, key, nkey);
+      _final(k, &amp;ctx-&gt;inner);
+
+      key = k;
+      nkey = _hashsz;
+    }
+
+    /* Standard doesn't cover case where blocksz &lt; hashsz. */
+    assert(nkey &lt;= _blocksz);
+
+    /* Right zero-pad short keys. */
+    if (k != key)
+      memcpy(k, key, nkey);
+    if (_blocksz &gt; nkey)
+      memset(k + nkey, 0, _blocksz - nkey);
+
+    /* Start inner hash computation */
+    uint8_t blk_inner[_blocksz];
+    uint8_t blk_outer[_blocksz];
+
+    for (size_t i = 0; i &lt; _blocksz; i++)
+    {
+      blk_inner[i] = 0x36 ^ k[i];
+      blk_outer[i] = 0x5c ^ k[i];
+    }
+
+    _init(&amp;ctx-&gt;inner);
+    _update(&amp;ctx-&gt;inner, blk_inner, sizeof blk_inner);
+
+    /* And outer. */
+    _init(&amp;ctx-&gt;outer);
+    _update(&amp;ctx-&gt;outer, blk_outer, sizeof blk_outer);
+  }
+
+  static inline void HMAC_UPDATE(_name)(HMAC_CTX(_name) *ctx,
+                                        const void *data, size_t ndata)
+  {
+    _update(&amp;ctx-&gt;inner, data, ndata);
+  }
+
+  static inline void HMAC_FINAL(_name)(HMAC_CTX(_name) *ctx,
+                                       uint8_t out[_hashsz])
+  {
+    _final(out, &amp;ctx-&gt;inner);
+    _update(&amp;ctx-&gt;outer, out, _hashsz);
+    _final(out, &amp;ctx-&gt;outer);
+  }
+
+
+  /* --- PBKDF2 --- */
+  static inline void PBKDF2_F(_name)(const HMAC_CTX(_name) *startctx,
+                                     uint32_t counter,
+                                     const uint8_t *salt, size_t nsalt,
+                                     uint32_t iterations,
+                                     uint8_t *out)
+  {
+    uint8_t countbuf[4];
+    write32_be(counter, countbuf);
+
+    /* Prepare loop-invariant padding block. */
+    uint8_t Ublock[_blocksz];
+    md_pad(Ublock, _blocksz, _hashsz, _blocksz + _hashsz);
+
+    /* First iteration:
+     *   U_1 = PRF(P, S || INT_32_BE(i))
+     */
+    HMAC_CTX(_name) ctx = *startctx;
+    HMAC_UPDATE(_name)(&amp;ctx, salt, nsalt);
+    HMAC_UPDATE(_name)(&amp;ctx, countbuf, sizeof countbuf);
+    HMAC_FINAL(_name)(&amp;ctx, Ublock);
+    _ctx result = ctx.outer;
+
+    /* Subsequent iterations:
+     *   U_c = PRF(P, U_{c-1})
+     */
+    for (uint32_t i = 1; i &lt; iterations; i++)
+    {
+      /* Complete inner hash with previous U */
+      _xcpy(&amp;ctx.inner, &amp;startctx-&gt;inner);
+      _xform(&amp;ctx.inner, Ublock);
+      _xtract(&amp;ctx.inner, Ublock);
+      /* Complete outer hash with inner output */
+      _xcpy(&amp;ctx.outer, &amp;startctx-&gt;outer);
+      _xform(&amp;ctx.outer, Ublock);
+      _xtract(&amp;ctx.outer, Ublock);
+      _xxor(&amp;result, &amp;ctx.outer);
+    }
+
+    /* Reform result into output buffer. */
+    _xtract(&amp;result, out);
+  }
+
+  static inline void PBKDF2(_name)(const uint8_t *pw, size_t npw,
+                     const uint8_t *salt, size_t nsalt,
+                     uint32_t iterations,
+                     uint8_t *out, size_t nout)
+  {
+    assert(iterations);
+    assert(out &amp;&amp; nout);
+
+    /* Starting point for inner loop. */
+    HMAC_CTX(_name) ctx;
+    HMAC_INIT(_name)(&amp;ctx, pw, npw);
+
+    /* How many blocks do we need? */
+    uint32_t blocks_needed = (uint32_t)(nout + _hashsz - 1) / _hashsz;
+
+    OPENMP_PARALLEL_FOR
+    for (uint32_t counter = 1; counter &lt;= blocks_needed; counter++)
+    {
+      uint8_t block[_hashsz];
+      PBKDF2_F(_name)(&amp;ctx, counter, salt, nsalt, iterations, block);
+
+      size_t offset = (counter - 1) * _hashsz;
+      size_t taken = MIN(nout - offset, _hashsz);
+      memcpy(out + offset, block, taken);
+    }
+  }
+
+static inline void sha1_extract(SHA_CTX *restrict ctx, uint8_t *restrict out)
+{
+  write32_be(ctx-&gt;h0, out);
+  write32_be(ctx-&gt;h1, out + 4);
+  write32_be(ctx-&gt;h2, out + 8);
+  write32_be(ctx-&gt;h3, out + 12);
+  write32_be(ctx-&gt;h4, out + 16);
+}
+
+static inline void sha1_cpy(SHA_CTX *restrict out, const SHA_CTX *restrict in)
+{
+  out-&gt;h0 = in-&gt;h0;
+  out-&gt;h1 = in-&gt;h1;
+  out-&gt;h2 = in-&gt;h2;
+  out-&gt;h3 = in-&gt;h3;
+  out-&gt;h4 = in-&gt;h4;
+}
+
+static inline void sha1_xor(SHA_CTX *restrict out, const SHA_CTX *restrict in)
+{
+  out-&gt;h0 ^= in-&gt;h0;
+  out-&gt;h1 ^= in-&gt;h1;
+  out-&gt;h2 ^= in-&gt;h2;
+  out-&gt;h3 ^= in-&gt;h3;
+  out-&gt;h4 ^= in-&gt;h4;
+}
+
+DECL_PBKDF2(sha1,
+            SHA_CBLOCK,
+            SHA_DIGEST_LENGTH,
+            SHA_CTX,
+            SHA1_Init,
+            SHA1_Update,
+            SHA1_Transform,
+            SHA1_Final,
+            sha1_cpy,
+            sha1_extract,
+            sha1_xor)
+
+static inline void sha256_extract(SHA256_CTX *restrict ctx, uint8_t *restrict out)
+{
+  write32_be(ctx-&gt;h[0], out);
+  write32_be(ctx-&gt;h[1], out + 4);
+  write32_be(ctx-&gt;h[2], out + 8);
+  write32_be(ctx-&gt;h[3], out + 12);
+  write32_be(ctx-&gt;h[4], out + 16);
+  write32_be(ctx-&gt;h[5], out + 20);
+  write32_be(ctx-&gt;h[6], out + 24);
+  write32_be(ctx-&gt;h[7], out + 28);
+}
+
+static inline void sha256_cpy(SHA256_CTX *restrict out, const SHA256_CTX *restrict in)
+{
+  out-&gt;h[0] = in-&gt;h[0];
+  out-&gt;h[1] = in-&gt;h[1];
+  out-&gt;h[2] = in-&gt;h[2];
+  out-&gt;h[3] = in-&gt;h[3];
+  out-&gt;h[4] = in-&gt;h[4];
+  out-&gt;h[5] = in-&gt;h[5];
+  out-&gt;h[6] = in-&gt;h[6];
+  out-&gt;h[7] = in-&gt;h[7];
+}
+
+static inline void sha256_xor(SHA256_CTX *restrict out, const SHA256_CTX *restrict in)
+{
+  out-&gt;h[0] ^= in-&gt;h[0];
+  out-&gt;h[1] ^= in-&gt;h[1];
+  out-&gt;h[2] ^= in-&gt;h[2];
+  out-&gt;h[3] ^= in-&gt;h[3];
+  out-&gt;h[4] ^= in-&gt;h[4];
+  out-&gt;h[5] ^= in-&gt;h[5];
+  out-&gt;h[6] ^= in-&gt;h[6];
+  out-&gt;h[7] ^= in-&gt;h[7];
+}
+
+DECL_PBKDF2(sha256,
+            SHA256_CBLOCK,
+            SHA256_DIGEST_LENGTH,
+            SHA256_CTX,
+            SHA256_Init,
+            SHA256_Update,
+            SHA256_Transform,
+            SHA256_Final,
+            sha256_cpy,
+            sha256_extract,
+            sha256_xor)
+
+static inline void sha512_extract(SHA512_CTX *restrict ctx, uint8_t *restrict out)
+{
+  write64_be(ctx-&gt;h[0], out);
+  write64_be(ctx-&gt;h[1], out + 8);
+  write64_be(ctx-&gt;h[2], out + 16);
+  write64_be(ctx-&gt;h[3], out + 24);
+  write64_be(ctx-&gt;h[4], out + 32);
+  write64_be(ctx-&gt;h[5], out + 40);
+  write64_be(ctx-&gt;h[6], out + 48);
+  write64_be(ctx-&gt;h[7], out + 56);
+}
+
+static inline void sha512_cpy(SHA512_CTX *restrict out, const SHA512_CTX *restrict in)
+{
+  out-&gt;h[0] = in-&gt;h[0];
+  out-&gt;h[1] = in-&gt;h[1];
+  out-&gt;h[2] = in-&gt;h[2];
+  out-&gt;h[3] = in-&gt;h[3];
+  out-&gt;h[4] = in-&gt;h[4];
+  out-&gt;h[5] = in-&gt;h[5];
+  out-&gt;h[6] = in-&gt;h[6];
+  out-&gt;h[7] = in-&gt;h[7];
+}
+
+static inline void sha512_xor(SHA512_CTX *restrict out, const SHA512_CTX *restrict in)
+{
+  out-&gt;h[0] ^= in-&gt;h[0];
+  out-&gt;h[1] ^= in-&gt;h[1];
+  out-&gt;h[2] ^= in-&gt;h[2];
+  out-&gt;h[3] ^= in-&gt;h[3];
+  out-&gt;h[4] ^= in-&gt;h[4];
+  out-&gt;h[5] ^= in-&gt;h[5];
+  out-&gt;h[6] ^= in-&gt;h[6];
+  out-&gt;h[7] ^= in-&gt;h[7];
+}
+
+DECL_PBKDF2(sha512,
+            SHA512_CBLOCK,
+            SHA512_DIGEST_LENGTH,
+            SHA512_CTX,
+            SHA512_Init,
+            SHA512_Update,
+            SHA512_Transform,
+            SHA512_Final,
+            sha512_cpy,
+            sha512_extract,
+            sha512_xor)
+
+void fastpbkdf2_hmac_sha1(const uint8_t *pw, size_t npw,
+                          const uint8_t *salt, size_t nsalt,
+                          uint32_t iterations,
+                          uint8_t *out, size_t nout)
+{
+  PBKDF2(sha1)(pw, npw, salt, nsalt, iterations, out, nout);
+}
+
+void fastpbkdf2_hmac_sha256(const uint8_t *pw, size_t npw,
+                            const uint8_t *salt, size_t nsalt,
+                            uint32_t iterations,
+                            uint8_t *out, size_t nout)
+{
+  PBKDF2(sha256)(pw, npw, salt, nsalt, iterations, out, nout);
+}
+
+void fastpbkdf2_hmac_sha512(const uint8_t *pw, size_t npw,
+                            const uint8_t *salt, size_t nsalt,
+                            uint32_t iterations,
+                            uint8_t *out, size_t nout)
+{
+  PBKDF2(sha512)(pw, npw, salt, nsalt, iterations, out, nout);
+}
+</pre>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

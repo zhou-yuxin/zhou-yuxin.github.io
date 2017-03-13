@@ -1,0 +1,705 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>Arduino使用ADXL345加速度传感器模块</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">Arduino使用ADXL345加速度传感器模块</h1>
+							</header>
+							<div class="entry-content">
+
+<p>Arduino使用ADXL345需要使用I2C协议与其交互。可以自己用Wire库实现寄存器的读写。不过，本文要介绍的是直接使用封装好的现成的库——Adafruit_ADXL345库。</p>
+
+<p>先给一个最简单的使用Adafruit_ADXL345的例子：</p>
+
+<pre>#include "Adafruit_ADXL345_U.h"
+
+Adafruit_ADXL345_Unified g_accel=Adafruit_ADXL345_Unified(0);
+
+void setup(void)
+{
+  Serial.begin(115200);
+  g_accel.begin();
+  g_accel.setRange(ADXL345_RANGE_2_G);
+}
+
+void loop(void)
+{
+  int16_t t_x=g_accel.getX();
+  int16_t t_y=g_accel.getY();
+  int16_t t_z=g_accel.getZ();
+  Serial.print(t_x);
+  Serial.print(" ");
+  Serial.print(t_y);
+  Serial.print(" ");
+  Serial.print(t_z);
+  Serial.print(" ");
+  Serial.println();
+  delay(20);
+}
+</pre>
+
+<p>硬件上，只需要将ADXL345的电源（5V引脚或3.3V引脚）和GND引脚接到合适的电源，然后ADXL345的SDA引脚接到Arduino的A4引脚，ADXL345的SCL引脚接到Arduino的A5引脚即可。</p>
+
+<p>在这个例子中，首选通过如下代码：</p>
+
+<pre>g_accel.begin();
+g_accel.setRange(ADXL345_RANGE_2_G);
+</pre>
+
+<p>初始化AXDL345，并且设置加速度传感器的量程是±2g，如果需要±4g那么就是ADXL345_RANGE_4_G，±8g和±16g以此类推。</p>
+
+<p>接下来就是通过</p>
+
+<pre>int16_t t_x=g_accel.getX();
+int16_t t_y=g_accel.getY();
+int16_t t_z=g_accel.getZ();
+</pre>
+
+<p>来读取三个方向上的加速度值。注意，这里获取的值是寄存器中的整数，如果需要转换成单位为m/s<sup>2</sup>的加速度值，只需要把获得的整数乘以0.004*9.8。比如当ADXL345水平径直与桌面时，得到t_x=0,t_y=0,t_z=249，那么x,y,z三个分量上的加速度值分别是0,0,249*0.004*9.8=9.76 m/s<sup>2</sup>。这是因为，在硬件手册上说明，不论量程是多大，整数值的每一个1就代表一个4mg，也就是重力加速度g的千分之四。</p>
+
+<p>当然，AXDL345还有很多选项，比如设置数据的采样频率、设置寄存器偏移量等等。具体可以参考Adafruit_ADXL345的实现和硬件手册。</p>
+
+<p>最后贴上Adafruit_ADXL345的源代码~共三个文件：Adafruit_Sensor.h、Adafruit_ADXL345_U.h和Adafruit_ADXL345_U.cpp。</p>
+
+<p>Adafruit_Sensor.h</p>
+
+<pre>/*
+* Copyright (C) 2008 The Android Open Source Project
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+* http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software&lt; /span&gt;
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*/
+
+/* Update by K. Townsend (Adafruit Industries) for lighter typedefs, and
+ * extended sensor support to include color, voltage and current */
+
+#ifndef _ADAFRUIT_SENSOR_H
+#define _ADAFRUIT_SENSOR_H
+
+#if ARDUINO &gt;= 100
+ #include "Arduino.h"
+ #include "Print.h"
+#else
+ #include "WProgram.h"
+#endif
+
+/* Intentionally modeled after sensors.h in the Android API:
+ * https://github.com/android/platform_hardware_libhardware/blob/master/include/hardware/sensors.h */
+
+/* Constants */
+#define SENSORS_GRAVITY_EARTH             (9.80665F)              /**&lt; Earth's gravity in m/s^2 */
+#define SENSORS_GRAVITY_MOON              (1.6F)                  /**&lt; The moon's gravity in m/s^2 */
+#define SENSORS_GRAVITY_SUN               (275.0F)                /**&lt; The sun's gravity in m/s^2 */
+#define SENSORS_GRAVITY_STANDARD          (SENSORS_GRAVITY_EARTH)
+#define SENSORS_MAGFIELD_EARTH_MAX        (60.0F)                 /**&lt; Maximum magnetic field on Earth's surface */
+#define SENSORS_MAGFIELD_EARTH_MIN        (30.0F)                 /**&lt; Minimum magnetic field on Earth's surface */
+#define SENSORS_PRESSURE_SEALEVELHPA      (1013.25F)              /**&lt; Average sea level pressure is 1013.25 hPa */
+#define SENSORS_DPS_TO_RADS               (0.017453293F)          /**&lt; Degrees/s to rad/s multiplier */
+#define SENSORS_GAUSS_TO_MICROTESLA       (100)                   /**&lt; Gauss to micro-Tesla multiplier */
+
+/** Sensor types */
+typedef enum
+{
+  SENSOR_TYPE_ACCELEROMETER         = (1),   /**&lt; Gravity + linear acceleration */
+  SENSOR_TYPE_MAGNETIC_FIELD        = (2),
+  SENSOR_TYPE_ORIENTATION           = (3),
+  SENSOR_TYPE_GYROSCOPE             = (4),
+  SENSOR_TYPE_LIGHT                 = (5),
+  SENSOR_TYPE_PRESSURE              = (6),
+  SENSOR_TYPE_PROXIMITY             = (8),
+  SENSOR_TYPE_GRAVITY               = (9),
+  SENSOR_TYPE_LINEAR_ACCELERATION   = (10),  /**&lt; Acceleration not including gravity */
+  SENSOR_TYPE_ROTATION_VECTOR       = (11),
+  SENSOR_TYPE_RELATIVE_HUMIDITY     = (12),
+  SENSOR_TYPE_AMBIENT_TEMPERATURE   = (13),
+  SENSOR_TYPE_VOLTAGE               = (15),
+  SENSOR_TYPE_CURRENT               = (16),
+  SENSOR_TYPE_COLOR                 = (17)
+} sensors_type_t;
+
+/** struct sensors_vec_s is used to return a vector in a common format. */
+typedef struct {
+    union {
+        float v[3];
+        struct {
+            float x;
+            float y;
+            float z;
+        };
+        /* Orientation sensors */
+        struct {
+            float roll;    /**&lt; Rotation around the longitudinal axis (the plane body, 'X axis'). Roll is positive and increasing when moving downward. -90��&lt;=roll&lt;=90�� */
+            float pitch;   /**&lt; Rotation around the lateral axis (the wing span, 'Y axis'). Pitch is positive and increasing when moving upwards. -180��&lt;=pitch&lt;=180��) */
+            float heading; /**&lt; Angle between the longitudinal axis (the plane body) and magnetic north, measured clockwise when viewing from the top of the device. 0-359�� */
+        };
+    };
+    int8_t status;
+    uint8_t reserved[3];
+} sensors_vec_t;
+
+/** struct sensors_color_s is used to return color data in a common format. */
+typedef struct {
+    union {
+        float c[3];
+        /* RGB color space */
+        struct {
+            float r;       /**&lt; Red component */
+            float g;       /**&lt; Green component */
+            float b;       /**&lt; Blue component */
+        };
+    };
+    uint32_t rgba;         /**&lt; 24-bit RGBA value */
+} sensors_color_t;
+
+/* Sensor event (36 bytes) */
+/** struct sensor_event_s is used to provide a single sensor event in a common format. */
+typedef struct
+{
+    int32_t version;                          /**&lt; must be sizeof(struct sensors_event_t) */
+    int32_t sensor_id;                        /**&lt; unique sensor identifier */
+    int32_t type;                             /**&lt; sensor type */
+    int32_t reserved0;                        /**&lt; reserved */
+    int32_t timestamp;                        /**&lt; time is in milliseconds */
+    union
+    {
+        float           data[4];
+        sensors_vec_t   acceleration;         /**&lt; acceleration values are in meter per second per second (m/s^2) */
+        sensors_vec_t   magnetic;             /**&lt; magnetic vector values are in micro-Tesla (uT) */
+        sensors_vec_t   orientation;          /**&lt; orientation values are in degrees */
+        sensors_vec_t   gyro;                 /**&lt; gyroscope values are in rad/s */
+        float           temperature;          /**&lt; temperature is in degrees centigrade (Celsius) */
+        float           distance;             /**&lt; distance in centimeters */
+        float           light;                /**&lt; light in SI lux units */
+        float           pressure;             /**&lt; pressure in hectopascal (hPa) */
+        float           relative_humidity;    /**&lt; relative humidity in percent */
+        float           current;              /**&lt; current in milliamps (mA) */
+        float           voltage;              /**&lt; voltage in volts (V) */
+        sensors_color_t color;                /**&lt; color in RGB component values */
+    };
+} sensors_event_t;
+
+/* Sensor details (40 bytes) */
+/** struct sensor_s is used to describe basic information about a specific sensor. */
+typedef struct
+{
+    char     name[12];                        /**&lt; sensor name */
+    int32_t  version;                         /**&lt; version of the hardware + driver */
+    int32_t  sensor_id;                       /**&lt; unique sensor identifier */
+    int32_t  type;                            /**&lt; this sensor's type (ex. SENSOR_TYPE_LIGHT) */
+    float    max_value;                       /**&lt; maximum value of this sensor's value in SI units */
+    float    min_value;                       /**&lt; minimum value of this sensor's value in SI units */
+    float    resolution;                      /**&lt; smallest difference between two values reported by this sensor */
+    int32_t  min_delay;                       /**&lt; min delay in microseconds between events. zero = not a constant rate */
+} sensor_t;
+
+class Adafruit_Sensor {
+ public:
+  // Constructor(s)
+  Adafruit_Sensor() {}
+  virtual ~Adafruit_Sensor() {}
+
+  // These must be defined by the subclass
+  virtual void enableAutoRange(bool enabled) {};
+  virtual bool getEvent(sensors_event_t*) = 0;
+  virtual void getSensor(sensor_t*) = 0;
+
+ private:
+  bool _autoRange;
+};
+
+#endif</pre>
+
+<p>Adafruit_ADXL345_U.h</p>
+
+<pre>/**************************************************************************/
+/*!
+    @file     Adafruit_ADS1015.h
+    @author   K. Townsend (Adafruit Industries)
+    @license  BSD (see license.txt)
+    This is a library for the Adafruit ADS1015 breakout board
+    ----&gt; https://www.adafruit.com/products/???
+    Adafruit invests time and resources providing this open source code,
+    please support Adafruit and open-source hardware by purchasing
+    products from Adafruit!
+    @section  HISTORY
+    v1.0  - First release
+*/
+/**************************************************************************/
+
+#if ARDUINO &gt;= 100
+ #include "Arduino.h"
+#else
+ #include "WProgram.h"
+#endif
+
+#include "Adafruit_Sensor.h"
+#include &lt;Wire.h&gt;
+
+/*=========================================================================
+    I2C ADDRESS/BITS
+    -----------------------------------------------------------------------*/
+    #define ADXL345_ADDRESS                 (0x53)    // Assumes ALT address pin low
+/*=========================================================================*/
+
+/*=========================================================================
+    REGISTERS
+    -----------------------------------------------------------------------*/
+    #define ADXL345_REG_DEVID               (0x00)    // Device ID
+    #define ADXL345_REG_THRESH_TAP          (0x1D)    // Tap threshold
+    #define ADXL345_REG_OFSX                (0x1E)    // X-axis offset
+    #define ADXL345_REG_OFSY                (0x1F)    // Y-axis offset
+    #define ADXL345_REG_OFSZ                (0x20)    // Z-axis offset
+    #define ADXL345_REG_DUR                 (0x21)    // Tap duration
+    #define ADXL345_REG_LATENT              (0x22)    // Tap latency
+    #define ADXL345_REG_WINDOW              (0x23)    // Tap window
+    #define ADXL345_REG_THRESH_ACT          (0x24)    // Activity threshold
+    #define ADXL345_REG_THRESH_INACT        (0x25)    // Inactivity threshold
+    #define ADXL345_REG_TIME_INACT          (0x26)    // Inactivity time
+    #define ADXL345_REG_ACT_INACT_CTL       (0x27)    // Axis enable control for activity and inactivity detection
+    #define ADXL345_REG_THRESH_FF           (0x28)    // Free-fall threshold
+    #define ADXL345_REG_TIME_FF             (0x29)    // Free-fall time
+    #define ADXL345_REG_TAP_AXES            (0x2A)    // Axis control for single/double tap
+    #define ADXL345_REG_ACT_TAP_STATUS      (0x2B)    // Source for single/double tap
+    #define ADXL345_REG_BW_RATE             (0x2C)    // Data rate and power mode control
+    #define ADXL345_REG_POWER_CTL           (0x2D)    // Power-saving features control
+    #define ADXL345_REG_INT_ENABLE          (0x2E)    // Interrupt enable control
+    #define ADXL345_REG_INT_MAP             (0x2F)    // Interrupt mapping control
+    #define ADXL345_REG_INT_SOURCE          (0x30)    // Source of interrupts
+    #define ADXL345_REG_DATA_FORMAT         (0x31)    // Data format control
+    #define ADXL345_REG_DATAX0              (0x32)    // X-axis data 0
+    #define ADXL345_REG_DATAX1              (0x33)    // X-axis data 1
+    #define ADXL345_REG_DATAY0              (0x34)    // Y-axis data 0
+    #define ADXL345_REG_DATAY1              (0x35)    // Y-axis data 1
+    #define ADXL345_REG_DATAZ0              (0x36)    // Z-axis data 0
+    #define ADXL345_REG_DATAZ1              (0x37)    // Z-axis data 1
+    #define ADXL345_REG_FIFO_CTL            (0x38)    // FIFO control
+    #define ADXL345_REG_FIFO_STATUS         (0x39)    // FIFO status
+/*=========================================================================*/
+
+/*=========================================================================
+    REGISTERS
+    -----------------------------------------------------------------------*/
+    #define ADXL345_MG2G_MULTIPLIER (0.004)  // 4mg per lsb
+/*=========================================================================*/
+
+/* Used with register 0x2C (ADXL345_REG_BW_RATE) to set bandwidth */
+typedef enum
+{
+  ADXL345_DATARATE_3200_HZ    = 0b1111, // 1600Hz Bandwidth   140µA IDD
+  ADXL345_DATARATE_1600_HZ    = 0b1110, //  800Hz Bandwidth    90µA IDD
+  ADXL345_DATARATE_800_HZ     = 0b1101, //  400Hz Bandwidth   140µA IDD
+  ADXL345_DATARATE_400_HZ     = 0b1100, //  200Hz Bandwidth   140µA IDD
+  ADXL345_DATARATE_200_HZ     = 0b1011, //  100Hz Bandwidth   140µA IDD
+  ADXL345_DATARATE_100_HZ     = 0b1010, //   50Hz Bandwidth   140µA IDD
+  ADXL345_DATARATE_50_HZ      = 0b1001, //   25Hz Bandwidth    90µA IDD
+  ADXL345_DATARATE_25_HZ      = 0b1000, // 12.5Hz Bandwidth    60µA IDD
+  ADXL345_DATARATE_12_5_HZ    = 0b0111, // 6.25Hz Bandwidth    50µA IDD
+  ADXL345_DATARATE_6_25HZ     = 0b0110, // 3.13Hz Bandwidth    45µA IDD
+  ADXL345_DATARATE_3_13_HZ    = 0b0101, // 1.56Hz Bandwidth    40µA IDD
+  ADXL345_DATARATE_1_56_HZ    = 0b0100, // 0.78Hz Bandwidth    34µA IDD
+  ADXL345_DATARATE_0_78_HZ    = 0b0011, // 0.39Hz Bandwidth    23µA IDD
+  ADXL345_DATARATE_0_39_HZ    = 0b0010, // 0.20Hz Bandwidth    23µA IDD
+  ADXL345_DATARATE_0_20_HZ    = 0b0001, // 0.10Hz Bandwidth    23µA IDD
+  ADXL345_DATARATE_0_10_HZ    = 0b0000  // 0.05Hz Bandwidth    23µA IDD (default value)
+} dataRate_t;
+
+/* Used with register 0x31 (ADXL345_REG_DATA_FORMAT) to set g range */
+typedef enum
+{
+  ADXL345_RANGE_16_G          = 0b11,   // +/- 16g
+  ADXL345_RANGE_8_G           = 0b10,   // +/- 8g
+  ADXL345_RANGE_4_G           = 0b01,   // +/- 4g
+  ADXL345_RANGE_2_G           = 0b00    // +/- 2g (default value)
+} range_t;
+
+class Adafruit_ADXL345_Unified : public Adafruit_Sensor {
+ public:
+  Adafruit_ADXL345_Unified(int32_t sensorID = -1);
+  Adafruit_ADXL345_Unified(uint8_t clock, uint8_t miso, uint8_t mosi, uint8_t cs, int32_t sensorID = -1);
+
+  bool       begin(void);
+  void       setRange(range_t range);
+  range_t    getRange(void);
+  void       setDataRate(dataRate_t dataRate);
+  dataRate_t getDataRate(void);
+  bool       getEvent(sensors_event_t*);
+  void       getSensor(sensor_t*);
+
+  uint8_t    getDeviceID(void);
+  void       writeRegister(uint8_t reg, uint8_t value);
+  uint8_t    readRegister(uint8_t reg);
+  int16_t    read16(uint8_t reg);
+
+  int16_t    getX(void), getY(void), getZ(void);
+ private:
+
+  inline uint8_t  i2cread(void);
+  inline void     i2cwrite(uint8_t x);
+
+  int32_t _sensorID;
+  range_t _range;
+  uint8_t _clk, _do, _di, _cs;
+  bool    _i2c;
+};
+</pre>
+
+<p>Adafruit_ADXL345_U.cpp</p>
+
+<pre>/**************************************************************************/
+/*!
+    @file     Adafruit_ADXL345.cpp
+    @author   K.Townsend (Adafruit Industries)
+    @license  BSD (see license.txt)
+    The ADXL345 is a digital accelerometer with 13-bit resolution, capable
+    of measuring up to +/-16g.  This driver communicate using I2C.
+    This is a library for the Adafruit ADXL345 breakout
+    ----&gt; https://www.adafruit.com/products/1231
+    Adafruit invests time and resources providing this open source code,
+    please support Adafruit and open-source hardware by purchasing
+    products from Adafruit!
+    @section  HISTORY
+
+    v1.1 - Added Adafruit_Sensor library support
+    v1.0 - First release
+*/
+/**************************************************************************/
+#if ARDUINO &gt;= 100
+ #include "Arduino.h"
+#else
+ #include "WProgram.h"
+#endif
+
+#include &lt;Wire.h&gt;
+#include &lt;limits.h&gt;
+
+#include "Adafruit_ADXL345_U.h"
+
+/**************************************************************************/
+/*!
+    @brief  Abstract away platform differences in Arduino wire library
+*/
+/**************************************************************************/
+inline uint8_t Adafruit_ADXL345_Unified::i2cread(void) {
+  #if ARDUINO &gt;= 100
+  return Wire.read();
+  #else
+  return Wire.receive();
+  #endif
+}
+
+/**************************************************************************/
+/*!
+    @brief  Abstract away platform differences in Arduino wire library
+*/
+/**************************************************************************/
+inline void Adafruit_ADXL345_Unified::i2cwrite(uint8_t x) {
+  #if ARDUINO &gt;= 100
+  Wire.write((uint8_t)x);
+  #else
+  Wire.send(x);
+  #endif
+}
+
+/**************************************************************************/
+/*!
+    @brief  Abstract away SPI receiver &amp; transmitter
+*/
+/**************************************************************************/
+static uint8_t spixfer(uint8_t clock, uint8_t miso, uint8_t mosi, uint8_t data) {
+  uint8_t reply = 0;
+  for (int i=7; i&gt;=0; i--) {
+    reply &lt;&lt;= 1;
+    digitalWrite(clock, LOW);
+    digitalWrite(mosi, data &amp; (1&lt;&lt;i));
+    digitalWrite(clock, HIGH);
+    if (digitalRead(miso))
+      reply |= 1;
+  }
+  return reply;
+}
+
+/**************************************************************************/
+/*!
+    @brief  Writes 8-bits to the specified destination register
+*/
+/**************************************************************************/
+void Adafruit_ADXL345_Unified::writeRegister(uint8_t reg, uint8_t value) {
+  if (_i2c) {
+    Wire.beginTransmission(ADXL345_ADDRESS);
+    i2cwrite((uint8_t)reg);
+    i2cwrite((uint8_t)(value));
+    Wire.endTransmission();
+  } else {
+    digitalWrite(_cs, LOW);
+    spixfer(_clk, _di, _do, reg);
+    spixfer(_clk, _di, _do, value);
+    digitalWrite(_cs, HIGH);
+  }
+}
+
+/**************************************************************************/
+/*!
+    @brief  Reads 8-bits from the specified register
+*/
+/**************************************************************************/
+uint8_t Adafruit_ADXL345_Unified::readRegister(uint8_t reg) {
+  if (_i2c) {
+    Wire.beginTransmission(ADXL345_ADDRESS);
+    i2cwrite(reg);
+    Wire.endTransmission();
+    Wire.requestFrom(ADXL345_ADDRESS, 1);
+    return (i2cread());
+  } else {
+    reg |= 0x80; // read byte
+    digitalWrite(_cs, LOW);
+    spixfer(_clk, _di, _do, reg);
+    uint8_t reply = spixfer(_clk, _di, _do, 0xFF);
+    digitalWrite(_cs, HIGH);
+    return reply;
+  }
+}
+
+/**************************************************************************/
+/*!
+    @brief  Reads 16-bits from the specified register
+*/
+/**************************************************************************/
+int16_t Adafruit_ADXL345_Unified::read16(uint8_t reg) {
+  if (_i2c) {
+    Wire.beginTransmission(ADXL345_ADDRESS);
+    i2cwrite(reg);
+    Wire.endTransmission();
+    Wire.requestFrom(ADXL345_ADDRESS, 2);
+    return (uint16_t)(i2cread() | (i2cread() &lt;&lt; 8));
+  } else {
+    reg |= 0x80 | 0x40; // read byte | multibyte
+    digitalWrite(_cs, LOW);
+    spixfer(_clk, _di, _do, reg);
+    uint16_t reply = spixfer(_clk, _di, _do, 0xFF)  | (spixfer(_clk, _di, _do, 0xFF) &lt;&lt; 8);
+    digitalWrite(_cs, HIGH);
+    return reply;
+  }
+}
+
+/**************************************************************************/
+/*!
+    @brief  Read the device ID (can be used to check connection)
+*/
+/**************************************************************************/
+uint8_t Adafruit_ADXL345_Unified::getDeviceID(void) {
+  // Check device ID register
+  return readRegister(ADXL345_REG_DEVID);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Gets the most recent X axis value
+*/
+/**************************************************************************/
+int16_t Adafruit_ADXL345_Unified::getX(void) {
+  return read16(ADXL345_REG_DATAX0);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Gets the most recent Y axis value
+*/
+/**************************************************************************/
+int16_t Adafruit_ADXL345_Unified::getY(void) {
+  return read16(ADXL345_REG_DATAY0);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Gets the most recent Z axis value
+*/
+/**************************************************************************/
+int16_t Adafruit_ADXL345_Unified::getZ(void) {
+  return read16(ADXL345_REG_DATAZ0);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Instantiates a new ADXL345 class
+*/
+/**************************************************************************/
+Adafruit_ADXL345_Unified::Adafruit_ADXL345_Unified(int32_t sensorID) {
+  _sensorID = sensorID;
+  _range = ADXL345_RANGE_2_G;
+  _i2c = true;
+}
+
+/**************************************************************************/
+/*!
+    @brief  Instantiates a new ADXL345 class in SPI mode
+*/
+/**************************************************************************/
+Adafruit_ADXL345_Unified::Adafruit_ADXL345_Unified(uint8_t clock, uint8_t miso, uint8_t mosi, uint8_t cs, int32_t sensorID) {
+  _sensorID = sensorID;
+  _range = ADXL345_RANGE_2_G;
+  _cs = cs;
+  _clk = clock;
+  _do = mosi;
+  _di = miso;
+  _i2c = false;
+}
+
+/**************************************************************************/
+/*!
+    @brief  Setups the HW (reads coefficients values, etc.)
+*/
+/**************************************************************************/
+bool Adafruit_ADXL345_Unified::begin() {
+
+  if (_i2c)
+    Wire.begin();
+  else {
+    pinMode(_cs, OUTPUT);
+    pinMode(_clk, OUTPUT);
+    digitalWrite(_clk, HIGH);
+    pinMode(_do, OUTPUT);
+    pinMode(_di, INPUT);
+  }
+
+  /* Check connection */
+  uint8_t deviceid = getDeviceID();
+  if (deviceid != 0xE5)
+  {
+    /* No ADXL345 detected ... return false */
+    Serial.println(deviceid, HEX);
+    return false;
+  }
+
+  // Enable measurements
+  writeRegister(ADXL345_REG_POWER_CTL, 0x08);
+
+  return true;
+}
+
+/**************************************************************************/
+/*!
+    @brief  Sets the g range for the accelerometer
+*/
+/**************************************************************************/
+void Adafruit_ADXL345_Unified::setRange(range_t range)
+{
+  /* Red the data format register to preserve bits */
+  uint8_t format = readRegister(ADXL345_REG_DATA_FORMAT);
+
+  /* Update the data rate */
+  format &amp;= ~0x0F;
+  format |= range;
+
+  /* Make sure that the FULL-RES bit is enabled for range scaling */
+  format |= 0x08;
+
+  /* Write the register back to the IC */
+  writeRegister(ADXL345_REG_DATA_FORMAT, format);
+
+  /* Keep track of the current range (to avoid readbacks) */
+  _range = range;
+}
+
+/**************************************************************************/
+/*!
+    @brief  Sets the g range for the accelerometer
+*/
+/**************************************************************************/
+range_t Adafruit_ADXL345_Unified::getRange(void)
+{
+  /* Red the data format register to preserve bits */
+  return (range_t)(readRegister(ADXL345_REG_DATA_FORMAT) &amp; 0x03);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Sets the data rate for the ADXL345 (controls power consumption)
+*/
+/**************************************************************************/
+void Adafruit_ADXL345_Unified::setDataRate(dataRate_t dataRate)
+{
+  /* Note: The LOW_POWER bits are currently ignored and we always keep
+     the device in 'normal' mode */
+  writeRegister(ADXL345_REG_BW_RATE, dataRate);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Sets the data rate for the ADXL345 (controls power consumption)
+*/
+/**************************************************************************/
+dataRate_t Adafruit_ADXL345_Unified::getDataRate(void)
+{
+  return (dataRate_t)(readRegister(ADXL345_REG_BW_RATE) &amp; 0x0F);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Gets the most recent sensor event
+*/
+/**************************************************************************/
+bool Adafruit_ADXL345_Unified::getEvent(sensors_event_t *event) {
+  /* Clear the event */
+  memset(event, 0, sizeof(sensors_event_t));
+
+  event-&gt;version   = sizeof(sensors_event_t);
+  event-&gt;sensor_id = _sensorID;
+  event-&gt;type      = SENSOR_TYPE_ACCELEROMETER;
+  event-&gt;timestamp = 0;
+  event-&gt;acceleration.x = getX() * ADXL345_MG2G_MULTIPLIER * SENSORS_GRAVITY_STANDARD;
+  event-&gt;acceleration.y = getY() * ADXL345_MG2G_MULTIPLIER * SENSORS_GRAVITY_STANDARD;
+  event-&gt;acceleration.z = getZ() * ADXL345_MG2G_MULTIPLIER * SENSORS_GRAVITY_STANDARD;
+
+  return true;
+}
+
+/**************************************************************************/
+/*!
+    @brief  Gets the sensor_t data
+*/
+/**************************************************************************/
+void Adafruit_ADXL345_Unified::getSensor(sensor_t *sensor) {
+  /* Clear the sensor_t object */
+  memset(sensor, 0, sizeof(sensor_t));
+
+  /* Insert the sensor name in the fixed length char array */
+  strncpy (sensor-&gt;name, "ADXL345", sizeof(sensor-&gt;name) - 1);
+  sensor-&gt;name[sizeof(sensor-&gt;name)- 1] = 0;
+  sensor-&gt;version     = 1;
+  sensor-&gt;sensor_id   = _sensorID;
+  sensor-&gt;type        = SENSOR_TYPE_PRESSURE;
+  sensor-&gt;min_delay   = 0;
+  sensor-&gt;max_value   = -156.9064F; /* -16g = 156.9064 m/s^2  */
+  sensor-&gt;min_value   = 156.9064F;  /*  16g = 156.9064 m/s^2  */
+  sensor-&gt;resolution  = 0.03923F;   /*  4mg = 0.0392266 m/s^2 */
+}
+</pre>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

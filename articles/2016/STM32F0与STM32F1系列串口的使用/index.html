@@ -1,0 +1,138 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>STM32F0与STM32F1系列串口的使用</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">STM32F0与STM32F1系列串口的使用</h1>
+							</header>
+							<div class="entry-content">
+
+<p>STM32初始化串口的基本步骤为：</p>
+
+<p>（1）使能串口的时钟与对应的GPIO的时钟；</p>
+
+<p>（2）配置串口对应的GPIO的工作模式；</p>
+
+<p>（3）配置串口的工作模式。</p>
+
+<p>STM32F0系列与STM32F1系列在第（1）（2）步时略有不同。以下分别给出其初始化串口1的代码（波特率9600，8数据位，1停止位，无校验，无流控）：</p>
+
+<p>STM32F0系列：</p>
+
+<pre>void usart1_confg()
+{
+    USART_InitTypeDef t_uart;
+    GPIO_InitTypeDef t_gpio;
+
+    /*开启GPIOA与USART1的时钟*/
+    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOA,ENABLE);
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1,ENABLE);
+
+    /*配置GPIOA.9、GPIOA.10为复用模式*/
+    GPIO_PinAFConfig(GPIOA,GPIO_PinSource9,GPIO_AF_1);
+    GPIO_PinAFConfig(GPIOA,GPIO_PinSource10,GPIO_AF_1);
+
+    /*配置GPIOA.9为复用推挽输出*/
+    t_gpio.GPIO_Pin=GPIO_Pin_9;
+    t_gpio.GPIO_Mode=GPIO_Mode_AF;
+    t_gpio.GPIO_Speed=GPIO_Speed_50MHz;
+    t_gpio.GPIO_OType=GPIO_OType_PP;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+
+    /*配置GPIOA.10为复用浮空输入*/
+    t_gpio.GPIO_Pin=GPIO_Pin_10;
+    t_gpio.GPIO_Mode=GPIO_Mode_AF;
+    t_gpio.GPIO_Speed=GPIO_Speed_50MHz;
+    t_gpio.GPIO_PuPd=GPIO_PuPd_NOPULL;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+
+    /*配置usart1为9600-8n-1并使能*/
+    t_uart.USART_BaudRate=9600;
+    t_uart.USART_WordLength=USART_WordLength_8b;
+    t_uart.USART_StopBits=USART_StopBits_1;
+    t_uart.USART_Parity=USART_Parity_No;
+    t_uart.USART_HardwareFlowControl=USART_HardwareFlowControl_None;
+    t_uart.USART_Mode=USART_Mode_Rx|USART_Mode_Tx;
+    USART_Init(USART1,&amp;t_uart);
+    USART_Cmd(USART1,ENABLE);
+}
+</pre>
+
+<p>STM32F1系列：</p>
+
+<pre>void usart1_confg()
+{
+    USART_InitTypeDef t_uart;
+    GPIO_InitTypeDef t_gpio;
+
+    /*开启GPIOA与USART1的时钟*/
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA|RCC_APB2Periph_USART1,ENABLE);
+
+    /*配置GPIOA.9为复用推挽输出*/
+    t_gpio.GPIO_Pin=GPIO_Pin_9;
+    t_gpio.GPIO_Mode=GPIO_Mode_AF_PP;
+    t_gpio.GPIO_Speed=GPIO_Speed_50MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+
+    /*配置GPIOA.10为复用浮空输入*/
+    t_gpio.GPIO_Pin=GPIO_Pin_10;
+    t_gpio.GPIO_Mode=GPIO_Mode_IN_FLOATING;
+    t_gpio.GPIO_Speed=GPIO_Speed_50MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+
+    /*配置usart1为9600-8n-1并使能*/
+    t_uart.USART_BaudRate=9600;
+    t_uart.USART_WordLength=USART_WordLength_8b;
+    t_uart.USART_StopBits=USART_StopBits_1;
+    t_uart.USART_Parity=USART_Parity_No;
+    t_uart.USART_HardwareFlowControl=USART_HardwareFlowControl_None;
+    t_uart.USART_Mode=USART_Mode_Rx|USART_Mode_Tx;
+    USART_Init(USART1,&amp;t_uart);
+    USART_Cmd(USART1,ENABLE);
+}
+</pre>
+
+<p>不难发现区别是由于内部总线的布局以及GPIO口的功能所引起的。</p>
+
+<p>初始化串口之后，就很容易了，以下是一个简单的测试程序：</p>
+
+<pre>void usart_send_string(char* p_string)
+{
+    while(*p_string)
+    {
+        USART_SendData(USART1,(uint16_t)(*p_string));
+        while(USART_GetFlagStatus(USART1,USART_FLAG_TC)!=SET);
+        p_string++;
+    }
+}
+
+int main()
+{
+    usart1_confg();
+    while(1)
+        usart_send_string("abcdefrn");
+    return 0;
+}
+</pre>
+
+<p>于是通过串口就能够收到源源不断的”abcdef”了~~</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

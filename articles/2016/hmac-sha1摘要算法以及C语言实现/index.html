@@ -1,0 +1,225 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>hmac-sha1摘要算法以及C语言实现</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">hmac-sha1摘要算法以及C语言实现</h1>
+							</header>
+							<div class="entry-content">
+
+		<p>最近在研究WPA2破解算法，里面涉及到了hmac-sha1摘要算法。</p>
+
+<p>hmac算法是一种信息摘要算法，常常用于密码验证过程中。而hmac-sha1则是使用sha1作为具体摘要算法的。除了sha1外，还可以使用md5等。</p>
+
+<p>各种信息摘要算法用于密码验证的基本流程如下：</p>
+
+<p>1、客户端向服务器发出登录或其他操作请求；</p>
+
+<p>2、服务器生成一个随机数，发送给客户端；</p>
+
+<p>3、客户端把用户输入的密码和这个随机数通过某种算法，计算得到一个摘要值A，发送给服务器；</p>
+
+<p>4、服务器端把存于数据库中的正确的密码和这个随机数通过该算法，计算得到一个摘要值B，如果A==B，那么服务器断定客户端有正确的密码。</p>
+
+<p>上述过程就是一种密码质询（challenge）过程，其中提到的“某种算法”，可以有很多很多实现。一种比较简单的方法是，把密码与随机数串联后带入MD5算法，得到摘要值。</p>
+
+<p>那么为什么需要hmac-sha1算法呢？个人的理解是这样的：</p>
+
+<p>1、规范化质询算法；</p>
+
+<p>2、提供更高强度的保护。</p>
+
+<p>第一条很好理解。每个人都有自己的质询实现，比如我的质询方法是MD5(密码+随机数)，而他的质询方法是MD5(随机数+密码)，甚至MD5(密码+随机数*2)等等。规范化质询算法，有助于大家交流嘛～</p>
+
+<p>第二条，是因为传统的MD5等算法的强度正在逐渐衰减，所以需要更加复杂的算法来保护数据。</p>
+
+<p>OK，讲了这么多，就来讲讲C语言的实现吧。</p>
+
+<p>其实我不是自己实现的，而是在github上找到了现成的开源代码，在此感谢<a href="https://github.com/Akagi201/hmac-sha1">Akagi201/hmac-sha1</a>项目。不过，该项目可以通过宏来选择是使用openssl里面的sha1算法还是使用该项目自己实现的sha1算法。为了减少文件数量，我还是用了openssl，并且稍微简化了以下代码。</p>
+
+<p>先给出一个使用的例子：</p>
+
+<p>main.c</p>
+
+<pre>#include &lt;stdio.h&gt;
+#include "hmac.h"
+
+int main()
+{
+    uint8_t t_key[]={'k','e','y'};
+    uint8_t t_data[]={'h','e','l','l','o'};
+    uint8_t t_result[256]={0};
+    size_t t_len=sizeof(t_result);
+    hmac_sha1(t_key,3,t_data,5,t_result,&amp;t_len);
+    int t_i;
+    for(t_i=0;t_i&lt;t_len;t_i++)
+        printf("%x ",t_result[t_i]);
+    return 0;
+}
+</pre>
+
+<p>编译的makefile很简单：</p>
+
+<pre>main: main.o hmac_sha1.o
+	gcc main.o hmac_sha1.o -lcrypto -o main
+
+main.o: main.c
+	gcc -c main.c -o main.o
+
+hmac_sha1.o: hmac_sha1.c
+	gcc -c hmac_sha1.c -o hmac_sha1.o
+</pre>
+
+<p>运行结果是：</p>
+
+<pre>b3 4c ea c4 51 6f f2 3a 14 3e 61 d7 9d f a7 a4 fb e5 f2 66
+</pre>
+
+<p>以下就是该项目的源码，共hmac.h、hmac_sha1.c两个文件。</p>
+
+<p>hmac.h</p>
+
+<pre>/**
+* @file re_hmac.h  Interface to HMAC functions
+*
+* Copyright (C) 2010 Creytiv.com
+*/
+
+#ifndef HMAC_H_
+#define HMAC_H_ (1)
+
+#include &lt;stdint.h&gt;
+
+void hmac_sha1(const uint8_t *k,   /* secret key */
+        size_t lk,  /* length of the key in bytes */
+        const uint8_t *d,   /* data */
+        size_t ld,  /* length of data in bytes */
+        uint8_t *out, /* output buffer, at least "t" bytes */
+        size_t *t);
+
+#endif // HMAC_H_
+</pre>
+
+<p>hmac_sha1.c</p>
+
+<pre>/**
+* @file hmac_sha1.c  Implements HMAC-SHA1 as of RFC 2202
+*
+* Copyright (C) 2010 Creytiv.com
+*/
+#include &lt;string.h&gt;
+#include &lt;stdint.h&gt;
+
+#include &lt;openssl/sha.h&gt;
+#include &lt;openssl/hmac.h&gt;
+#include &lt;openssl/err.h&gt;
+
+#include "hmac.h"
+
+
+/** SHA-1 Block size */
+#ifndef SHA_BLOCKSIZE
+#define SHA_BLOCKSIZE   (64)
+#endif
+
+
+/**
+* Function to compute the digest
+*
+* @param k   Secret key
+* @param lk  Length of the key in bytes
+* @param d   Data
+* @param ld  Length of data in bytes
+* @param out Digest output
+* @param t   Size of digest output
+*/
+void hmac_sha1(const uint8_t *k,  /* secret key */
+        size_t lk,       /* length of the key in bytes */
+        const uint8_t *d,  /* data */
+        size_t ld,       /* length of data in bytes */
+        uint8_t *out,      /* output buffer, at least "t" bytes */
+        size_t *t) {
+#ifdef USE_OPENSSL
+
+	if (!HMAC(EVP_sha1(), k, (int)lk, d, ld, out, t)) {
+		ERR_clear_error();
+	}
+#else
+    SHA_CTX ictx, octx;
+    uint8_t isha[SHA_DIGEST_LENGTH], osha[SHA_DIGEST_LENGTH];
+    uint8_t key[SHA_DIGEST_LENGTH];
+    uint8_t buf[SHA_BLOCKSIZE];
+    size_t i;
+
+    if (lk &gt; SHA_BLOCKSIZE) {
+        SHA_CTX tctx;
+
+        SHA1_Init(&amp;tctx);
+        SHA1_Update(&amp;tctx, k, lk);
+        SHA1_Final(key, &amp;tctx);
+
+        k = key;
+        lk = SHA_DIGEST_LENGTH;
+    }
+
+    /**** Inner Digest ****/
+
+    SHA1_Init(&amp;ictx);
+
+    /* Pad the key for inner digest */
+    for (i = 0; i &lt; lk; ++i) {
+        buf[i] = k[i] ^ 0x36;
+    }
+    for (i = lk; i &lt; SHA_BLOCKSIZE; ++i) {
+        buf[i] = 0x36;
+    }
+
+    SHA1_Update(&amp;ictx, buf, SHA_BLOCKSIZE);
+    SHA1_Update(&amp;ictx, d, ld);
+
+    SHA1_Final(isha, &amp;ictx);
+
+    /**** Outer Digest ****/
+
+    SHA1_Init(&amp;octx);
+
+    /* Pad the key for outter digest */
+
+    for (i = 0; i &lt; lk; ++i) {
+        buf[i] = k[i] ^ 0x5c;
+    }
+    for (i = lk; i &lt; SHA_BLOCKSIZE; ++i) {
+        buf[i] = 0x5c;
+    }
+
+    SHA1_Update(&amp;octx, buf, SHA_BLOCKSIZE);
+    SHA1_Update(&amp;octx, isha, SHA_DIGEST_LENGTH);
+
+    SHA1_Final(osha, &amp;octx);
+
+    /* truncate and print the results */
+    *t = *t &gt; SHA_DIGEST_LENGTH ? SHA_DIGEST_LENGTH : *t;
+    memcpy(out, osha, *t);
+#endif
+}
+</pre>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>
