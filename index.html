@@ -2,235 +2,94 @@
 	<head>
 		<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
 		<title>博观而约取 厚积而薄发</title>
-		<script>
-			function viewArticle(a)
-			{
-				var data=a.parentNode.parentNode.children[1].innerHTML;
-				var year=data.substring(0,4);
-				var title=a.innerHTML;
-				var url="./articles/"+year+"/"+title+"/index.html";
-				window.open(url);
-			}
-		</script>
 	</head>
 	<body>
-		<table>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">四通道遥控收发模块的设计与实现——基于315Mhz与51单片机</a></td>
-				<td>2016年05月20日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">OpenSCAD 螺旋桨（空气桨）的构造</a></td>
-				<td>2016年05月16日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">STM32F10x系列ADC的使用（二）——多通道ADC</a></td>
-				<td>2016年05月08日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">STM32F10x系列ADC的使用（一）——单通道ADC</a></td>
-				<td>2016年05月07日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">STM32F10x 通过DMA读写串口</a></td>
-				<td>2016年04月21日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">使用J-Link为STM32F103下载程序</a></td>
-				<td>2016年04月19日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">Arduino使用NRF24L01无线模块</a></td>
-				<td>2016年04月12日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">51单片机使用SPI总线</a></td>
-				<td>2016年04月10日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">51单片机使用ADXL345加速度传感器模块</a></td>
-				<td>2016年04月07日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">51单片机使用I2C总线</a></td>
-				<td>2016年04月03日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">安装完CentOS 7后恢复Windows 7启动项</a></td>
-				<td>2016年03月25日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">无线网络WPA2加密的破解</a></td>
-				<td>2016年03月22日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">pbkdf2-shaX摘要算法以及C语言实现</a></td>
-				<td>2016年03月20日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">hmac-sha1摘要算法以及C语言实现</a></td>
-				<td>2016年03月19日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">Arduino使用ADXL345加速度传感器模块</a></td>
-				<td>2016年03月17日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">双向联想存储器BAM（三）——多重训练，减小误差</a></td>
-				<td>2016年03月15日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">双向联想存储器BAM（二）——实现与实验</a></td>
-				<td>2016年03月14日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">双向联想存储器BAM（一）——概述</a></td>
-				<td>2016年03月13日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">C语言实现简易矩阵运算函数库</a></td>
-				<td>2016年03月09日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">STM32F0与STM32F1系列串口的使用</a></td>
-				<td>2016年02月26日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">Android 关闭屏幕的同时禁止硬件进入休眠</a></td>
-				<td>2016年02月23日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">无线网络WEP加密的破解</a></td>
-				<td>2016年02月17日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">RC4加密算法</a></td>
-				<td>2016年02月15日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">构造并发送Beacon帧以伪造任意WiFi热点</a></td>
-				<td>2016年02月04日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">STC12C520xAD系列单片机的ADC封装，像Arduino一样方便读引脚电压</a></td>
-				<td>2016年01月27日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">针对51单片机的315Mhz无线模块协议与软件的改进</a></td>
-				<td>2016年01月26日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">TinyPDF——各种文件格式转换成PDF的通用方法</a></td>
-				<td>2016年01月20日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">自创一种串行传输方式，并使用51单片机驱动315Mhz无线模块来传输数据</a></td>
-				<td>2016年01月17日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">焊接ESP8266-12-F芯片完成最小系统</a></td>
-				<td>2016年01月10日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">为51单片机打造带接收缓冲区的串口（Buffered Uart）</a></td>
-				<td>2016年01月10日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">用C语言宏批量生成代码的思考与实现</a></td>
-				<td>2016年01月09日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">让51单片机也像Arduino那样方便灵活地读写引脚</a></td>
-				<td>2016年01月08日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">STM32F030系列时钟设置</a></td>
-				<td>2016年01月07日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">STM32初学之闪烁LED——以Cortex-M0核心的STM32F030F4P6为例</a></td>
-				<td>2016年01月06日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">PHP发送最简邮件</a></td>
-				<td>2016年01月04日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">搭建51单片机最小系统——以STC12C2052为例</a></td>
-				<td>2015年12月28日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">ESP8266串口Wifi模块的基本用法</a></td>
-				<td>2015年12月23日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">ESP8266串口Wifi模块固件烧写与激活</a></td>
-				<td>2015年12月21日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">Arduino软件串口库的使用</a></td>
-				<td>2015年12月06日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">从零开始构建最简树莓派linux</a></td>
-				<td>2015年11月09日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">树莓派linux内核编译与升级</a></td>
-				<td>2015年11月05日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">Linux挂载img磁盘镜像文件</a></td>
-				<td>2015年11月02日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">IBM ThinkPad X40通过U盘安装XP</a></td>
-				<td>2015年10月23日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">修改Teeworlds源码，实现自动瞄准（Aimbot）</a></td>
-				<td>2015年10月18日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">Android广播机制之静态注册与动态注册BroadcastReceiver的区别</a></td>
-				<td>2015年10月09日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">Windows下发送Ctrl+C信号优雅地中断进程</a></td>
-				<td>2015年09月26日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">Java获取PPT文件某一张幻灯片的截图</a></td>
-				<td>2015年09月22日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">调试x86实模式代码的好方法</a></td>
-				<td>2015年08月26日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">x86裸机HelloWorld</a></td>
-				<td>2015年08月23日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">从零开始构建linux（三）——文件系统与以太网</a></td>
-				<td>2015年08月17日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">从零开始构建linux（二）——制作U盘linux</a></td>
-				<td>2015年08月12日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">从零开始构建linux（一）——编译linux内核</a></td>
-				<td>2015年07月24日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">LCD1602的使用</a></td>
-				<td>2015年07月01日</td>
-			</tr>
-			<tr>
-				<td><a href="javascript:;" onclick="viewArticle(this)">上拉电阻的作用</a></td>
-				<td>2015年06月30日</td>
+		<ul style="display:none">
+			<li>2016年05月20日 四通道遥控收发模块的设计与实现——基于315Mhz与51单片机</li>
+			<li>2016年05月16日 OpenSCAD 螺旋桨（空气桨）的构造</li>
+			<li>2016年05月08日 STM32F10x系列ADC的使用（二）——多通道ADC</li>
+			<li>2016年05月07日 STM32F10x系列ADC的使用（一）——单通道ADC</li>
+			<li>2016年04月21日 STM32F10x 通过DMA读写串口</li>
+			<li>2016年04月19日 使用J-Link为STM32F103下载程序</li>
+			<li>2016年04月12日 Arduino使用NRF24L01无线模块</li>
+			<li>2016年04月10日 51单片机使用SPI总线</li>
+			<li>2016年04月07日 51单片机使用ADXL345加速度传感器模块</li>
+			<li>2016年04月03日 51单片机使用I2C总线</li>
+			<li>2016年03月25日 安装完CentOS 7后恢复Windows 7启动项</li>
+			<li>2016年03月22日 无线网络WPA2加密的破解</li>
+			<li>2016年03月20日 pbkdf2-shaX摘要算法以及C语言实现</li>
+			<li>2016年03月19日 hmac-sha1摘要算法以及C语言实现</li>
+			<li>2016年03月17日 Arduino使用ADXL345加速度传感器模块</li>
+			<li>2016年03月15日 双向联想存储器BAM（三）——多重训练，减小误差</li>
+			<li>2016年03月14日 双向联想存储器BAM（二）——实现与实验</li>
+			<li>2016年03月13日 双向联想存储器BAM（一）——概述</li>
+			<li>2016年03月09日 C语言实现简易矩阵运算函数库</li>
+			<li>2016年02月26日 STM32F0与STM32F1系列串口的使用</li>
+			<li>2016年02月23日 Android 关闭屏幕的同时禁止硬件进入休眠</li>
+			<li>2016年02月17日 无线网络WEP加密的破解</li>
+			<li>2016年02月15日 RC4加密算法</li>
+			<li>2016年02月04日 构造并发送Beacon帧以伪造任意WiFi热点</li>
+			<li>2016年01月27日 STC12C520xAD系列单片机的ADC封装，像Arduino一样方便读引脚电压</li>
+			<li>2016年01月26日 针对51单片机的315Mhz无线模块协议与软件的改进</li>
+			<li>2016年01月20日 TinyPDF——各种文件格式转换成PDF的通用方法</li>
+			<li>2016年01月17日 自创一种串行传输方式，并使用51单片机驱动315Mhz无线模块来传输数据</li>
+			<li>2016年01月10日 焊接ESP8266-12-F芯片完成最小系统</li>
+			<li>2016年01月10日 为51单片机打造带接收缓冲区的串口（Buffered Uart）</li>
+			<li>2016年01月09日 用C语言宏批量生成代码的思考与实现</li>
+			<li>2016年01月08日 让51单片机也像Arduino那样方便灵活地读写引脚</li>
+			<li>2016年01月07日 STM32F030系列时钟设置</li>
+			<li>2016年01月06日 STM32初学之闪烁LED——以Cortex-M0核心的STM32F030F4P6为例</li>
+			<li>2016年01月04日 PHP发送最简邮件</li>
+			<li>2015年12月28日 搭建51单片机最小系统——以STC12C2052为例</li>
+			<li>2015年12月23日 ESP8266串口Wifi模块的基本用法</li>
+			<li>2015年12月21日 ESP8266串口Wifi模块固件烧写与激活</li>
+			<li>2015年12月06日 Arduino软件串口库的使用</li>
+			<li>2015年11月09日 从零开始构建最简树莓派linux</li>
+			<li>2015年11月05日 树莓派linux内核编译与升级</li>
+			<li>2015年11月02日 Linux挂载img磁盘镜像文件</li>
+			<li>2015年10月23日 IBM ThinkPad X40通过U盘安装XP</li>
+			<li>2015年10月18日 修改Teeworlds源码，实现自动瞄准（Aimbot）</li>
+			<li>2015年10月09日 Android广播机制之静态注册与动态注册BroadcastReceiver的区别</li>
+			<li>2015年09月26日 Windows下发送Ctrl+C信号优雅地中断进程</li>
+			<li>2015年09月22日 Java获取PPT文件某一张幻灯片的截图</li>
+			<li>2015年08月26日 调试x86实模式代码的好方法</li>
+			<li>2015年08月23日 x86裸机HelloWorld</li>
+			<li>2015年08月17日 从零开始构建linux（三）——文件系统与以太网</li>
+			<li>2015年08月12日 从零开始构建linux（二）——制作U盘linux</li>
+			<li>2015年07月24日 从零开始构建linux（一）——编译linux内核</li>
+			<li>2015年07月01日 LCD1602的使用</li>
+			<li>2015年06月30日 上拉电阻的作用</li>
+		</ul>
+		<table id="articles">
+			<tr id="rowExample" style="display:none">
+				<td id="index"></td>
+				<td><a id="title"></a></td>
+				<td id="date"></td>
 			</tr>
 		</table>
 	</body>
+	<script src="jquery.js"></script>
+	<script>
+		$(document).ready(function()
+		{
+			var lis=$("li");
+			for(var i=0;i<lis.length;i++)
+			{
+				var info=lis.eq(i).html();
+				var index=info.indexOf(" ");
+				if(index<0)
+					continue;
+				var date=info.substring(0,index);
+				var title=info.substring(index+1);
+				$("#index").html(lis.length-i);
+				$("#title").html(title);
+				$("#date").html(date);
+				var year=date.substring(0,4);
+				$("#title").attr("href","./articles/"+year+"/"+title+"/index.html");
+				var row=$("#rowExample").clone();
+				row.show();
+				$("#articles").append(row);
+			}
+		});
+	</script>
 </html>
