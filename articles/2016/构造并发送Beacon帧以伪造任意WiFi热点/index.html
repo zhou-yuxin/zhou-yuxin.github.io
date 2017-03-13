@@ -1,0 +1,719 @@
+﻿?<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>构造并发送Beacon帧以伪造任意WiFi热点</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">构造并发送Beacon帧以伪造任意WiFi热点</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>请想象一下这样的情景：你可以任意伪造很多个WiFi热点，然后穿梭在人群中，你身边的人搜索WiFi热点时，满屏幕都是你伪造的WiFi热点，比如这样：</p>
+
+<p><img src="1.png"></p>
+
+<p>（上图中“1.此广告位招租” “2.楼上是傻逼” “3.嫁人就嫁程序员”三个热点就是我伪造的）</p>
+
+<p>你可以用这种技术来广播各种信息，比如表白或求炮友咳咳。当然，这些接入点是无法连接上的，因为它们都是假的！</p>
+
+<p>想知道这是怎么做到的吗？ 那就一步步跟着学吧～</p>
+
+<p>对了，先说明一下，这个技术只能在linux上使用，而且对无线网卡也有一定的挑剔，具体的下面会讲～</p>
+
+<p>=====================阶段一：基本原理===================</p>
+
+<p>首先需要搞清楚的是，手机、电脑等支持WiFi的设备，是如何得知周围无线热点的存在的？无线热点（通常就是无线路由器）会周期性地向外发送Beacon帧，中文名为信标帧。信标帧一个最重要的作用就是宣示无线网络的存在（但不仅仅这个作用）。</p>
+
+<p>信标帧里面包含了该无线热点的一些基本信息，比如ESSID（也就是常说的网络名称，比如上图中的“1.此广告位招租”）、BSSID（接入点的MAC地址）、加密方式（比如开放无密码、WEP加密或者WPA/WPA2加密）、支持的传输速率等等。</p>
+
+<p>当无线设备接收到信标帧之后，就能得知周围这个接入点的存在。那么，如果我能够构造一个Beacon帧并且发送出去，那么无线设备收到以后也一样会认为存在这么一个热点。那么当我构造很多个Beacon帧，每个帧都宣示一个接入点，并且周期性地发送这些帧，那么无线设备就会以为周边存在很多个接入点。</p>
+
+<p>这就是伪造任意WiFi热点的基本原理。</p>
+
+<p>====================阶段二：熟悉Beacon帧格式=================</p>
+
+<p>那么接下来的目标就很明晰了——构造Beacon帧。要构造Beacon帧，就得知道一个Beacon帧的格式。而在给出Beacon帧的格式之前，需要先说明一下802.11管理帧的通用格式：</p>
+
+<p><img src="2.png"></p>
+
+<p>格式中每一个字段上面的数字是指该字段占用的字节数，比如Frame Control占用2字节，Destination Address占用6字节等等。</p>
+
+<p>一、Frame Control，中文名为帧控制字段，占2个字节，各个位的定义如下：</p>
+
+<p><img src="3.png"></p>
+
+<p>（1）Protocol字段由两位构成，用以显示该帧所使用的版本号。目前802.11只有一个版本，编号为0。所以Protocol的值是00。</p>
+
+<p>（2）Type字段由两位构成，Sub type字段由4位构成。802.11帧共有三种类型的帧，分别是管理帧、控制帧与数据帧。而每种类型又分为多种子类型。Beacon帧的Type字段值为00（管理帧），而Sub type字段值为1000。</p>
+
+<p>（3）To DS位与From DS位用来指示帧的目的地是否为分布式系统，定义如下：</p>
+
+<table>
+<tbody>
+<tr>
+<th>To DS</th>
+<th>From DS</th>
+<th>含义</th>
+</tr>
+<tr>
+<td>0</td>
+<td>0</td>
+<td>所有管理与控制帧、非基础结构型数据帧</td>
+</tr>
+<tr>
+<td>0</td>
+<td>1</td>
+<td>基础结构型网络里无线工作站所收到的数据帧</td>
+</tr>
+<tr>
+<td>1</td>
+<td>0</td>
+<td>基础结构型网络里无线工作站所传送的数据帧</td>
+</tr>
+<tr>
+<td>1</td>
+<td>1</td>
+<td>无线桥接器上的数据帧</td>
+</tr>
+</tbody>
+</table>
+<p>由于Beacon帧属于管理帧，所以To DS与From DS都是0。</p>
+
+<p>（4）Mor Fragments位，类似于IP分包的more fragments位。因为802.11帧对负载有长度限制，所以当上层传入很大的数据时，需要分段传送。Beacon帧不需要分段，所以该位为0。</p>
+
+<p>（5）Retry位。有时需要重传帧，任何重传的帧都要将此位置为1，否则为0。Beacon帧不存在重传的情况，所以该位为0。</p>
+
+<p>（6）Power Management位。很多无线设备是以电池供电的，比如手机。当没有数据流量时，关闭无线发射器可以延长电池的使用时间。如果无线设备要把该位置为1，那么就意味着这个帧（或者这次数据交换）传送完成之后，无线设备将进入省电模式。由于接入点是不允许进入省电模式的，所以Beacon帧的该位为0。</p>
+
+<p>（7）More data位。为了服务处于省电模式中的无线设备，接入点会将那些要传给无线设备的帧加以缓存。如果无线设备从省电模式中醒来之后，收到一个帧中发现该位置1，说明接入点还有更多的缓存的数据要发送给无线设备。如果只是为了伪造Beacon帧的话，那么这一位一直为0即可。</p>
+
+<p>（8）Protected Frame位如果被置为1的话，则说明该帧是受到链路层安全协议的保护的，比如WEP和WPA/WPA2。Beacon管理帧是不需要加密的，所以为0。</p>
+
+<p>（9）Order位如果被置位，那么就表明帧进入了严格依次传送模式，不过发送端与接收端必须付出额外的代价。Beacon帧的该位为0。</p>
+
+<p>由此可得，我们构造的Beacon帧的Frame Control字段为0×80 0×00（按图中的顺序就是00000001,00000000，考虑高位在后，那么就是二进制的10000000,00000000，即0×80 0×00）。</p>
+
+<p>二、Duration字段在802.11帧中用来预约媒介占用时间。简单来说就是，每一个帧都会通过Duration字段来告知所有的无线设备：“我还要占用媒介多长时间！”。Duration字段保障了一系列原子操作不被打断，当然，前提是大家都遵守802.11协议～而Beacon帧属于广播，没有后续数据交互，所以其Duration为0，即0×00 0×00。</p>
+
+<p>三、Destination Address即为目的地址，为接收端的MAC地址。由于Beacon帧是广播帧，所以目的地址就是广播地址，即FF:FF:FF:FF:FF:FF。</p>
+
+<p>四、Source Address即为源地址，为发送端的MAC地址。发送端地址通常就是接入点的MAC地址，但是也有例外，比如中间加了一个中继器，那么发送端的MAC地址就是中继器的地址了。</p>
+
+<p>五、BSSID就是接入点的MAC地址了。</p>
+
+<p>六、Seq-ID（Sequence Control）字段中文名为顺序控制字段，它的低4位是分段编号，而高12位为顺序编号。帧片段之间的差异在于分段编号。第一个片段的编号为0，其后每个片段的分段编号依次加以，而它们的顺序编号相同。除了最后一个分段，所有分段的More data位都置位。由于Beacon帧通常不分段，所以低4位为0000，高12位为顺序编号。</p>
+
+<p>七、Frame body即为帧主体。如果该帧是数据帧，那么帧主题就是数据的有效载荷，如果是管理帧，那么通常是各种信息元素（将在下面讲解）。</p>
+
+<p>八、FCS，中文名帧校验序列，通常就是循环冗余校验码CRC。</p>
+
+<p>===================阶段三：熟悉Beacon帧主体===================</p>
+
+<p>从上面的分析中可以看出，最重要的内容还是包含在Frame body中。管理帧的Frame body有若干信息元素构成。信息元素有固定长度的信息元素与可变长度的信息元素构成。固定长度的信息元素占用的字节数固定，比如Timestamp固定占用8字节。而可变长度的信息元素占用的字节数不确定，比如Beacon帧中表示网络名称的ESSID。信息元素也可分为必选信息元素与可选信息元素，Beacon帧的格式详见下图（引用自《802.11无线网络权威指南 第二版》）：</p>
+
+<p><img src="4.jpg"></p>
+
+<p>很复杂不是吗？既然我们只是要构造一个符合条件的，那么就从简处理，构造最简的Frame body即可，那么只需要包含必选的四个信息元素即可：Timestamp、Beacon interval、Capability info和SSID。</p>
+
+<p>一、Timestamp，占用8字节的时间戳可用来同步BSS中的无线设备。BSS的主定时器会定期传送目前已运行的微秒数。当计数器达到最大值时就会从0开始计数。对于长64位、可计数超过58万年的计数器，要从头开始计数，呵呵。</p>
+
+<p>二、Beacon interval，占用2字节，用来设定Beacon信号之间相隔多少时间单位。时间单位通常缩写为TU，代表1024微秒。Beacon interval通常会被设定为100个TU，大约每0.1秒发送一次Beacon信号。</p>
+
+<p>三、Capability info共16位，用来告知网络具备何种性能。每一个位各自代表一个标记，对应到网络所具备的某种特殊功能。工作站会使用这些通告数据来判断自己是否支持该BSS所有的功能。未实现性能通告中所有功能的工作站就无法加入该BSS。各位的定义如下（引用自《802.11无线网络权威指南 第二版》）：</p>
+
+<p><img src="5.png"></p>
+
+<p>（1）ESS置位则表示该网络是一个扩展服务集的基本结构型，也就是接入点通常创建的网络。IBSS与ESS互斥，如果IBSS置位，则该网络是独立基本服务器网络，也就是常说的无线网卡直连。</p>
+
+<p>（2）CF-Pollable与CF-Poll request为无竞争-轮询位，表示与省电模式相关的功能。工作站从省电模式醒来之后，可以向工作站轮询是否有缓存的帧。Poll即轮询的意思。对于接入点而言，这两位的组合代表的含义如下表：</p>
+
+<table>
+<tbody>
+<tr>
+<th>CF-Pollable</th>
+<th>CF-Poll Request</th>
+<th>含义</th>
+</tr>
+<tr>
+<td>0</td>
+<td>0</td>
+<td>接入点并未支持点协调功能（point coordination function）</td>
+</tr>
+<tr>
+<td>0</td>
+<td>1</td>
+<td>接入点使用PCF来传递，但并不支持轮询</td>
+</tr>
+<tr>
+<td>1</td>
+<td>0</td>
+<td>接入点使用PCF来传递与轮询</td>
+</tr>
+<tr>
+<td>1</td>
+<td>1</td>
+<td>保留，尚未使用</td>
+</tr>
+</tbody>
+</table>
+<p>（3）Privacy，保密性。如果将Privacy位设定为0，并且接下来没有WPA信息元素，那么该无线网络即为开放无密码。如果将该为设定为1，代表需要使用WEP以维持机密性。</p>
+
+<p>（4）Short Preamble，短前导码，802.11b规范新增此字段是为了支持高速直接序列扩频物理层。设定为1，代表此网络目前使用短前导码。0代表不使用此选型，并且在该BSS中禁止使用短前导码。802.11g规定使用短前导码，因此在依据802.11g标准所构建的网络中，此字段必须为1。</p>
+
+<p>（5）PBCC，封包二进制回旋码，802.11b规范新增此字段是为了支持高速直接序列扩频物理层。设定为1，代表此网络目前使用封包二进制回旋码调制机制，0代表不使用此选项并且在该BSS中禁止使用封包二进制回旋码。</p>
+
+<p>（6）Channel Agility，机动信道转换，此字段加入802.11b规范是为了支持高速直接序列扩频物理层。设定为1，代表此网络使用机动信道转换选项，0代表不使用此选项并且在该BSS中禁止使用机动信道转换。</p>
+
+<p>（7）Short Slot Time，该选项是802.11g规范新增的，设定为1代表使用较短的时隙。</p>
+
+<p>（8）DSSS-OFDM，该选项是802.11g规范新增的，设定为1代表使用DSSS-OFDM帧构造。</p>
+
+<p>如果我们要构造一个最简的Beacon帧，Capability info字段可以设为0×01 0×00，如果要变成WEP加密的，那么就可以设为0×11 0×00，当然，很多选项选不选无所谓。</p>
+
+<p>四、SSID，服务集标识符，是一个可变长的信息元素，也就是通常说的网络名称。可变长的信息元素的通用格式为：</p>
+
+<p><img src="6.png"></p>
+
+<p>而SSID的Element ID是0。有些文档将SSID视为网络名称，因为网管人员通常以字符串来指定SSID。其实，SSID不过是由字节所形成的字符串，用来标示所属网络的BSSID。有些产品要求此字符串必须是以null（即0）结尾的ASCII字符串，虽然标准对此并无特别规范。SSID的长度介于0至32个字节之间。假如要伪造的热点的名词为“hello”，那么这个元素就应该为0,5,’h’,’e’,’l’,’l’,’o’。</p>
+
+<p>===================阶段四：编写代码构造Beacon帧=================</p>
+
+<p>由此，我们已经弄清了一个最简Beacon帧的每个细节，除了最后的校验码FCS。让我们来总结一下最后的Beacon帧的样子吧～举个例子，我想伪造一个开放的、名为”hello,carrot!”的、接入点MAC地址为ec:17:2f:2d:b6:b8的接入点，那么最简的Beacon帧应该这样：</p>
+
+<table>
+<tbody>
+<tr>
+<th>字段</th>
+<th>值</th>
+</tr>
+<tr>
+<td>Frame Control</td>
+<td>0×80 0×00</td>
+</tr>
+<tr>
+<td>Duration</td>
+<td>0×00 0×00</td>
+</tr>
+<tr>
+<td>Destination Address</td>
+<td>0xFF 0xFF 0xFF 0xFF 0xFF 0xFF</td>
+</tr>
+<tr>
+<td>Source Address</td>
+<td>0xEC 0×17 0x2F 0x2D 0xB6 0xB8</td>
+</tr>
+<tr>
+<td>BSSID</td>
+<td>0xEC 0×17 0x2F 0x2D 0xB6 0xB8</td>
+</tr>
+<tr>
+<td>Seq-ID</td>
+<td>低4位：0×0，高12位：帧序号</td>
+</tr>
+<tr>
+<td>Timestamp</td>
+<td>当前运行的微秒数</td>
+</tr>
+<tr>
+<td>Beacon interval</td>
+<td>0×64 0×00（100）</td>
+</tr>
+<tr>
+<td>Capability info</td>
+<td>0×01 0×00</td>
+</tr>
+<tr>
+<td>SSID</td>
+<td>0×00 0x0D ‘h’ ‘e’ ‘l’ ‘l’ ‘o’ ‘,’ ‘c’ ‘a’ ‘r’ ‘r’ ‘o’ ‘t’ ‘!’</td>
+</tr>
+<tr>
+<td>FCS</td>
+<td>循环冗余校验码，幸好驱动程序会自行计算</td>
+</tr>
+</tbody>
+</table>
+<p>很简洁吧～</p>
+
+<p>为了实现一定的动态性，有必要定义一个结构体，那么就来看看代码的实现吧～</p>
+
+<p>首先是一个接入点结构体的定义：</p>
+
+<pre>struct ap
+{
+    uint8 bssid[6];
+    uint16 seq_id;
+    uint8 essid_len;
+    char essid[32];
+};
+</pre>
+
+<p>然后是struct ap的初始化函数：</p>
+
+<pre>void init_ap(struct ap* p_ap,uint8* p_bssid,char* p_essid)
+{
+    memcpy(p_ap-&gt;bssid,p_bssid,6);
+    p_ap-&gt;seq_id=0;
+    uint32 t_len=strlen(p_essid);
+    if(t_len&gt;32)
+        t_len=32;
+    p_ap-&gt;essid_len=t_len;
+    memcpy(p_ap-&gt;essid,p_essid,t_len);
+}</pre>
+
+<p>最后是根据struct ap来构造beacon帧的函数：</p>
+
+<pre>uint16 create_beacon_frame(uint8* p_buffer,struct ap* p_ap)
+{
+    memcpy(p_buffer,"x80x00x00x00xFFxFFxFFxFFxFFxFF",10);
+    memcpy(p_buffer+10,p_ap-&gt;bssid,6);
+    memcpy(p_buffer+16,p_ap-&gt;bssid,6);
+    p_buffer[22]=(uint8)(p_ap-&gt;seq_id&amp;0xFF);
+    p_buffer[23]=(uint8)((p_ap-&gt;seq_id&gt;&gt;8)&amp;0xFF);
+    p_ap-&gt;seq_id+=0x10;
+    struct timeval t_time;
+    gettimeofday(&amp;t_time,0);
+    uint64 t_timestamp=((uint64)t_time.tv_sec)*1000000+t_time.tv_usec;
+    uint8 t_i;
+    for(t_i=0;t_i&lt;8;t_i++)
+         p_buffer[24+t_i]=(uint8)((t_timestamp&gt;&gt;(t_i&lt;&lt;3))&amp;0xFF);
+    memcpy(p_buffer+32,"x64x00x01x00",4);
+    p_buffer[36]=0;
+    p_buffer[37]=p_ap-&gt;essid_len;
+    memcpy(p_buffer+38,p_ap-&gt;essid,p_ap-&gt;essid_len);
+    return 38+p_ap-&gt;essid_len;
+}</pre>
+
+<p>至于使用方法嘛，如下：</p>
+
+<pre>struct ap t_ap;
+init_ap(&amp;t_ap,(uint8*)"xECx17x2Fx2DxB6xB8","zjs");
+uint8 t_buffer[256];
+uint16 t_len=create_beacon_frame(t_buffer,&amp;t_ap);
+</pre>
+
+<p>这样就能在t_buffer中生成一个MAC地址为ec:17:2f:2d:b6:b8、名为zjs的beacon帧了。</p>
+
+<p>======================阶段五：发送Beacon帧====================</p>
+
+<p>构造了beacon帧，就差发送了。你以为直接创建一个socket就能发送了？太天真了！发送这一步真不简单啊，我也是看了aircrack-ng套件中的源码才知道怎么发送的。要让无线网卡发送原始的802.11帧，首先需要把无线网卡设置为monitor模式。把无线网卡设置为monitor模式可以使用ifconfig与iwconfig命令，当然，如果你想自己代码实现，可以参考ifconfig与iwconfig命令的源码。</p>
+
+<pre>ifconfig wlan0 down
+iwconfig wlan0 mode monitor
+ifconfig wlan0 up
+</pre>
+
+<p>以上三句命令，依次是关闭wlan0、将wlan0设置为monitor模式和开启wlan0，记得要有管理员权限。</p>
+
+<p>设置为monitor模式之后，需要在自己的代码中创建绑定了wlan0的链路层原始套接字，次序依次为创建链路层套接字、找出wlan0的网卡编号、将原始套接字与wlan0绑定、将原始套接字设置为混杂模式，代码如下：</p>
+
+<pre>int32 create_raw_socket(char* p_iface)
+{
+    /* new raw socket */
+    int32 t_socket=socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL));
+    if(t_socket&lt;0)
+    {
+        perror("&lt;create_raw_socket&gt; socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL)) failed!");
+        return -1;
+    }
+    /* get the index of the interface */
+    struct ifreq t_ifr;
+    memset(&amp;t_ifr,0,sizeof(t_ifr));
+    strncpy(t_ifr.ifr_name,p_iface,sizeof(t_ifr.ifr_name)-1);
+    if(ioctl(t_socket,SIOCGIFINDEX,&amp;t_ifr)&lt;0)
+    {
+        perror("&lt;create_raw_socket&gt; ioctl(SIOCGIFINDEX) failed!");
+        return -1;
+    }
+    /* bind the raw socket to the interface */
+    struct sockaddr_ll t_sll;
+    memset(&amp;t_sll,0,sizeof(t_sll));
+    t_sll.sll_family=AF_PACKET;
+    t_sll.sll_ifindex=t_ifr.ifr_ifindex;
+    t_sll.sll_protocol=htons(ETH_P_ALL);
+    if(bind(t_socket,(struct sockaddr*)&amp;t_sll,sizeof(t_sll))&lt;0)
+    {
+        perror("&lt;create_raw_socket&gt; bind(ETH_P_ALL) failed!");
+        return -1;
+    }
+    /* open promisc */
+    struct packet_mreq t_mr;
+    memset(&amp;t_mr,0,sizeof(t_mr));
+    t_mr.mr_ifindex=t_sll.sll_ifindex;
+    t_mr.mr_type=PACKET_MR_PROMISC;
+    if(setsockopt(t_socket,SOL_PACKET,PACKET_ADD_MEMBERSHIP,&amp;t_mr,sizeof(t_mr))&lt;0)
+    {
+        perror("&lt;create_raw_socket&gt; setsockopt(PACKET_MR_PROMISC) failed!");
+        return -1;
+    }
+    return t_socket;
+}
+</pre>
+
+<p>参数里的p_iface通常就是&#8221;wlan0″。</p>
+
+<p>开启了monitor模式，又创建了原始套接字，是不是就能直接发送t_buffer了呢？too young too simple!还差一个radiotap头！我当时就被这个坑的不轻啊，后来看了aireply-ng的源码，又抓包，又百度，才大致明白radiotap的作用。在抓包的过程中，无线网卡会附上一个radiotap头，以展现与物理层有关的信息，比如功率、速率。而在发包的过程中，radiotap给无线网卡一定的参考信息。</p>
+
+<p>附加radiotap头并且发送数据包的函数如下：</p>
+
+<pre>int32 send_80211_frame(int32 p_socket,uint8* p_buffer,uint32 p_size)
+{
+    uint8 t_buffer[4096];
+    uint8* t_radiotap=(uint8*)"x00x00x0dx00x04x80x02x00x02x00x00x00x00";
+    memcpy(t_buffer,t_radiotap,13);
+    memcpy(t_buffer+13,p_buffer,p_size);
+    p_size+=13;
+    int32 t_size=write(p_socket,t_buffer,p_size);
+    if(t_size&lt;0)
+    {
+        perror("&lt;send_80211_frame&gt; write() failed!");
+        return -1;
+    }
+    return t_size;
+}
+</pre>
+
+<p>可以看到就是在生成的beacon帧之前加了13个字节。</p>
+
+<p>==================阶段六：整合、检验成果=======================</p>
+
+<p>至此所有代码完成，以下是一份完整的代码：</p>
+
+<pre>#include &lt;unistd.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;netpacket/packet.h&gt;
+#include &lt;linux/if_ether.h&gt;
+#include &lt;sys/ioctl.h&gt;
+#include &lt;arpa/inet.h&gt;
+#include &lt;sys/time.h&gt;
+#include &lt;net/if.h&gt;
+
+typedef unsigned char bool;
+typedef signed char int8;
+typedef unsigned char uint8;
+typedef signed short int16;
+typedef unsigned short uint16;
+typedef signed int int32;
+typedef unsigned int uint32;
+typedef signed long long int64;
+typedef unsigned long long uint64;
+
+struct ap
+{
+    uint8 bssid[6];
+    uint16 seq_id;
+    uint8 essid_len;
+    char essid[32];
+};
+
+void init_ap(struct ap* p_ap,uint8* p_bssid,char* p_essid)
+{
+    memcpy(p_ap-&gt;bssid,p_bssid,6);
+    p_ap-&gt;seq_id=0;
+    uint32 t_len=strlen(p_essid);
+    if(t_len&gt;32)
+        t_len=32;
+    p_ap-&gt;essid_len=t_len;
+    memcpy(p_ap-&gt;essid,p_essid,t_len);
+}
+
+uint16 create_beacon_frame(uint8* p_buffer,struct ap* p_ap)
+{
+    memcpy(p_buffer,"x80x00x00x00xFFxFFxFFxFFxFFxFF",10);
+    memcpy(p_buffer+10,p_ap-&gt;bssid,6);
+    memcpy(p_buffer+16,p_ap-&gt;bssid,6);
+    p_buffer[22]=(uint8)(p_ap-&gt;seq_id&amp;0xFF);
+    p_buffer[23]=(uint8)((p_ap-&gt;seq_id&gt;&gt;8)&amp;0xFF);
+    p_ap-&gt;seq_id+=0x10;
+    struct timeval t_time;
+    gettimeofday(&amp;t_time,0);
+    uint64 t_timestamp=((uint64)t_time.tv_sec)*1000000+t_time.tv_usec;
+    uint8 t_i;
+    for(t_i=0;t_i&lt;8;t_i++)
+         p_buffer[24+t_i]=(uint8)((t_timestamp&gt;&gt;(t_i&lt;&lt;3))&amp;0xFF);
+    memcpy(p_buffer+32,"x64x00x01x00",4);
+    p_buffer[36]=0;
+    p_buffer[37]=p_ap-&gt;essid_len;
+    memcpy(p_buffer+38,p_ap-&gt;essid,p_ap-&gt;essid_len);
+    return 38+p_ap-&gt;essid_len;
+}
+
+int32 create_raw_socket(char* p_iface)
+{
+    /* new raw socket */
+    int32 t_socket=socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL));
+    if(t_socket&lt;0)
+    {
+        perror("&lt;create_raw_socket&gt; socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL)) failed!");
+        return -1;
+    }
+    /* get the index of the interface */
+    struct ifreq t_ifr;
+    memset(&amp;t_ifr,0,sizeof(t_ifr));
+    strncpy(t_ifr.ifr_name,p_iface,sizeof(t_ifr.ifr_name)-1);
+    if(ioctl(t_socket,SIOCGIFINDEX,&amp;t_ifr)&lt;0)
+    {
+        perror("&lt;create_raw_socket&gt; ioctl(SIOCGIFINDEX) failed!");
+        return -1;
+    }
+    /* bind the raw socket to the interface */
+    struct sockaddr_ll t_sll;
+    memset(&amp;t_sll,0,sizeof(t_sll));
+    t_sll.sll_family=AF_PACKET;
+    t_sll.sll_ifindex=t_ifr.ifr_ifindex;
+    t_sll.sll_protocol=htons(ETH_P_ALL);
+    if(bind(t_socket,(struct sockaddr*)&amp;t_sll,sizeof(t_sll))&lt;0)
+    {
+        perror("&lt;create_raw_socket&gt; bind(ETH_P_ALL) failed!");
+        return -1;
+    }
+    /* open promisc */
+    struct packet_mreq t_mr;
+    memset(&amp;t_mr,0,sizeof(t_mr));
+    t_mr.mr_ifindex=t_sll.sll_ifindex;
+    t_mr.mr_type=PACKET_MR_PROMISC;
+    if(setsockopt(t_socket,SOL_PACKET,PACKET_ADD_MEMBERSHIP,&amp;t_mr,sizeof(t_mr))&lt;0)
+    {
+        perror("&lt;create_raw_socket&gt; setsockopt(PACKET_MR_PROMISC) failed!");
+        return -1;
+    }
+    return t_socket;
+}
+
+int32 send_80211_frame(int32 p_socket,uint8* p_buffer,uint32 p_size)
+{
+    uint8 t_buffer[4096];
+    uint8* t_radiotap=(uint8*)"x00x00x0dx00x04x80x02x00x02x00x00x00x00";
+    memcpy(t_buffer,t_radiotap,13);
+    memcpy(t_buffer+13,p_buffer,p_size);
+    p_size+=13;
+    int32 t_size=write(p_socket,t_buffer,p_size);
+    if(t_size&lt;0)
+    {
+        perror("&lt;send_80211_frame&gt; write() failed!");
+        return -1;
+    }
+    return t_size;
+}
+
+int32 main()
+{
+    struct ap t_ap1,t_ap2;
+    init_ap(&amp;t_ap1,(uint8*)"xECx17x2Fx2DxB6xB8","zjs ap 1");
+    init_ap(&amp;t_ap2,(uint8*)"xECx17x2Fx2DxB6xB9","zjs ap 2");
+    uint8 t_buffer[1024];
+    int32 t_socket=create_raw_socket("wlan0");
+    while(1)
+    {
+        uint16 t_len=create_beacon_frame(t_buffer,&amp;t_ap1);
+        printf("%dn",send_80211_frame(t_socket,t_buffer,t_len));
+        t_len=create_beacon_frame(t_buffer,&amp;t_ap2);
+        printf("%dn",send_80211_frame(t_socket,t_buffer,t_len));
+        usleep(100000);
+    }
+    return 0;
+}
+</pre>
+
+<p>保存为~/beacon.c</p>
+
+<p>编译：</p>
+
+<pre>gcc beacon.c -o beacon
+</pre>
+
+<p>执行（要有管理员权限）：</p>
+
+<pre>ifconfig wlan0 down
+iwconfig wlan0 mode monitor
+ifconfig wlan0 up
+./beacon
+</pre>
+
+<p>执行后，控制台不断输出该帧实际写出长度，应该是不停地输出59。如果修改热点名字应该会相应改变。</p>
+
+<p><img src="7.png"></p>
+
+<p>此时，打开手机，可以搜索到wifi热点“zjs ap 1”和“zjs ap 2”。如果没有，请耐心等待一会儿。 目前在K-Touch W68a（Android 4.2.2）、iPhone 6、vivo Y22L（Android 4.3）上都能搜索到热点，以图为证：</p>
+
+<p><img src="8.jpg"></p>
+
+<p><img src="9.jpg"></p>
+
+<p><img src="10.jpg"></p>
+
+<p>当然，想玩狠一点的，比如这样：</p>
+
+<pre>#include &lt;unistd.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;netpacket/packet.h&gt;
+#include &lt;linux/if_ether.h&gt;
+#include &lt;sys/ioctl.h&gt;
+#include &lt;arpa/inet.h&gt;
+#include &lt;sys/time.h&gt;
+#include &lt;net/if.h&gt;
+
+typedef unsigned char bool;
+typedef signed char int8;
+typedef unsigned char uint8;
+typedef signed short int16;
+typedef unsigned short uint16;
+typedef signed int int32;
+typedef unsigned int uint32;
+typedef signed long long int64;
+typedef unsigned long long uint64;
+
+#define AP_COUNT 8
+
+struct ap
+{
+    uint8 bssid[6];
+    uint16 seq_id;
+    uint8 essid_len;
+    char essid[32];
+};
+
+void init_ap(struct ap* p_ap,uint8* p_bssid,char* p_essid)
+{
+    memcpy(p_ap-&gt;bssid,p_bssid,6);
+    p_ap-&gt;seq_id=0;
+    uint32 t_len=strlen(p_essid);
+    if(t_len&gt;32)
+        t_len=32;
+    p_ap-&gt;essid_len=t_len;
+    memcpy(p_ap-&gt;essid,p_essid,t_len);
+}
+uint16 create_beacon_frame(uint8* p_buffer,struct ap* p_ap)
+{
+    memcpy(p_buffer,"x80x00x00x00xFFxFFxFFxFFxFFxFF",10);
+    memcpy(p_buffer+10,p_ap-&gt;bssid,6);
+    memcpy(p_buffer+16,p_ap-&gt;bssid,6);
+    p_buffer[22]=(uint8)(p_ap-&gt;seq_id&amp;0xFF);
+    p_buffer[23]=(uint8)((p_ap-&gt;seq_id&gt;&gt;8)&amp;0xFF);
+    p_ap-&gt;seq_id+=0x10;
+    struct timeval t_time;
+    gettimeofday(&amp;t_time,0);
+    uint64 t_timestamp=((uint64)t_time.tv_sec)*1000000+t_time.tv_usec;
+    uint8 t_i;
+    for(t_i=0;t_i&lt;8;t_i++)
+         p_buffer[24+t_i]=(uint8)((t_timestamp&gt;&gt;(t_i&lt;&lt;3))&amp;0xFF);
+    memcpy(p_buffer+32,"x64x00x01x00",4);
+    p_buffer[36]=0;
+    p_buffer[37]=p_ap-&gt;essid_len;
+    memcpy(p_buffer+38,p_ap-&gt;essid,p_ap-&gt;essid_len);
+    return 38+p_ap-&gt;essid_len;
+}
+
+int32 create_raw_socket(char* p_iface)
+{
+    /* new raw socket */
+    int32 t_socket=socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL));
+    if(t_socket&lt;0)
+    {
+        perror("&lt;create_raw_socket&gt; socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL)) failed!");
+        return -1;
+    }
+    /* get the index of the interface */
+    struct ifreq t_ifr;
+    memset(&amp;t_ifr,0,sizeof(t_ifr));
+    strncpy(t_ifr.ifr_name,p_iface,sizeof(t_ifr.ifr_name)-1);
+    if(ioctl(t_socket,SIOCGIFINDEX,&amp;t_ifr)&lt;0)
+    {
+        perror("&lt;create_raw_socket&gt; ioctl(SIOCGIFINDEX) failed!");
+        return -1;
+    }
+    /* bind the raw socket to the interface */
+    struct sockaddr_ll t_sll;
+    memset(&amp;t_sll,0,sizeof(t_sll));
+    t_sll.sll_family=AF_PACKET;
+    t_sll.sll_ifindex=t_ifr.ifr_ifindex;
+    t_sll.sll_protocol=htons(ETH_P_ALL);
+    if(bind(t_socket,(struct sockaddr*)&amp;t_sll,sizeof(t_sll))&lt;0)
+    {
+        perror("&lt;create_raw_socket&gt; bind(ETH_P_ALL) failed!");
+        return -1;
+    }
+    /* open promisc */
+    struct packet_mreq t_mr;
+    memset(&amp;t_mr,0,sizeof(t_mr));
+    t_mr.mr_ifindex=t_sll.sll_ifindex;
+    t_mr.mr_type=PACKET_MR_PROMISC;
+    if(setsockopt(t_socket,SOL_PACKET,PACKET_ADD_MEMBERSHIP,&amp;t_mr,sizeof(t_mr))&lt;0)
+    {
+        perror("&lt;create_raw_socket&gt; setsockopt(PACKET_MR_PROMISC) failed!");
+        return -1;
+    }
+    return t_socket;
+}
+
+int32 send_80211_frame(int32 p_socket,uint8* p_buffer,uint32 p_size)
+{
+    uint8 t_buffer[4096];
+    uint8* t_radiotap=(uint8*)"x00x00x0dx00x04x80x02x00x02x00x00x00x00";
+    memcpy(t_buffer,t_radiotap,13);
+    memcpy(t_buffer+13,p_buffer,p_size);
+    p_size+=13;
+    int32 t_size=write(p_socket,t_buffer,p_size);
+    if(t_size&lt;0)
+    {
+        perror("&lt;send_80211_frame&gt; write() failed!");
+        return -1;
+    }
+    return t_size;
+}
+
+int32 main()
+{
+    struct ap t_aps[AP_COUNT];
+    uint32 t_i;
+    for(t_i=0;t_i&lt;AP_COUNT;t_i++)
+    {
+        uint8 t_mac[6];
+        char t_essid[32];
+        memcpy(t_mac,"xECx17x2Fx2DxB6xB0",6);
+        memcpy(t_essid,"zjs ap 0",9);
+        t_mac[5]+=t_i;
+        t_essid[7]+=t_i;
+        init_ap(&amp;t_aps[t_i],t_mac,t_essid);
+    }
+    int32 t_socket=create_raw_socket("wlan0");
+    while(1)
+    {
+        for(t_i=0;t_i&lt;AP_COUNT;t_i++)
+        {
+            uint8 t_buffer[1024];
+            uint16 t_len=create_beacon_frame(t_buffer,t_aps+t_i);
+            printf("%dn",send_80211_frame(t_socket,t_buffer,t_len));
+        }
+        usleep(100000);
+    }
+    return 0;
+}
+</pre>
+
+<p>结果可想而知，就是被刷屏咯：</p>
+
+<p><img src="11.png"></p>
+
+            
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>

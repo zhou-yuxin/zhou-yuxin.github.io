@@ -1,0 +1,126 @@
+﻿﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>RC4加密算法</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">RC4加密算法</h1>
+							</header>
+							<div class="entry-content">
+
+
+<p>本来是想研究一下WEP加密的，以及切身体会一下WEP被淘汰的原因。WEP里面用到了RC4加密算法，所以就先研究了一下RC4加密算法。</p>
+
+<p>RC4加密算法是一种对称加密算法。所谓对称加密算法，说得直白一点，就是加密与解密的过程一模一样。假设定义RC4的运算过程是rc4(key,data)，那么，密文=rc4(key,明文)，明文=rc4(key,密文)。所以，对一段数据迭代地做奇数次RC4运算，就得到密文，对这段数据迭代地做偶数次RC4运算，结果依旧是原来的那段数据。</p>
+
+<p>这种对称性就是基于密钥流的加密算法的一个特征。RC4加密算法也是一种基于密钥流的加密算法。何为密钥流呢？假设要加密的数据长N个字节，那么我通过某种算法，也产生一串N字节的数据，然后把这两串N字节数据按位异或（XOR），就得到了密文。把密文与这串密钥流再XOR，就能重新得到明文。而这一串由某种算法产生的N字节，或者说8N位，就叫做密钥流，而该算法就叫做密钥流生成算法。所有基于密钥流的加密算法的区别就在于密钥流的生成方式的不同。只要生成了与数据等长的密钥流，那么加密、解密方式都是把数据与密钥流做异或运算。</p>
+
+<p>RC4本质上就是一种密钥流生成算法。它的特点是算法简单、运算效率高，而且非线性度良好。算法简单的特点使得可以使用硬件来实现RC4，如同在很多旧的无线网卡中就是使用硬件来实现WEP加密的。运算效率高使得用软件实现RC4也很便捷、不会占用过多CPU。而非线性度良好，则是RC4广泛使用的重要原因。所谓非线性度好，就是指通过密码产生密钥流容易，而通过密钥流逆推出密码则很难。</p>
+
+<p>好了，说了这么多屁话，就上代码了：</p>
+
+<p>rc4.h</p>
+
+<pre>
+#ifndef RC4_H
+#define RC4_H
+
+/*
+导出rc4_crypt函数，参数为要加密的数据、数据长度、密码、密码长度
+*/
+void rc4_crypt(unsigned char* p_data,unsigned int p_data_len,unsigned char* p_key,unsigned int p_key_len);
+
+#endif
+</pre>
+
+<p>rc4.c</p>
+
+<pre>
+#include &lt;string.h&gt;
+
+static void rc4_init(unsigned char* p_s,unsigned char* p_key,unsigned int p_key_len)
+{
+    unsigned char t_k[256];
+    int t_i;
+    for(t_i=0;t_i&lt;256;t_i++)
+    {
+        p_s[t_i]=t_i;
+        t_k[t_i]=p_key[t_i%p_key_len];
+    }
+    int t_j=0;
+    for(t_i=0;t_i&lt;256;t_i++)
+    {
+        t_j=(t_j+p_s[t_i]+t_k[t_i])%256;
+        unsigned char t_tmp=p_s[t_i];
+        p_s[t_i]=p_s[t_j];
+        p_s[t_j]=t_tmp;
+    }
+}
+
+void rc4_crypt(unsigned char* p_data,unsigned int p_data_len,unsigned char* p_key,unsigned int p_key_len)
+{
+    unsigned char t_s[256];
+    rc4_init(t_s,p_key,p_key_len);
+    int t_i=0,t_j=0;
+    unsigned int t_k;
+    for(t_k=0;t_k&lt;p_data_len;t_k++)
+    {
+        t_i=(t_i+1)%256;
+        t_j=(t_j+t_s[t_i])%256;
+        unsigned char t_tmp=t_s[t_i];
+        t_s[t_i]=t_s[t_j];
+        t_s[t_j]=t_tmp;
+        int t_t=(t_s[t_i]+t_s[t_j])%256;
+        p_data[t_k]^=t_s[t_t];
+    }
+}
+</pre>
+
+<p>要使用的时候，如下：</p>
+
+<p>main.c</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include "rc4.h"
+
+int main()
+{
+    unsigned char t_data[]="hello,here is the data!";
+
+    rc4_crypt(t_data,24,"password",8);
+    printf("加密后的数据:n");
+    int t_i;
+    for(t_i=0;t_i&lt;24;t_i++)
+        printf("%x ",t_data[t_i]);
+    printf("n");
+
+    rc4_crypt(t_data,24,"password",8);
+    printf("解密后的数据:n");
+    for(t_i=0;t_i&lt;24;t_i++)
+        printf("%c",t_data[t_i]);
+    printf("n");
+
+    return 0;
+}
+</pre>
+
+			
+﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

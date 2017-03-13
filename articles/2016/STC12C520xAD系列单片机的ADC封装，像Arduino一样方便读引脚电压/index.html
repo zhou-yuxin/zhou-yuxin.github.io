@@ -1,0 +1,152 @@
+﻿﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>STC12C520xAD系列单片机的ADC封装，像Arduino一样方便读引脚电压</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">STC12C520xAD系列单片机的ADC封装，像Arduino一样方便读引脚电压</h1>
+							</header>
+							<div class="entry-content">
+
+
+		<p>国产的STC单片机其实还是挺好用的，完全兼容51，价格低廉，而且因为是国产，所以有详细的中文文档！虽然我总是口头上再说要换STM32了，但是发现很多项目，51单片机绰绰有余，杀鸡焉用牛刀。虽然STM32性价比比51高很多，但是当性能都足以应付需求时，看的就不是性价比了，而是价格和开发难度。</p>
+
+<p>废话就不说了。我昨晚研究了一下STC12C5202AD的ADC功能，其实还是挺简单的，而且STC12C520xAD系列的单片机都是通用的，包括STC12C5201AD、STC12C5202AD、STC12C5203AD、STC12C5204AD、STC12C5205AD、STC12C5206AD和低电压版的STC12LE5201AD、STC12LE5202AD、STC12LE5203AD、STC12LE5204AD、STC12LE5205AD、STC12LE5206AD（写这么多其实只是为了以后搜索方便orz）。</p>
+
+<p>为了使用方便，还是借鉴了Arduino的那种方式，直接一个函数就行。</p>
+
+<p>====================阶段一：代码====================</p>
+
+<p>types.h</p>
+
+<pre>#ifndef TYPES_H
+#define TYPES_H
+
+typedef char bool;
+typedef char int8;
+typedef unsigned char uint8;
+typedef int int16;
+typedef unsigned int uint16;
+typedef long int32;
+typedef unsigned long uint32;
+
+#define true 1
+#define false 0
+#define null 0
+
+#endif
+</pre>
+
+<p>ADC.h</p>
+
+<pre>/*
+本文件定义了STC12C520xAD系列单片机ADC功能的库函数
+void analog_init()
+初始化ADC模块
+uint8 analog_read(uint8 p_pin)
+从指定引脚读取电压值，8位
+p_pin为P1端口的8个引脚之一，从0到7
+如需修改ADC转换速度，请到ADC.c中进行修改
+*/
+#ifndef ADC_H
+#define ADC_H
+
+#include "types.h"
+
+void analog_init();
+uint8 analog_read(uint8 p_pin);
+
+#endif
+</pre>
+
+<p>ADC.c</p>
+
+<pre>/*
+本文件实现了ADC.h中定义的函数
+如需修改ADC转换速率，请修改SPEED宏
+SPEED为1，则420个时钟周期转换一次
+SPEED为2，则280个时钟周期转换一次
+SPEED为3，则140个时钟周期转换一次
+SPEED为4，则70个时钟周期转换一次
+*/
+#define SPEED 1
+
+#include "ADC.h"
+#include "reg51.h"
+#include "intrins.h"
+
+sfr ADC_CTL=0xBC;
+sfr ADC_RES=0xBD;
+sfr P1ASF=0x9D;
+
+#define ADC_POWER 0x80
+#define ADC_FLAG 0x10
+#define ADC_START 0x08
+
+#if(SPEED==1)
+    #define ADC_SPEED 0x00
+#elif(SPEED==2)
+    #define ADC_SPEED 0x20
+#elif(SPEED==3)
+    #define ADC_SPEED 0x40
+#elif(SPEED==4)
+    #define ADC_SPEED 0x60
+#else
+    #error "SPEED must be 1,2,3 or 4"
+#endif
+
+void analog_init()
+{
+    uint16 t_timer;
+    ADC_RES=0;
+    ADC_CTL=ADC_POWER|ADC_SPEED;
+    for(t_timer=0;t_timer&lt;50000;t_timer++);
+}
+
+uint8 analog_read(uint8 p_pin)
+{
+    if(p_pin&gt;7)
+        return 0;
+    P1ASF=1&lt;&lt;p_pin;
+    ADC_RES=0;
+    ADC_CTL=ADC_POWER|ADC_SPEED|ADC_START|p_pin;
+    _nop_();
+    _nop_();
+    _nop_();
+    _nop_();
+    while(!(ADC_CTL&amp;ADC_FLAG));
+    ADC_CTL&amp;=~ADC_FLAG;
+    P1ASF=0;
+    return ADC_RES;
+}
+</pre>
+
+<p>在使用之前，需要调用analog_init()初始化ADC模块。如果使用最高速率&#8221;70个时钟周期转换一次&#8221;，那么在12Mhz晶振下采样频率可以高达170khz，比Arduino的10Khz快多了！</p>
+
+<p>===================阶段二：硬件连接===================</p>
+
+<p>用作模拟输入的引脚，需要用一个RC电路来连接模拟电压源，如图：</p>
+
+<p><img src=""></p>
+
+<p>OK，就这些~</p>
+
+			
+﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>
