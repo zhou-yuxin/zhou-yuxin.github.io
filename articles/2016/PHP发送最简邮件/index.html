@@ -1,0 +1,66 @@
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>PHP发送最简邮件</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">PHP发送最简邮件</h1>
+							</header>
+							<div class="entry-content">
+
+<p>有时网站需要发送邮件，而php自带的mail函数不好用。幸好有phpmailer这个开源项目，可以方便地发送各种邮件。</p>
+
+<p>phpmailer可以发送几乎任意邮件，不过我只记录最简单的邮件的发送方式，以备不时之需。</p>
+
+<p>首先，下载<a href="http://pan.baidu.com/s/1jHotaQi">class.phpmailer.php</a>和<a href="http://pan.baidu.com/s/1hqPuA4c">class.smtp.php</a>两个文件。</p>
+
+<p>编写函数：</p>
+
+<pre>
+define("MAIL_HOST","smtp.qq.com");
+define("MAIL_PORT",465);
+define("MAIL_USERNAME","515431508");
+define("MAIL_PASSWORD","123456789");
+define("MAIL_FROM","515431508@qq.com");
+
+function sendEmail($p_email,$p_title,$p_msg)
+{
+    include_once("class.phpmailer.php");
+    $t_mail=new PHPMailer();
+    $t_mail-&gt;CharSet="utf-8";
+    $t_mail-&gt;IsSMTP();
+    $t_mail-&gt;SMTPAuth=true;
+    $t_mail-&gt;SMTPSecure="ssl";
+    $t_mail-&gt;Host=MAIL_HOST;
+    $t_mail-&gt;Port=MAIL_PORT;
+    $t_mail-&gt;Username=MAIL_USERNAME;
+    $t_mail-&gt;Password=MAIL_PASSWORD;
+    $t_mail-&gt;Subject=$p_title;
+    $t_mail-&gt;Body=$p_msg;
+    $t_mail-&gt;SetFrom(MAIL_FROM,"");
+    $t_mail-&gt;AddAddress($p_email,"");
+    if(!$t_mail-&gt;Send())
+        return false;
+    return true;
+}</pre>
+
+<p>注意开头的那些define()，需要根据具体的环境来设置。</p>
+
+							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

@@ -2,21 +2,35 @@
 	<head>
 		<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
 		<title>博观而约取 厚积而薄发</title>
-		<script src="./jquery.js"></script>
 		<script>
 			function viewArticle(a)
 			{
-				var a=$(a)；
-				alert(a);
-				//var date=a.parent();
-				//alert(date);
-				//var url="./articles/"+a.innerHTML+"/index.html";
-				//window.open(url);
+				var data=a.parentNode.parentNode.children[1].innerHTML;
+				var year=data.substring(0,4);
+				var title=a.innerHTML;
+				var url="./articles/"+year+"/"+title+"/index.html";
+				window.open(url);
 			}
 		</script>
 	</head>
 	<body>
 		<table>
+			<tr>
+				<td><a href="javascript:;" onclick="viewArticle(this)">PHP发送最简邮件</a></td>
+				<td>2016年01月04日</td>
+			</tr>
+			<tr>
+				<td><a href="javascript:;" onclick="viewArticle(this)">搭建51单片机最小系统——以STC12C2052为例</a></td>
+				<td>2015年12月28日</td>
+			</tr>
+			<tr>
+				<td><a href="javascript:;" onclick="viewArticle(this)">ESP8266串口Wifi模块的基本用法</a></td>
+				<td>2015年12月23日</td>
+			</tr>
+			<tr>
+				<td><a href="javascript:;" onclick="viewArticle(this)">ESP8266串口Wifi模块固件烧写与激活</a></td>
+				<td>2015年12月21日</td>
+			</tr>
 			<tr>
 				<td><a href="javascript:;" onclick="viewArticle(this)">Arduino软件串口库的使用</a></td>
 				<td>2015年12月06日</td>

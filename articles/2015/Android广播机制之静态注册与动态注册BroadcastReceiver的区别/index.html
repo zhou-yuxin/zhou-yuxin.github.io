@@ -1,0 +1,76 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>Android广播机制之静态注册与动态注册BroadcastReceiver的区别</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">Android广播机制之静态注册与动态注册BroadcastReceiver的区别</h1>
+							</header>
+							<div class="entry-content">
+							
+<p>在Android中，广播机制是非常常用的一种通信机制。</p>
+
+<p>广播接收器BroadcastReceiver有两种注册方式：</p>
+
+<p>1、在AndroidManifest.xml中通过&lt;receiver&gt;标签静态注册，形如：</p>
+
+<pre>&lt;receiver android:name=".service.ShortMsgService" android:enabled="true"&gt;
+    &lt;intent-filter&gt;
+        &lt;action android:name="android.provider.Telephony.SMS_RECEIVED"/&gt;
+    &lt;/intent-filter&gt;
+&lt;/receiver&gt;</pre>
+
+<p>2、在Java代码中通过ContextWrapper的registerReceiver()方法来动态注册，形如：</p>
+
+<pre lang="c[lines-notools]">this.registerReceiver(new ShortMsgService(),new IntentFilter("android.provider.Telephony.SMS_RECEIVED"));</pre>
+
+<p>那么，这两种注册方式有什么区别呢？</p>
+
+<p>在Android 3.1之前的情况是这样的：</p>
+
+<p>1、通过AndroidManifest.xml静态注册的广播接收器，只要系统发出了制定类型的广播，那么就会被创建、然后调用onReceive()方法，然后被销毁；</p>
+
+<p>2、通过Java代码动态注册的广播接收器，其生命周期与注册它的ContextWrapper（通常是Activity）相同。</p>
+
+<p>如何理解呢？</p>
+
+<p>以短信收发软件为例。当系统受到一个短信时，会发出“android.provider.Telephony.SMS_RECEIVED”广播，并携带了手机号、内容、发送时间等信息。通过监听这个广播，就可以收到短信。</p>
+
+<p>如果这个广播接收器是静态注册的，那么，不管这个短信软件是不是前台进程、甚至不管是否存在这个短信软件的进程，该广播接收器都会被实例化，然后onReceive()方法被调用，最后对象被销毁。这个就是我们想要的效果！</p>
+
+<p>如果这个广播接收器是动态注册的，那么，只有当注册它的Activity还没被销毁（onDestory方法还没被调用）的情况下，可以接收到广播。显然这个不符合一个短信软件的需求。</p>
+
+<p>这个是Android 3.1以前的情况。有没有觉得有什么不对？嗯，安全性！如果一个软件安装完之后，可以不经用户的同意而直接运行，是不是很不安全？或者，当用户强制结束一个应用后，这个应用通过监听电量变化广播、屏幕亮起广播等很频繁的广播来自动启动（比如在BroadcastReceiver中启动Service），那么不就是流氓软件了？</p>
+
+<p>所以，Android 3.1之后，对系统做了修改：</p>
+
+<p>1、通过AndroidManifest.xml静态注册的广播接收器，只要系统发出了制定类型的广播，那么就会被创建、然后调用onReceive()方法，然后被销毁。<strong><span style="color: red;">但是前提是，这个应用至少被用户运行过一次，并且没有被强制结束；</span></strong></p>
+
+<p>2、通过Java代码动态注册的广播接收器，其生命周期与注册它的ContextWrapper（通常是Activity）相同。</p>
+
+<p>所以总结一下：</p>
+
+<p>1、通过Java代码动态注册的广播接收器，其生命周期与注册它的ContextWrapper（通常是Activity）相同，当Activity被销毁时，BroadcastReceiver也被注销；</p>
+
+<p>2、通过AndroidManifest.xml静态注册的广播接收器，只要系统发出了制定类型的广播，那么就会被创建、然后调用onReceive()方法，然后被销毁。<strong><span style="color: red;">但是Android 3.1之后，必须满足一个条件——进程不能是安装后从来没有启动过和被用户手动强制停止的应用（即应用不能处于“stopped state”）。</span></strong></p>
+
+<p>如果要使得处于“stopped state”的应用也能被广播唤醒，那么必须要在广播的Intent设置FLAG_INCLUDE_STOPPED_PACKAGES来唤醒处于“stopped state”的程序，也就是用户自己写的广播Intent可以控制这个机制。但是系统自带的广播Intent，是不设置这个标志的，而不设置标志默认是FLAG_EXCLUDE_STOPPED_PACKAGES，又由于不能修改，就只能接受这个现实了。</p>
+
+							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

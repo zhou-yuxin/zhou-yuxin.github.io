@@ -1,0 +1,54 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>调试x86实模式代码的好方法</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">调试x86实模式代码的好方法</h1>
+							</header>
+							<div class="entry-content">
+							
+<p>由于自制x86操作系统的过程中，通常需要在实模式下做一些事情，比如写bootloader。但是运行代码都需要重新启动系统，非常麻烦。后来使用了bochs，方便了很多，但是依旧需要手动把程序写入软盘映像里面，再重新启动bochs。</p>
+
+<p>其实有个好办法，就是在DOS下开发实模式代码。由于DOS是实模式操作系统，所以自己写的实模式代码是能够运行起来的。但是有一点需要注意，就是BIOS会把程序加载到物理内存的0x7c00处开始运行，而DOS会把程序加载到物理内存的0x100处开始执行。所以原来的代码中，</p>
+
+<pre>
+org 0x7c00
+</pre>
+
+<p>需要改为</p>
+
+<pre>
+org 0x0100
+</pre>
+
+<p>这样就可以在DOS下运行了。</p>
+
+<p>而至于怎么使用DOS呢？由于DOS的画风真的太糟糕了，而且没有什么好用的编辑器，所以没人会喜欢直接在DOS编辑源码吧。传统的做法是使用bochs里面运行freedos，然后在linux上编辑源代码。这也是一个好办法。但是，每次编辑完代码要运行时，都得挂载虚拟软盘、然后写入程序、然后再卸载虚拟软盘，再由bochs来运行，甚是麻烦。即使把这三步写成一个脚本，那么依旧会被时常出现的设备忙无法卸载的问题所困扰。</p>
+
+<p>好在我发现了一款很棒的DOS模拟器，叫DOSBOX。双击一下就能运行DOS，直接拖拽入一个com文件，就能直接运行，不需要向bochs那样需要写入虚拟软盘后再运行。当然，也可以进入DOSBOX后，把windows上某个文件夹挂载到DOS的C盘，然后就能直接在DOS里读写该文件夹了。</p>
+
+<p>于是就可以在windows使用自己喜欢的编辑器编辑代码，然后在DOS下使用NASM来编译。注意要使用NASM的DOS版本（比如<a href="http://www.nasm.us/pub/nasm/releasebuilds/0.99.05/nasm-0.99.05-dos.zip">nasm-0.99.05-dos</a>）。</p>
+
+<p>但是后来，我发现一个很糟糕的事情，就是多次读写某个文件后，DOSBOX对挂载的文件夹进行了缓存，此后无论怎么修改代码，DOSBOX都只使用缓存的文件，非常讨厌。</p>
+
+<p>于是我想到了一个变通的办法，就是下载一个windows版本的NASM，然后在windows下编辑、编译，生成com文件，然后直接把com文件拖拽入DOXBOX即可。</p>
+
+							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>
