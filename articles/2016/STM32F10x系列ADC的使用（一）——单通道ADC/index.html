@@ -1,0 +1,498 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>STM32F10x系列ADC的使用（一）——单通道ADC</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">STM32F10x系列ADC的使用（一）——单通道ADC</h1>
+							</header>
+							<div class="entry-content">
+
+<p>有好久没有写博客了，这段时间一直在学习与纠结中度过。一方面是纠结要不要学习AVR、PIC系列单片机，一方面是在学习STM32和3D打印。纠结的最后结果是——忘了8位单片机吧，专心学STM32。因为我发现，STM32F0系列，功能一样非常丰富，而且居然只要0.32美元。。。AVR等8位单片机，不论在性能还是价格上都毫无优势了。</p>
+
+<p>另外至于3D打印，我发现居然有openscad这么好的建模软件，完全用代码描述模型，太棒了。</p>
+
+<p>屁话不多说了。今天要记录的是STM32F10x系列的ADC功能的使用。STM32的ADC强大之处有很多，比如几乎每个引脚都可以做ADC，又比如转换速度超高，又比如即可以用轮询又可以用中断还可以用DMA。今天要依次介绍这三种方式。</p>
+
+<p>================阶段一：ADC的配置===============</p>
+
+<p>不管使用什么方式来读ADC，对ADC进行配置的办法都是一样的。假设我要初始化ADC1的通道0，代码如下：</p>
+
+<pre>void adc_init()
+{
+    ADC_InitTypeDef t_adc;
+    //开启ADC1的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1,ENABLE);
+    //ADC使用独立模式
+    t_adc.ADC_Mode=ADC_Mode_Independent;
+    //禁用扫描模式
+    t_adc.ADC_ScanConvMode=DISABLE;
+    //启用连续转换，即转换完一次后继续转换
+    t_adc.ADC_ContinuousConvMode=ENABLE;
+    //不使用外部触发
+    t_adc.ADC_ExternalTrigConv=ADC_ExternalTrigConv_None;
+    //数据右对齐
+    t_adc.ADC_DataAlign=ADC_DataAlign_Right;
+    //要转换的通道数为1
+    t_adc.ADC_NbrOfChannel=1;
+    //初始化ADC1
+    ADC_Init(ADC1,&amp;t_adc);
+    //配置ADC的时钟为PCLK2的8分频
+    RCC_ADCCLKConfig(RCC_PCLK2_Div8);
+    //设置ADC1的通道0的转换周期为71.5个采样周期
+    ADC_RegularChannelConfig(ADC1,ADC_Channel_0,1,ADC_SampleTime_71Cycles5);
+    //使能ADC1
+    ADC_Cmd(ADC1,ENABLE);
+    //使能软件触发
+    ADC_SoftwareStartConvCmd(ADC1,ENABLE);
+}</pre>
+
+<p>只有当多通道ADC时才会用到扫描模式（会在接下来的文中讲解）。</p>
+
+<p>开启连续转换是指，一次ADC完成之后，会进行下一次ADC；如果关闭连续转换，那么转换一次以后就停止了。</p>
+
+<p>STM32有个强大的功能就是可以使用某个外部触发信号来开始ADC转换，这个触发信号可以是外部中断触发、定时器触发；如果希望ADC不需要触发信号就不停工作，那么可以使用软件触发。</p>
+
+<p>这里配置ADC的时钟为PCLK2的8分频，也就是72Mhz/8=9Mhz。当然这个不是最终的转换速率；由于我设置了转换周期为71.5，所以一次ADC需要的时间为(71.5+12.5)/9Mhz=9.3us。这个计算公式是这样的：</p>
+
+<pre>T=采样周期+12.5个周期
+</pre>
+
+<p>其中的12.5是一个固定的数值。</p>
+
+<p>================阶段二：GPIO的配置===============</p>
+
+<p>虽然ADC1的芯片内部开始工作了，可是如何把GPIO和ADC1连接起来呢？我们知道，STM32有3个ADC，而每个ADC有多达16个通道，这些通道和GPIO的对应关系是怎么样的呢？这个就需要查看下表了：</p>
+<p><img src="1.gif"></p>
+由于我们在配置ADC的时候，用的是ADC1的通道0，所以引脚就是PA0了。那好，我们就把PA0配置成模拟输入模式~代码如下：</p>
+
+<pre>void adc_gpio_init()
+{
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA,ENABLE);
+    //引脚0
+    t_gpio.GPIO_Pin=GPIO_Pin_0;
+    //模拟输入
+    t_gpio.GPIO_Mode=GPIO_Mode_AIN;
+    //在GPIOA上生效
+    GPIO_Init(GPIOA,&amp;t_gpio);
+}</pre>
+
+<p>OK，就这么简单~</p>
+
+<p>=================阶段三：使用轮询方式读取===============</p>
+
+<p>基本的配置都完成了，那么就可以直接使用轮询来读取ADC的值了。轮询的代码如下：</p>
+
+<pre>while(1)
+{
+    u16 t_value;
+    //等待ADC1转换完成
+    while(ADC_GetFlagStatus(ADC1,ADC_FLAG_EOC)==RESET);
+    //获取ADC1的值
+    t_value=ADC_GetConversionValue(ADC1);
+    //清除转换完成标志
+    ADC_ClearFlag(ADC1,ADC_FLAG_EOC);
+    //t_value中就是ADC的值
+}</pre>
+
+<p>就这么简单。</p>
+完整的代码（包括串口的初始化）如下：</p>
+
+<pre>#include "stm32f10x_rcc.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_usart.h"
+#include "stm32f10x_adc.h"
+
+void usart1_confg()
+{
+    USART_InitTypeDef t_uart;
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA和USART1的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA|RCC_APB2Periph_USART1,ENABLE);
+    //配置PA9（Tx）引脚为推挽输出，最大翻转频率10Mhz
+    t_gpio.GPIO_Pin=GPIO_Pin_9;
+    t_gpio.GPIO_Mode=GPIO_Mode_AF_PP;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //配置PA10（Rx）引脚为悬浮输入
+    t_gpio.GPIO_Pin=GPIO_Pin_10;
+    t_gpio.GPIO_Mode=GPIO_Mode_IN_FLOATING;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //配置串口波特率为115200，字长为8位，一位停止位，无校验位，无流控
+    t_uart.USART_BaudRate=115200;
+    t_uart.USART_WordLength=USART_WordLength_8b;
+    t_uart.USART_StopBits=USART_StopBits_1;
+    t_uart.USART_Parity=USART_Parity_No;
+    t_uart.USART_HardwareFlowControl=USART_HardwareFlowControl_None;
+    t_uart.USART_Mode=USART_Mode_Rx|USART_Mode_Tx;
+    USART_Init(USART1,&amp;t_uart);
+    //开启串口
+    USART_Cmd(USART1,ENABLE);
+}
+
+void adc_init()
+{
+    ADC_InitTypeDef t_adc;
+    //开启ADC1的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1,ENABLE);
+    //ADC使用独立模式
+    t_adc.ADC_Mode=ADC_Mode_Independent;
+    //禁用扫描模式
+    t_adc.ADC_ScanConvMode=DISABLE;
+    //启用连续转换，即转换完一次后继续转换
+    t_adc.ADC_ContinuousConvMode=ENABLE;
+    //不使用外部触发
+    t_adc.ADC_ExternalTrigConv=ADC_ExternalTrigConv_None;
+    //数据右对齐
+    t_adc.ADC_DataAlign=ADC_DataAlign_Right;
+    //要转换的通道数为1
+    t_adc.ADC_NbrOfChannel=1;
+    //初始化ADC1
+    ADC_Init(ADC1,&amp;t_adc);
+    //配置ADC的时钟为PCLK2的8分频
+    RCC_ADCCLKConfig(RCC_PCLK2_Div8);
+    //设置ADC1的通道0的转换周期为71.5个采样周期
+    ADC_RegularChannelConfig(ADC1,ADC_Channel_0,1,ADC_SampleTime_71Cycles5);
+    //使能ADC1
+    ADC_Cmd(ADC1,ENABLE);
+    //使能软件触发
+    ADC_SoftwareStartConvCmd(ADC1,ENABLE);
+}
+
+void adc_gpio_init()
+{
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA,ENABLE);
+    //引脚0
+    t_gpio.GPIO_Pin=GPIO_Pin_0;
+    //模拟输入
+    t_gpio.GPIO_Mode=GPIO_Mode_AIN;
+    //在GPIOA上生效
+    GPIO_Init(GPIOA,&amp;t_gpio);
+}
+
+int main()
+{
+    usart1_confg();
+    adc_init();
+    adc_gpio_init();
+    while(1)
+    {
+        u16 t_value;
+        //等待ADC1转换完成
+        while(ADC_GetFlagStatus(ADC1,ADC_FLAG_EOC)==RESET);
+        //获取ADC1的值
+        t_value=ADC_GetConversionValue(ADC1);
+        //清除转换完成标志
+        ADC_ClearFlag(ADC1,ADC_FLAG_EOC);
+        //将采样值发送出去。由于采样值是12位，而每次只能发送8位，为了看个大概，右移4位。
+        USART_SendData(USART1,t_value&gt;&gt;4);
+    }
+}
+</pre>
+
+<p>================阶段四：使用中断方式读取===============</p>
+
+<p>接下来玩个稍微复杂一些的，那就是用中断读取。其实用中断读取的变化就是要增加一段配置中断的代码，然后在相应的中断函数中获取ADC1的值。</p>
+首先是配置NVIC，代码如下：</p>
+
+<pre>void nvic_config()
+{
+    NVIC_InitTypeDef t_nvic;
+    //中断优先级组选用第一组，也就是最高一位表示抢占优先级，低3位用来表示响应优先级
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_1);
+    //中断配置为抢占优先级为1、响应优先级为1
+    t_nvic.NVIC_IRQChannelPreemptionPriority=1;
+    t_nvic.NVIC_IRQChannelSubPriority=1;
+    //中断向量是ADC1_2_IRQn
+    t_nvic.NVIC_IRQChannel=ADC1_2_IRQn;
+    t_nvic.NVIC_IRQChannelCmd=ENABLE;
+    NVIC_Init(&amp;t_nvic);
+}</pre>
+
+<p>同时，需要添加一个中断处理函数：</p>
+
+<pre>void ADC1_2_IRQHandler()
+{
+    //判断ADC1转换完成
+    if(ADC_GetFlagStatus(ADC1,ADC_FLAG_EOC)==SET)
+    {
+        u16 t_value;
+        //获取ADC1的值
+        t_value=ADC_GetConversionValue(ADC1);
+        //将采样值发送出去。由于采样值是12位，而每次只能发送8位，为了看个大概，右移4位。
+        USART_SendData(USART1,t_value&gt;&gt;4);
+        //清除转换完成标志
+        ADC_ClearFlag(ADC1,ADC_FLAG_EOC);
+    }
+}</pre>
+
+<p>以下是完整代码：</p>
+
+<pre>#include "stm32f10x_rcc.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_usart.h"
+#include "stm32f10x_adc.h"
+#include "misc.h"
+#include "stm32f10x.h"
+
+void usart1_confg()
+{
+    USART_InitTypeDef t_uart;
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA和USART1的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA|RCC_APB2Periph_USART1,ENABLE);
+    //配置PA9（Tx）引脚为推挽输出，最大翻转频率10Mhz
+    t_gpio.GPIO_Pin=GPIO_Pin_9;
+    t_gpio.GPIO_Mode=GPIO_Mode_AF_PP;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //配置PA10（Rx）引脚为悬浮输入
+    t_gpio.GPIO_Pin=GPIO_Pin_10;
+    t_gpio.GPIO_Mode=GPIO_Mode_IN_FLOATING;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //配置串口波特率为115200，字长为8位，一位停止位，无校验位，无流控
+    t_uart.USART_BaudRate=115200;
+    t_uart.USART_WordLength=USART_WordLength_8b;
+    t_uart.USART_StopBits=USART_StopBits_1;
+    t_uart.USART_Parity=USART_Parity_No;
+    t_uart.USART_HardwareFlowControl=USART_HardwareFlowControl_None;
+    t_uart.USART_Mode=USART_Mode_Rx|USART_Mode_Tx;
+    USART_Init(USART1,&amp;t_uart);
+    //开启串口
+    USART_Cmd(USART1,ENABLE);
+}
+
+void adc_init()
+{
+    ADC_InitTypeDef t_adc;
+    //开启ADC1的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1,ENABLE);
+    //ADC使用独立模式
+    t_adc.ADC_Mode=ADC_Mode_Independent;
+    //禁用扫描模式
+    t_adc.ADC_ScanConvMode=DISABLE;
+    //启用连续转换，即转换完一次后继续转换
+    t_adc.ADC_ContinuousConvMode=ENABLE;
+    //不使用外部触发
+    t_adc.ADC_ExternalTrigConv=ADC_ExternalTrigConv_None;
+    //数据右对齐
+    t_adc.ADC_DataAlign=ADC_DataAlign_Right;
+    //要转换的通道数为1
+    t_adc.ADC_NbrOfChannel=1;
+    //初始化ADC1
+    ADC_Init(ADC1,&amp;t_adc);
+    //配置ADC的时钟为PCLK2的8分频
+    RCC_ADCCLKConfig(RCC_PCLK2_Div8);
+    //设置ADC1的通道0的转换周期为71.5个采样周期
+    ADC_RegularChannelConfig(ADC1,ADC_Channel_0,1,ADC_SampleTime_71Cycles5);
+    //使能ADC1
+    ADC_Cmd(ADC1,ENABLE);
+    //使能软件触发
+    ADC_SoftwareStartConvCmd(ADC1,ENABLE);
+}
+
+void adc_gpio_init()
+{
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA,ENABLE);
+    //引脚0
+    t_gpio.GPIO_Pin=GPIO_Pin_0;
+    //模拟输入
+    t_gpio.GPIO_Mode=GPIO_Mode_AIN;
+    //在GPIOA上生效
+    GPIO_Init(GPIOA,&amp;t_gpio);
+}
+
+void ADC1_2_IRQHandler()
+{
+    //判断ADC1转换完成
+    if(ADC_GetFlagStatus(ADC1,ADC_FLAG_EOC)==SET)
+    {
+        u16 t_value;
+        //获取ADC1的值
+        t_value=ADC_GetConversionValue(ADC1);
+        //将采样值发送出去。由于采样值是12位，而每次只能发送8位，为了看个大概，右移4位。
+        USART_SendData(USART1,t_value&gt;&gt;4);
+        //清除转换完成标志
+        ADC_ClearFlag(ADC1,ADC_FLAG_EOC);
+    }
+}
+
+void nvic_config()
+{
+    NVIC_InitTypeDef t_nvic;
+    //中断优先级组选用第一组，也就是最高一位表示抢占优先级，低3位用来表示响应优先级
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_1);
+    //中断配置为抢占优先级为1、响应优先级为1
+    t_nvic.NVIC_IRQChannelPreemptionPriority=1;
+    t_nvic.NVIC_IRQChannelSubPriority=1;
+    //中断向量是ADC1_2_IRQn
+    t_nvic.NVIC_IRQChannel=ADC1_2_IRQn;
+    t_nvic.NVIC_IRQChannelCmd=ENABLE;
+    NVIC_Init(&amp;t_nvic);
+    //开启ADC转换完成中断
+    ADC_ITConfig(ADC1,ADC_IT_EOC,ENABLE);
+}
+
+int main()
+{
+    usart1_confg();
+    adc_init();
+    adc_gpio_init();
+    nvic_config();
+    while(1);
+}
+</pre>
+
+<p>==================阶段五：使用DMA方式读取===============</p>
+
+<p>之前在《<a href="../STM32F10x 通过DMA读写串口/index.html">STM32F10x 通过DMA读写串口</a>》一文中已经介绍过DMA了。这里也类似，不再细讲DMA的原理与设置，直接给出代码：</p>
+
+<pre>#include "stm32f10x_rcc.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_usart.h"
+#include "stm32f10x_adc.h"
+#include "stm32f10x_dma.h"
+
+void usart1_confg()
+{
+    USART_InitTypeDef t_uart;
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA和USART1的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA|RCC_APB2Periph_USART1,ENABLE);
+    //配置PA9（Tx）引脚为推挽输出，最大翻转频率10Mhz
+    t_gpio.GPIO_Pin=GPIO_Pin_9;
+    t_gpio.GPIO_Mode=GPIO_Mode_AF_PP;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //配置PA10（Rx）引脚为悬浮输入
+    t_gpio.GPIO_Pin=GPIO_Pin_10;
+    t_gpio.GPIO_Mode=GPIO_Mode_IN_FLOATING;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //配置串口波特率为115200，字长为8位，一位停止位，无校验位，无流控
+    t_uart.USART_BaudRate=115200;
+    t_uart.USART_WordLength=USART_WordLength_8b;
+    t_uart.USART_StopBits=USART_StopBits_1;
+    t_uart.USART_Parity=USART_Parity_No;
+    t_uart.USART_HardwareFlowControl=USART_HardwareFlowControl_None;
+    t_uart.USART_Mode=USART_Mode_Rx|USART_Mode_Tx;
+    USART_Init(USART1,&amp;t_uart);
+    //开启串口
+    USART_Cmd(USART1,ENABLE);
+}
+
+void adc_init()
+{
+    ADC_InitTypeDef t_adc;
+    //开启ADC1的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1,ENABLE);
+    //ADC使用独立模式
+    t_adc.ADC_Mode=ADC_Mode_Independent;
+    //禁用扫描模式
+    t_adc.ADC_ScanConvMode=DISABLE;
+    //启用连续转换，即转换完一次后继续转换
+    t_adc.ADC_ContinuousConvMode=ENABLE;
+    //不使用外部触发
+    t_adc.ADC_ExternalTrigConv=ADC_ExternalTrigConv_None;
+    //数据右对齐
+    t_adc.ADC_DataAlign=ADC_DataAlign_Right;
+    //要转换的通道数为1
+    t_adc.ADC_NbrOfChannel=1;
+    //初始化ADC1
+    ADC_Init(ADC1,&amp;t_adc);
+    //配置ADC的时钟为PCLK2的8分频
+    RCC_ADCCLKConfig(RCC_PCLK2_Div8);
+    //设置ADC1的通道0的转换周期为71.5个采样周期
+    ADC_RegularChannelConfig(ADC1,ADC_Channel_0,1,ADC_SampleTime_71Cycles5);
+    //使能ADC1
+    ADC_Cmd(ADC1,ENABLE);
+    //使能软件触发
+    ADC_SoftwareStartConvCmd(ADC1,ENABLE);
+}
+
+void adc_gpio_init()
+{
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA,ENABLE);
+    //引脚0
+    t_gpio.GPIO_Pin=GPIO_Pin_0;
+    //模拟输入
+    t_gpio.GPIO_Mode=GPIO_Mode_AIN;
+    //在GPIOA上生效
+    GPIO_Init(GPIOA,&amp;t_gpio);
+}
+
+u16 g_value=0;
+
+void dma_config()
+{
+    DMA_InitTypeDef t_dma;
+    //开启DMA1时钟
+    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1,ENABLE);
+    //DMA设备基地址为((u32)0x40012400+0x4c)，也可以写作(u32)(&amp;(ADC1-&gt;DR))
+    t_dma.DMA_PeripheralBaseAddr=(u32)(&amp;(ADC1-&gt;DR));
+    //DMA内存基地址为&amp;g_value
+    t_dma.DMA_MemoryBaseAddr=(u32)&amp;g_value;
+    //DMA传输方向为设备到内存
+    t_dma.DMA_DIR=DMA_DIR_PeripheralSRC;
+    //DMA缓冲区大小为1
+    t_dma.DMA_BufferSize=1;
+    //DMA设备地址不递增，内存地址不递增
+    t_dma.DMA_PeripheralInc=DMA_PeripheralInc_Disable;
+    t_dma.DMA_MemoryInc=DMA_MemoryInc_Disable;
+    //DMA设备数据单位为半字、内存数据单位为半字，即每次传输16位
+    t_dma.DMA_PeripheralDataSize=DMA_PeripheralDataSize_HalfWord;
+    t_dma.DMA_MemoryDataSize=DMA_MemoryDataSize_HalfWord;
+    //DMA模式为循环，即传完一轮就进行下一轮
+    t_dma.DMA_Mode=DMA_Mode_Circular;
+    //DMA优先级为中
+    t_dma.DMA_Priority=DMA_Priority_Medium;
+    //DMA禁止内存到内存
+    t_dma.DMA_M2M=DMA_M2M_Disable;
+    DMA_Init(DMA1_Channel1,&amp;t_dma);
+    //启用DMA1的通道1
+    DMA_Cmd(DMA1_Channel1,ENABLE);
+    //启动DMA搬运ADC数值
+    ADC_DMACmd(ADC1,ENABLE);
+}
+
+int main()
+{
+    usart1_confg();
+    adc_init();
+    adc_gpio_init();
+    dma_config();
+    while(1)
+    {
+        USART_SendData(USART1,g_value&gt;&gt;4);
+    }
+}
+</pre>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

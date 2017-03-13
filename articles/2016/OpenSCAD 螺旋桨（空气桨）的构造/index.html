@@ -1,0 +1,136 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>OpenSCAD 螺旋桨（空气桨）的构造</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">OpenSCAD 螺旋桨（空气桨）的构造</h1>
+							</header>
+							<div class="entry-content">
+
+<p>本来想做个空气桨双体船的，于是先做了一个空气桨，结果就成了小电风扇了。。。</p>
+
+<p>模型效果图长这样：</p>
+<p><img src="1.jpg"></p>
+
+<p>打印出来的实物长这样：</p>
+<p><img src="2.jpg"></p>
+
+<p>旋转起来长这样：</p>
+<p><img src="3.jpg"></p>
+
+<p>很好玩吧~</p>
+
+<p>实测发现风力还挺大的，夏天乘凉完全够用了~</p>
+
+<p>至于OpenSCAD的代码，也不是很复杂，如下：</p>
+
+<pre>difference()
+{
+    intersection()
+    {
+        union()
+        {
+            rotate([0,30,0])
+            union()
+            {
+                translate([-8,0,-1])
+                cube([16,50,1]);
+                translate([0,50,-1])
+                cylinder(r=8,h=1);
+            };
+            rotate([0,30,180])
+            union()
+            {
+                translate([-8,0,-1])
+                cube([16,50,1]);
+                translate([0,50,-1])
+                cylinder(r=8,h=1);
+            };
+            cylinder(r=5,h=10,center=true,$fn=100);
+        }
+        cube([200,200,6],center=true,$fn=100);
+    }
+    cylinder(r=1,h=10,center=true,$fn=100);
+}
+</pre>
+
+<p>为了以后使用，我封装了一个制作空气桨的模块：</p>
+
+<pre>//fan(50,15,1,30,3,2,50);
+
+//产生一个风扇，扇叶长为p_length，宽为p_width，厚度为p_thickness，
+//扇叶倾角为p_angle，共有p_count个扇叶，中心轴的半径为p_shaft_r
+//细致度为p_fn
+module fan(p_length,p_width,p_thickness,p_angle,p_count,p_shaft_r,p_fn)
+{
+    difference()
+    {
+        intersection()
+        {
+            union()
+            {
+                for(t_i=[0:p_count-1])
+                    rotate([p_angle,0,360*t_i/p_count])
+                    fan_leaf(p_length,p_width,p_thickness,p_fn);
+                cylinder(r=p_width*abs(cos(p_angle))/2,
+                         h=p_width*abs(sin(p_angle))*2,center=true,$fn=p_fn);
+            };
+            cylinder(r=p_length,h=p_width*abs(sin(p_angle)),
+                     center=true);
+        }
+        cylinder(r=p_shaft_r,h=p_width,center=true,$fn=p_fn);
+    }
+}
+
+//产生一片扇叶，长为p_length，宽为p_width，厚度为p_thickness
+//细致度为p_fn
+module fan_leaf(p_length,p_width,p_thickness,p_fn)
+{
+    p_length=p_length-p_width/2;
+    union()
+    {
+        translate([0,-p_width/2,-p_thickness/2])
+        cube([p_length,p_width,p_thickness]);
+        translate([p_length,0,-p_thickness/2])
+        cylinder(r=p_width/2,h=p_thickness,$fn=p_fn);
+    };
+}
+</pre>
+
+<p>比如要创建一个3叶桨，可以如下：</p>
+
+<pre>fan(50,15,1,30,3,2,50);
+</pre>
+
+<p>效果如下：</p>
+<p><img src="4.jpg"></p>
+
+<p>比如要创建一个16叶桨，可以如下：</p>
+
+<pre>fan(50,15,1,30,16,2,50);
+</pre>
+
+<p>效果如下：</p>
+<p><img src="5.jpg"></p>
+
+<p>都快成涡轮了。。。。</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>
