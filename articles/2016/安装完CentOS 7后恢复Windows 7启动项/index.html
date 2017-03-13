@@ -1,0 +1,55 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>安装完CentOS 7后恢复Windows 7启动项</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">安装完CentOS 7后恢复Windows 7启动项</h1>
+							</header>
+							<div class="entry-content">
+
+<p>本来系统装的是Ubuntu和Win7双系统，后来想把Ubuntu换成CentOS，于是就装了CentOS 7。结果，CentOS 7安装完之后，开机就没有Win7的启动项了。</p>
+
+<p>进入CentOS后，可以看到原来的C盘、D盘，而且文件完好无损，说明是没有添加Win7的启动项。说来也奇怪，过去装Ubuntu时，Ubuntu会自动检测到当前系统上存在Win7，会在启动项里面添加，可是CentOS安装时并没有提示。</p>
+
+<p>后来查明原因，是因为CentOS 7默认情况下是没有ntfs驱动的，所以不可能读取C盘的信息，更不可能找到Win7的引导程序了，所以也不可能在grub中加入Win7的启动项。</p>
+
+<p>确定原因之后，就可以行动了~</p>
+
+<p>首先，为了能够获得各种丰富的软件，可以安装epel软件源，当然，不装也是可以的：</p>
+
+<pre>yum install epel-release
+</pre>
+
+<p>之后，就可以安装ntfs驱动了。在CentOS上，最常用的ntfs驱动是ntfs-3g，该驱动是一个用户态驱动程序，所以比较稳定，而且轻量级。</p>
+
+<pre>yum install ntfs-3g
+</pre>
+
+<p>安装完之后，就可以发现，原本是ntfs格式的C盘和D盘就可以在CentOS中挂载了。</p>
+
+<p>OK，然后就只要让grub2重新扫一遍硬盘，找到所有可用的启动项，并且写入grub的配置文件中即可：</p>
+
+<pre>grub2-mkconfig -o /boot/grub2/grub.cfg
+</pre>
+
+<p>万事大吉！重启～～</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

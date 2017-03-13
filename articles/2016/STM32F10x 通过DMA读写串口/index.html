@@ -1,0 +1,385 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>STM32F10x 通过DMA读写串口</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">STM32F10x 通过DMA读写串口</h1>
+							</header>
+							<div class="entry-content">
+
+<p>DMA真的太帅了！所谓DMA，说简单些就是一种数据传输机制，只要告诉它怎么传送数据，它就会自己传输，而不需要CPU介入。于是CPU可以省下很多时间做别的事情。</p>
+
+<p>这篇博客要讲的就是通过DMA来读写串口。举个例子，如果你想通过串口输出一段文字，那么最原始的办法就是使用USART_SendData函数将字符一个个地输出。并且每发送一个字符，就需要通过USART_GetFlagStatus函数来等待，直到该字符发送完毕之后才能发送下一个字符。代码形如：</p>
+
+<pre>void usart_send_string(char* p_string)
+{
+    while(*p_string)
+    {
+        USART_SendData(USART1,(uint16_t)(*p_string));
+        while(USART_GetFlagStatus(USART1,USART_FLAG_TC)!=SET);
+        p_string++;
+    }
+}</pre>
+
+<p>这样的一个很严重的问题就是，CPU有大量的时间用于忙等，时间浪费的毫无意义啊！</p>
+
+<p>是否能够有某种方法，能够直接告诉硬件说我想发送一段数据，然后CPU就不再管了。这在STM32上是完全可行的！这就是DMA的强大之处。</p>
+
+<p>================阶段一：使用DMA写串口，发送数据================</p>
+
+<p>先直接贴上完整的代码：</p>
+
+<pre>#include "stm32f10x_rcc.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_usart.h"
+#include "stm32f10x_dma.h"
+#include "misc.h"
+
+#define USART1_DR_BASE 0x40013804
+#define BUFFER_SIZE 256
+
+u8 g_buffer[BUFFER_SIZE];
+
+void usart1_confg()
+{
+    USART_InitTypeDef t_uart;
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA和USART1的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA|RCC_APB2Periph_USART1,ENABLE);
+    //配置PA9（Tx）引脚为推挽输出，最大翻转频率10Mhz
+    t_gpio.GPIO_Pin=GPIO_Pin_9;
+    t_gpio.GPIO_Mode=GPIO_Mode_AF_PP;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //配置PA10（Rx）引脚为悬浮输入
+    t_gpio.GPIO_Pin=GPIO_Pin_10;
+    t_gpio.GPIO_Mode=GPIO_Mode_IN_FLOATING;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //配置串口波特率为115200，字长为8位，一位停止位，无校验位，无流控
+    t_uart.USART_BaudRate=115200;
+    t_uart.USART_WordLength=USART_WordLength_8b;
+    t_uart.USART_StopBits=USART_StopBits_1;
+    t_uart.USART_Parity=USART_Parity_No;
+    t_uart.USART_HardwareFlowControl=USART_HardwareFlowControl_None;
+    t_uart.USART_Mode=USART_Mode_Rx|USART_Mode_Tx;
+    USART_Init(USART1,&amp;t_uart);
+    //开启串口
+    USART_Cmd(USART1,ENABLE);
+}
+
+void dma_config()
+{
+    DMA_InitTypeDef t_dma;
+    //开启DMA1时钟
+    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1,ENABLE);
+    //DMA设备基地址为USART1_DR_BASE（0x40013804），内存基地址为g_buffer
+    t_dma.DMA_PeripheralBaseAddr=USART1_DR_BASE;
+    t_dma.DMA_MemoryBaseAddr=(u32)g_buffer;
+    //DMA传输方向为内存到设备
+    t_dma.DMA_DIR=DMA_DIR_PeripheralDST;
+    //DMA缓冲区大小为BUFFER_SIZE（256）
+    t_dma.DMA_BufferSize=BUFFER_SIZE;
+    //DMA设备地址不递增，内存地址递增
+    t_dma.DMA_PeripheralInc=DMA_PeripheralInc_Disable;
+    t_dma.DMA_MemoryInc=DMA_MemoryInc_Enable;
+    //DMA设备数据单位为字节、内存数据单位为字节，即每次传输一字节
+    t_dma.DMA_PeripheralDataSize=DMA_PeripheralDataSize_Byte;
+    t_dma.DMA_MemoryDataSize=DMA_MemoryDataSize_Byte;
+    //DMA模式为正常，即传完就停止
+    t_dma.DMA_Mode=DMA_Mode_Normal;
+    //DMA优先级为中
+    t_dma.DMA_Priority=DMA_Priority_Medium;
+    //DMA禁止内存到内存
+    t_dma.DMA_M2M=DMA_M2M_Disable;
+    DMA_Init(DMA1_Channel4,&amp;t_dma);
+    //启用DMA1的通道4
+    DMA_Cmd(DMA1_Channel4,ENABLE);
+    //启用DMA1通道4的发送完成中断信号
+    DMA_ITConfig(DMA1_Channel4,DMA_IT_TC,ENABLE);
+}
+
+void nvic_config()
+{
+    NVIC_InitTypeDef t_nvic;
+    //中断优先级组选用第一组，也就是最高一位表示抢占优先级，低3位用来表示响应优先级
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_1);
+    //把DMA1_Channel4的中断配置为抢占优先级为1、响应优先级为1
+    t_nvic.NVIC_IRQChannel=DMA1_Channel4_IRQn;
+    t_nvic.NVIC_IRQChannelPreemptionPriority=1;
+    t_nvic.NVIC_IRQChannelSubPriority=1;
+    t_nvic.NVIC_IRQChannelCmd=ENABLE;
+    NVIC_Init(&amp;t_nvic);
+}
+
+void DMA1_Channel4_IRQHandler()
+{
+    //检测DMA1_FLAG_TC4是否置位
+    if(DMA_GetFlagStatus(DMA1_FLAG_TC4)==SET)
+    {
+        //清除DMA1_FLAG_TC4位
+        DMA_ClearFlag(DMA1_FLAG_TC4);
+        //关闭DMA1的通道4
+        DMA_Cmd(DMA1_Channel4,DISABLE);
+        //重新设置DMA1通道4的数据长度为BUFFER_SIZE（256）
+        DMA1_Channel4-&gt;CNDTR=BUFFER_SIZE;
+        //开启DMA1通道重新发送
+        DMA_Cmd(DMA1_Channel4,ENABLE);
+    }
+}
+
+int main()
+{
+    u16 t_i;
+    for(t_i=0;t_i&lt;BUFFER_SIZE;t_i++)
+        g_buffer[t_i]=t_i;
+    usart1_confg();
+    dma_config();
+    nvic_config();
+    USART_DMACmd(USART1,USART_DMAReq_Tx,ENABLE);
+    while(1);
+}
+</pre>
+
+<p>这段代码分为三个部分，分别是配置串口、配置DMA和配置中断响应。串口的配置在《<a href="../STM32F0与STM32F1系列串口的使用/index.html">STM32F0与STM32F1系列串口的使用</a>》中也用到过，在此不再解释。DMA中则配置DMA1通道4把内存中g_buffer地址开始的256字节一个字节一个字节地搬运到串口数据寄存器中。这里有个宏定义：</p>
+
+<pre>#define USART1_DR_BASE 0x40013804</pre>
+
+<p>这个地址就是串口数据寄存器的内存映射地址。在dma_config中，最后还开启了中断响应。中断响应函数的具体实现就是</p>
+
+<pre>void DMA1_Channel4_IRQHandler()</pre>
+
+<p>这个函数的名字可不能乱取，是有规则的，具体可以查看stm32f10x_it.h文件。在该中断响应函数中，首先检测DMA1_FLAG_TC4标识是否被置位，这一步检测是为了确保发生了DMA传输完成中断。既然被置位了，那么就需要先清除标志位。接着，重新设置数据长度寄存器后，重新开启通道，即可再次发送了。</p>
+
+<p>因此运行结果就是STM32不停地循环输出00 01 02 &#8230; FD FE FF这256个字节。</p>
+
+<p>这里有个细节，就是在中断响应函数中，通过</p>
+
+<pre>DMA1_Channel4-&gt;CNDTR=BUFFER_SIZE;</pre>
+
+<p>直接操作寄存器。虽然这个是最最高效的办法，不过确实让人有点不太舒服。为了完全使用库编程，我发现可以先通过DMA_DeInit函数清除DMA的设置，然后重新设置一遍来再次发送数据。修改后的代码如下：</p>
+
+<pre>#include "stm32f10x_rcc.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_usart.h"
+#include "stm32f10x_dma.h"
+#include "misc.h"
+
+#define USART1_DR_BASE 0x40013804
+#define BUFFER_SIZE 256
+
+u8 g_buffer[BUFFER_SIZE];
+
+void usart1_confg()
+{
+    USART_InitTypeDef t_uart;
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA和USART1的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA|RCC_APB2Periph_USART1,ENABLE);
+    //配置PA9（Tx）引脚为推挽输出，最大翻转频率10Mhz
+    t_gpio.GPIO_Pin=GPIO_Pin_9;
+    t_gpio.GPIO_Mode=GPIO_Mode_AF_PP;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //配置PA10（Rx）引脚为悬浮输入
+    t_gpio.GPIO_Pin=GPIO_Pin_10;
+    t_gpio.GPIO_Mode=GPIO_Mode_IN_FLOATING;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //配置串口波特率为115200，字长为8位，一位停止位，无校验位，无流控
+    t_uart.USART_BaudRate=115200;
+    t_uart.USART_WordLength=USART_WordLength_8b;
+    t_uart.USART_StopBits=USART_StopBits_1;
+    t_uart.USART_Parity=USART_Parity_No;
+    t_uart.USART_HardwareFlowControl=USART_HardwareFlowControl_None;
+    t_uart.USART_Mode=USART_Mode_Rx|USART_Mode_Tx;
+    USART_Init(USART1,&amp;t_uart);
+    //开启串口
+    USART_Cmd(USART1,ENABLE);
+}
+
+void dma_config()
+{
+    DMA_InitTypeDef t_dma;
+    //开启DMA1时钟
+    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1,ENABLE);
+    //DMA设备基地址为USART1_DR_BASE（0x40013804），内存基地址为g_buffer
+    t_dma.DMA_PeripheralBaseAddr=USART1_DR_BASE;
+    t_dma.DMA_MemoryBaseAddr=(u32)g_buffer;
+    //DMA传输方向为内存到设备
+    t_dma.DMA_DIR=DMA_DIR_PeripheralDST;
+    //DMA缓冲区大小为BUFFER_SIZE（256）
+    t_dma.DMA_BufferSize=BUFFER_SIZE;
+    //DMA设备地址不递增，内存地址递增
+    t_dma.DMA_PeripheralInc=DMA_PeripheralInc_Disable;
+    t_dma.DMA_MemoryInc=DMA_MemoryInc_Enable;
+    //DMA设备数据单位为字节、内存数据单位为字节，即每次传输一字节
+    t_dma.DMA_PeripheralDataSize=DMA_PeripheralDataSize_Byte;
+    t_dma.DMA_MemoryDataSize=DMA_MemoryDataSize_Byte;
+    //DMA模式为正常，即传完就停止
+    t_dma.DMA_Mode=DMA_Mode_Normal;
+    //DMA优先级为中
+    t_dma.DMA_Priority=DMA_Priority_Medium;
+    //DMA禁止内存到内存
+    t_dma.DMA_M2M=DMA_M2M_Disable;
+    //清除对DMA1通道4的设置
+    <span style="color: red;">DMA_DeInit(DMA1_Channel4);</span>
+    //重新设置DMA1通道4
+    DMA_Init(DMA1_Channel4,&amp;t_dma);
+    //启用DMA1的通道4
+    DMA_Cmd(DMA1_Channel4,ENABLE);
+    //启用DMA1通道4的发送完成中断信号
+    DMA_ITConfig(DMA1_Channel4,DMA_IT_TC,ENABLE);
+}
+
+void nvic_config()
+{
+    NVIC_InitTypeDef t_nvic;
+    //中断优先级组选用第一组，也就是最高一位表示抢占优先级，低3位用来表示响应优先级
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_1);
+    //把DMA1_Channel4的中断配置为抢占优先级为1、响应优先级为1
+    t_nvic.NVIC_IRQChannel=DMA1_Channel4_IRQn;
+    t_nvic.NVIC_IRQChannelPreemptionPriority=1;
+    t_nvic.NVIC_IRQChannelSubPriority=1;
+    t_nvic.NVIC_IRQChannelCmd=ENABLE;
+    NVIC_Init(&amp;t_nvic);
+}
+
+void DMA1_Channel4_IRQHandler()
+{
+    //检测DMA1_FLAG_TC4是否置位
+    if(DMA_GetFlagStatus(DMA1_FLAG_TC4)==SET)
+    {
+        //清除DMA1_FLAG_TC4位
+        DMA_ClearFlag(DMA1_FLAG_TC4);
+        //重新配置
+        <span style="color: red;">dma_config();</span>
+    }
+}
+
+int main()
+{
+    u16 t_i;
+    for(t_i=0;t_i&lt;BUFFER_SIZE;t_i++)
+        g_buffer[t_i]=t_i;
+    usart1_confg();
+    dma_config();
+    nvic_config();
+    USART_DMACmd(USART1,USART_DMAReq_Tx,ENABLE);
+    while(1);
+}
+</pre>
+
+<p>在dma_config中增加了DMA_DeInit()，这样相当于一切重新开始~不过显然，这样的效率肯定低了不少。选哪种，看心情吧~~~</p>
+
+<p>===============阶段二：使用DMA读串口，接收数据===============</p>
+
+<p>接收数据的话，其实也类似，我这里就演示一个很简单的例子：STM32每收到一个数据，就把该数据加一然后再发送出去。</p>
+
+<pre>#include "stm32f10x_rcc.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_usart.h"
+#include "stm32f10x_dma.h"
+
+#define USART1_DR_BASE 0x40013804
+
+u8 g_data;
+
+void usart1_confg()
+{
+    USART_InitTypeDef t_uart;
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA和USART1的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA|RCC_APB2Periph_USART1,ENABLE);
+    //配置PA9（Tx）引脚为推挽输出，最大翻转频率10Mhz
+    t_gpio.GPIO_Pin=GPIO_Pin_9;
+    t_gpio.GPIO_Mode=GPIO_Mode_AF_PP;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //配置PA10（Rx）引脚为悬浮输入
+    t_gpio.GPIO_Pin=GPIO_Pin_10;
+    t_gpio.GPIO_Mode=GPIO_Mode_IN_FLOATING;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //配置串口波特率为115200，字长为8位，一位停止位，无校验位，无流控
+    t_uart.USART_BaudRate=115200;
+    t_uart.USART_WordLength=USART_WordLength_8b;
+    t_uart.USART_StopBits=USART_StopBits_1;
+    t_uart.USART_Parity=USART_Parity_No;
+    t_uart.USART_HardwareFlowControl=USART_HardwareFlowControl_None;
+    t_uart.USART_Mode=USART_Mode_Rx|USART_Mode_Tx;
+    USART_Init(USART1,&amp;t_uart);
+    //开启串口
+    USART_Cmd(USART1,ENABLE);
+}
+
+void dma_config()
+{
+    DMA_InitTypeDef t_dma;
+    //开启DMA1时钟
+    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1,ENABLE);
+    //DMA设备基地址为USART1_DR_BASE（0x40013804），内存基地址为&amp;g_data
+    t_dma.DMA_PeripheralBaseAddr=USART1_DR_BASE;
+    t_dma.DMA_MemoryBaseAddr=(u32)&amp;g_data;
+    //DMA传输方向为设备到内存
+    t_dma.DMA_DIR=DMA_DIR_PeripheralSRC;
+    //DMA缓冲区大小为1
+    t_dma.DMA_BufferSize=1;
+    //DMA设备地址不递增，内存地址不递增
+    t_dma.DMA_PeripheralInc=DMA_PeripheralInc_Disable;
+    t_dma.DMA_MemoryInc=DMA_MemoryInc_Disable;
+    //DMA设备数据单位为字节、内存数据单位为字节，即每次传输一字节
+    t_dma.DMA_PeripheralDataSize=DMA_PeripheralDataSize_Byte;
+    t_dma.DMA_MemoryDataSize=DMA_MemoryDataSize_Byte;
+    //DMA模式为循环，即传完一次后继续
+    t_dma.DMA_Mode=DMA_Mode_Circular;
+    //DMA优先级为中
+    t_dma.DMA_Priority=DMA_Priority_Medium;
+    //DMA禁止内存到内存
+    t_dma.DMA_M2M=DMA_M2M_Disable;
+    //清除对DMA1通道5的设置
+    DMA_DeInit(DMA1_Channel5);
+    //重新设置DMA1通道5
+    DMA_Init(DMA1_Channel5,&amp;t_dma);
+    //启用DMA1的通道5
+    DMA_Cmd(DMA1_Channel5,ENABLE);
+}
+
+int main()
+{
+    g_data=0;
+    usart1_confg();
+    dma_config();
+    USART_DMACmd(USART1,USART_DMAReq_Rx,ENABLE);
+    while(1)
+    {
+        if(g_data!=0)
+        {
+            USART_SendData(USART1,g_data+1);
+            g_data=0;
+        }
+    }
+}
+</pre>
+
+<p>运行的现象就是，给STM32发送一个字符，比如&#8217;a&#8217;，那么STM32就会发送回来&#8217;b&#8217;。总之，STM32发送回来的数据总归是接收数据加一。</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

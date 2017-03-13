@@ -1,0 +1,873 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>Arduino使用NRF24L01无线模块</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">Arduino使用NRF24L01无线模块</h1>
+							</header>
+							<div class="entry-content">
+
+<p>本来是想写51单片机使用NRF24L01模块的，可是代码怎么都调不成功。后来想到可以先在Arduino上面实现该功能，然后一点点移植。于是，成功了。</p>
+
+<p>首先得说，NRF24L01这个模块，真心没有我想象的好用。一方面，由于各种寄存器、引脚如此繁多，对初学者而言非常复杂，很容易失败。其次，传输速率真的很低。别看手册是说的是最高2Mbps的传输率，那都是骗人的文字游戏。所谓2Mbps，是指峰值速度。也就是说，每发送一个32字节的数据包，可能确实有2Mbps的速度，用时非常短，但是要发送下一个数据包，却要间隔很长的时间。因此，总体传输率很低。据我测定，传输速率只有3KB/s，而在充满WiFi信号的宿舍楼，由于2.4GHz频段的干扰，传输速率更低，只有1.5KB/s。如果NRF24L01的传输速率这么低，那么丝毫没有什么优势，因为我的算法可以让315Mhz模块达到4KB/s，而且这个频段的穿透性和距离优秀很多，而且编程相当方便。</p>
+
+<p>NRF24L01唯一的优势也就是自动应答、自动重发和自动CRC校验了吧。因此我不打算深入研究，给出的代码也是基本能用的水平。</p>
+
+<p>=====================阶段一：交互方式====================</p>
+
+<p>MCU要和NRF24L01交互，是通过SPI总线的，SPI的模式为0。SPI总线的相关原理可以查看《<a href="../51单片机使用SPI总线/index.html">51单片机使用SPI总线</a>》。MCU通过向NRF24L01的各个寄存器写入合适的值来操作NRF24L01。SPI的指令如下表：</p>
+
+<table>
+<tbody>
+<tr>
+<th>指令名称</th>
+<th>指令格式</th>
+<th>操作</th>
+</tr>
+<tr>
+<td>R_REGISTER</td>
+<td>000A AAAA</td>
+<td>读寄存器，AAAAA为寄存器的5位地址</td>
+</tr>
+<tr>
+<td>W_REGISTER</td>
+<td>001A AAAA</td>
+<td>写寄存器，AAAA为寄存器的5位地址</td>
+</tr>
+<tr>
+<td>R_RX_PAYLOAD</td>
+<td>0110 0001</td>
+<td>读接收的数据，读完就被清除</td>
+</tr>
+<tr>
+<td>W_TX_PAYLOAD</td>
+<td>1010 0000</td>
+<td>写发送的数据</td>
+</tr>
+<tr>
+<td>FLUSH_TX</td>
+<td>1110 0001</td>
+<td>清除准备发送的数据</td>
+</tr>
+<tr>
+<td>FLUSH_RX</td>
+<td>1110 0010</td>
+<td>清除已接收的数据</td>
+</tr>
+<tr>
+<td>REUSE_TX_PL</td>
+<td>1110 0011</td>
+<td>重新使用上一个数据包</td>
+</tr>
+<tr>
+<td>NOP</td>
+<td>1111 1111</td>
+<td>空操作</td>
+</tr>
+</tbody>
+</table>
+<p>假设spi交换字节的函数为</p>
+
+<pre>uint8 spi_swap(uint8 p_data);
+</pre>
+
+<p>那么从寄存器0x03中读取数值的操作就形如：</p>
+
+<pre>uint8 t_data;
+spi_swap(0x03);
+t_data=spi_swap(0);
+</pre>
+
+<p>而如果要向寄存器0x09里面写入数值0x54，那么代码形如：</p>
+
+<pre>spi_swap(0x20+0x09);
+spi_swap(0x54);
+</pre>
+
+<p>之所以要加上0x20，是因为写寄存器操作的地址都是真实的寄存器地址加上0x20，这个可以由上表中W_REGISTER看出。</p>
+
+<p>知道了怎么读写寄存器，那么就可以来介绍有哪些常用寄存器了。</p>
+
+<p>=====================阶段二：常用寄存器=====================</p>
+
+<p>至于怎么介绍常用寄存器，我还是挺纠结的。一开始是想按寄存器的地址，从低到高依次介绍的。可是想想我当时学的时候的困惑，被一堆不知道怎么用的寄存器灌水，真的觉得一头雾水。所以我还是结合实际应用场景来介绍吧。</p>
+
+<p>插一句，为了下面的表述方便，我们先约定这么几个函数，分别是</p>
+
+<pre>//读取指定寄存器中的值
+uint8 read_reg(uint8 p_reg);
+
+//向指定寄存器写入值
+uint8 write_reg(uint8 p_reg,uint8 p_value);
+
+//从指定寄存器中读取指定数量的字节
+void read_reg_buf(uint8 p_reg,uint8* p_buffer,uint8 p_len);
+
+//向指定寄存器中写入指定数量的字节
+void write_reg_buf(uint8 p_reg,uint8* p_buffer,uint8 p_len);
+</pre>
+
+<p>以上函数仅仅用于表义，暂不给出实现。</p>
+
+<p>下面就来正是介绍常用寄存器吧~</p>
+
+<p>1、发送地址寄存器TX_ADDR ，地址=0x10</p>
+
+<p>该寄存器共有5字节，表示该NRF24L01的身份标识，相当于网卡的MAC地址。每一个数据包都带有这5字节的地址。如果要设置发送地址为12:a3:8c:04:ef，那么代码就形如：</p>
+
+<pre>uint8 t_addr[5]={0x12,0xa3,0x8c,0x04,0xef};
+write_reg_buf(0x20+0x10,t_addr,5);
+</pre>
+
+<p>2、接收地址寄存器RX_ADDR_P0，地址=0x0A</p>
+
+<p>NRF24L01每收到一个数据包，都会判断该数据包的发送地址是否与自己的接收地址相同，如果相同，那么就接收，否则丢弃。事实上NRF24L01可以同时设置6个接收地址，也就是说同时监听6个发送端的数据。不过为了方便起见，一般只是用通道0。如果要设置接收地址为12:a3:8c:04:ef，那么代码就形如：</p>
+
+<pre>uint8 t_addr[5]={0x12,0xa3,0x8c,0x04,0xef};
+write_reg_buf(0x20+0x0A,t_addr,5);
+</pre>
+
+<p>3、接收允许寄存器EN_RXADDR，地址=0x02</p>
+
+<p>该寄存器决定了是否启用某个通道。如果第i位为0，则表明禁用通道i，否则启用。在实际使用中，为了让通道0能够接收数据，而其他通道都关闭，一般把该寄存器设为0x01，代码形如：</p>
+
+<pre>write_reg(0x20+0x01,0x01);
+</pre>
+
+<p>4、信道选择寄存器RF_CH，地址=0x05</p>
+
+<p>所谓信道，其实就是物理上的频率。NRF24L01可以工作在2.4GHz~2.5GHz，把这0.1GHz的空间分为125个信道，那么每个信道就有0.8MHz的频宽。比如说，信道0的无线电频率是2.4000GHz~2.4008GHz，信道1的无线电频率是2.4008GHz~2.4016GHz，以此类推。一对收发模块必须用相同的信道，否则在物理上就收不到了。假设要使用信道40，那么代码形如：</p>
+
+<pre>write_reg(0x20+0x05,40);
+</pre>
+
+<p>5、自动应答寄存器EN_AA，地址=0x01</p>
+
+<p>在NRF24L01的通信方式中，有一个叫做自动应答的概念。当发送方发送一个数据包后，如果接受方收到了，那么接收方会发送一个应答信号。如果发送方收到了应答信号，那么发送方就知道接收方已经成功接受。如果发送方没有收到应答信号，那么发送方会重发该数据包。发送方开启自动应道则表明需要得到自动应答，而接收方开启自动应答则表明会进行自动应答。事实上，可以为每一个通道分别选择是否开启自动应答，不过既然一般只是用通道0，所以一般EN_AA要么为0要么为1。如果要开启自动应答，那么代码形如：</p>
+
+<pre>write_reg(0x20+0x01,0x01);
+</pre>
+
+<p>6、重试寄存器SETUP_RETR，地址=0x04</p>
+
+<p>上面提到了发送方会在收不到应答时进行自动重发。那么重发最多尝试多少次呢？每次重发之间间隔多久呢？这两个参数就是SETUP_RETR寄存器决定的。SETUP_RETR寄存器的高4位组成的整数d表示自动重发延时，延时时间为(d+1)*250+86us，比如d=0，那么延时250+86us，d=15则延时4000+86us。而低4位组成的整数c表示最大重发次数，最小为0，表示禁止自动重发，最大为15，表示最多重试15次。假设希望设置为自动重发延时为500+86us，最大重次数为10，那么代码形如：</p>
+
+<pre>write_reg(0x20+0x04,0x1a);
+</pre>
+
+<p>7、射频配置寄存器RF_SETUP，地址=0x06</p>
+
+<p>该寄存器决定了发射功率、发射速率和放大器增益。该寄存器的最低位如果为1，则开启低噪音放大器增益，如果为0则关闭。第1位和第2位（从0计）表示发射功率，如果为00则为-18dBm，如果为01则为-12dBm，如果为10则为-6dBm，如果为11则为0dBm。而第3为决定发射速率，如果为0则为1Mbps，如果为1则为2Mbps。如果我想要设置为2Mbps、0dBm、开启放大器增益，那么代码形如：</p>
+
+<pre>write_reg(0x20+0x06,0x0f);
+</pre>
+
+<p>8、总配置寄存器CONFIG，地址=0x00</p>
+
+<p>该寄存器决定了很多配置，如下表：</p>
+
+<table>
+<tbody>
+<tr>
+<th>名称</th>
+<th width="40">位</th>
+<th width="50">复位值</th>
+<th>描述</th>
+</tr>
+<tr>
+<td>保留</td>
+<td>7</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td>MASK_RX_DR</td>
+<td>6</td>
+<td>0</td>
+<td>可屏蔽中断RX_RD<br />
+1：IRQ引脚不显示RX_RD中断<br />
+0：RX_RD中断产生时IRQ引脚电平为低</td>
+</tr>
+<tr>
+<td>MASK_TX_DS</td>
+<td>5</td>
+<td>0</td>
+<td>可屏蔽中断TX_DS<br />
+1：IRQ引脚不显示TX_DS中断<br />
+0：TX_DS中断产生时IRQ引脚电平为低</td>
+</tr>
+<tr>
+<td>MASK_MAX_RT</td>
+<td>4</td>
+<td>0</td>
+<td>可屏蔽中断MAX_RT<br />
+1：IRQ引脚不显示TX_DS中断<br />
+0：MAX_RT中断产生时IRQ引脚电平为低</td>
+</tr>
+<tr>
+<td>EN_CRC</td>
+<td>3</td>
+<td>1</td>
+<td>CRC使能。如果EN_AA中任意一位为高则EN_CRC强迫为高。</td>
+</tr>
+<tr>
+<td>CRCO</td>
+<td>2</td>
+<td>0</td>
+<td>CRC模式<br />
+‘0’-8位CRC校验<br />
+‘1’-16位CRC校验</td>
+</tr>
+<tr>
+<td>PWR_UP</td>
+<td>1</td>
+<td>0</td>
+<td>1：上电           0：掉电</td>
+</tr>
+<tr>
+<td>PRIM_RX</td>
+<td>0</td>
+<td>0</td>
+<td>1：接收模式       0：发射模式</td>
+</tr>
+</tbody>
+</table>
+<p>如果想要启用16位CRC、上电发射，那么代码形如：</p>
+
+<pre>wirte_reg(0x20+0x00,0x0e);
+</pre>
+
+<p>当然，除了这些能够使用通用方法读写的寄存器外，还有两个寄存器是必须使用专用指令来读写的，就是发送数据寄存器和接收数据寄存器。总共有4个专用指令：</p>
+
+<table>
+<tbody>
+<tr>
+<th>指令名称</th>
+<th>指令格式</th>
+<th>操作</th>
+</tr>
+<tr>
+<td>R_RX_PAYLOAD</td>
+<td>0110 0001</td>
+<td>读接收的数据，读完就被清除</td>
+</tr>
+<tr>
+<td>W_TX_PAYLOAD</td>
+<td>1010 0000</td>
+<td>写发送的数据</td>
+</tr>
+<tr>
+<td>FLUSH_TX</td>
+<td>1110 0001</td>
+<td>清除准备发送的数据</td>
+</tr>
+<tr>
+<td>FLUSH_RX</td>
+<td>1110 0010</td>
+<td>清除已接收的数据</td>
+</tr>
+</tbody>
+</table>
+<p>如果要发送数据，那么就必须首先用W_TX_PAYLOAD指令把数据写入，共32字节。如果要读取接收到的数据，那么就必须使用R_RX_PAYLOAD指令把数据读出，连续读32字节。<br />
+写入待发送数据的代码形如：</p>
+
+<pre>uint8 t_data="abcdefghijklmnopqrstuvwxyz123456";
+write_reg_buf(0xA0,t_data,32);
+</pre>
+
+<p>读取收到的数据的代码形如：</p>
+
+<pre>uint8 t_buffer[32];
+read_reg_buf(0x61,t_buffer,32);
+</pre>
+
+<p>清除待发送数据的代码形如：</p>
+
+<pre>write_reg_buf(0xE1,0);
+</pre>
+
+<p>清除接收到的数据的代码形如：</p>
+
+<pre>write_reg_buf(0xE2,0);
+</pre>
+
+<p>======================阶段三：Arduino实现====================</p>
+
+<p>Arduino的实现直接参考了网页《<a href="http://www.elecfreaks.com/203.html">nRF24L01 Module Demo for Arduino</a>》，几乎没有做任何修改。</p>
+
+<p>不论是接收端还是发送端，硬件连接上参考下表：</p>
+
+<table>
+<tbody>
+<tr>
+<th>NRF24L01</th>
+<th>Arduino</th>
+</tr>
+<tr>
+<td>GND</td>
+<td>GND</td>
+</tr>
+<tr>
+<td>VCC</td>
+<td>3.3V</td>
+</tr>
+<tr>
+<td>CE</td>
+<td>D8</td>
+</tr>
+<tr>
+<td>CSN</td>
+<td>D9</td>
+</tr>
+<tr>
+<td>SCK</td>
+<td>D10</td>
+</tr>
+<tr>
+<td>MOSI</td>
+<td>D11</td>
+</tr>
+<tr>
+<td>MISO</td>
+<td>D12</td>
+</tr>
+<tr>
+<td>IRQ</td>
+<td>D13</td>
+</tr>
+</tbody>
+</table>
+
+<p><img src="1.jpg"></p>
+
+<p>发送端代码分为NRF24L01.h、API.h和tx.ino三个文件，接收端代码分为NRF24L01.h、API.h和rx.ino三个文件。下面给出这四个文件的代码：</p>
+
+<p>NRF24L01.h</p>
+
+<pre>#ifndef NRF24L01_h
+#define NRF24L01_h
+
+#include "API.h"
+
+//*********************************************
+#define SPI_PORT PORTB
+#define SPI_DIR  DDRB
+#define SPI_IN   PINB
+//---------------------------------------------
+#define TX_ADR_WIDTH    5
+// 5 unsigned chars TX(RX) address width
+#define TX_PLOAD_WIDTH  1
+// 20 unsigned chars TX payload
+//---------------------------------------------
+#define CE       0x01
+// CE_BIT:   Digital Input     Chip Enable Activates RX or TX mode
+#define SCK      0x04
+// SCK BIT:  Digital Input     SPI Clock
+
+#define MISO     0x10
+// MISO BIT: Digital Output    SPI Slave Data Output, with tri-state option
+#define CSN      0x02
+// CSN BIT:  Digital Input     SPI Chip Select
+#define MOSI     0x08
+// MOSI BIT: Digital Input     SPI Slave Data Input
+#define IRQ      0x20
+// IRQ BIT:  Digital Output    Maskable interrupt pin
+//*********************************************
+#endif
+</pre>
+
+<p>API.h</p>
+
+<pre>// BYTE type definition
+#ifndef API_H
+#define API_H
+//****************************************************
+// SPI(nRF24L01) commands
+#define READ_REG        0x00  // Define read command to register
+#define WRITE_REG       0x20  // Define write command to register
+#define RD_RX_PLOAD     0x61  // Define RX payload register address
+#define WR_TX_PLOAD     0xA0  // Define TX payload register address
+#define FLUSH_TX        0xE1  // Define flush TX register command
+#define FLUSH_RX        0xE2  // Define flush RX register command
+#define REUSE_TX_PL     0xE3  // Define reuse TX payload register command
+#define NOP             0xFF  // Define No Operation, might be used to read status register
+//***************************************************
+#define RX_DR    0x40
+#define TX_DS    0x20
+#define MAX_RT   0x10
+//***************************************************
+// SPI(nRF24L01) registers(addresses)
+#define CONFIG          0x00  // 'Config' register address
+#define EN_AA           0x01  // 'Enable Auto Acknowledgment' register address
+#define EN_RXADDR       0x02  // 'Enabled RX addresses' register address
+#define SETUP_AW        0x03  // 'Setup address width' register address
+#define SETUP_RETR      0x04  // 'Setup Auto. Retrans' register address
+#define RF_CH           0x05  // 'RF channel' register address
+#define RF_SETUP        0x06  // 'RF setup' register address
+#define STATUS          0x07  // 'Status' register address
+#define OBSERVE_TX      0x08  // 'Observe TX' register address
+#define CD              0x09  // 'Carrier Detect' register address
+#define RX_ADDR_P0      0x0A  // 'RX address pipe0' register address
+#define RX_ADDR_P1      0x0B  // 'RX address pipe1' register address
+#define RX_ADDR_P2      0x0C  // 'RX address pipe2' register address
+#define RX_ADDR_P3      0x0D  // 'RX address pipe3' register address
+#define RX_ADDR_P4      0x0E  // 'RX address pipe4' register address
+#define RX_ADDR_P5      0x0F  // 'RX address pipe5' register address
+#define TX_ADDR         0x10  // 'TX address' register address
+#define RX_PW_P0        0x11  // 'RX payload width, pipe0' register address
+#define RX_PW_P1        0x12  // 'RX payload width, pipe1' register address
+#define RX_PW_P2        0x13  // 'RX payload width, pipe2' register address
+#define RX_PW_P3        0x14  // 'RX payload width, pipe3' register address
+#define RX_PW_P4        0x15  // 'RX payload width, pipe4' register address
+#define RX_PW_P5        0x16  // 'RX payload width, pipe5' register address
+#define FIFO_STATUS     0x17  // 'FIFO Status Register' register address
+
+//************************************************
+#endif
+</pre>
+
+<p>tx.ino</p>
+
+<pre>#include "NRF24L01.h"
+
+//***************************************************
+#define TX_ADR_WIDTH    5   // 5 unsigned chars TX(RX) address width
+#define TX_PLOAD_WIDTH  32  // 32 unsigned chars TX payload
+
+unsigned char TX_ADDRESS[TX_ADR_WIDTH]  =
+{
+  0x34,0x43,0x10,0x10,0x01
+}; // Define a static TX address
+
+unsigned char rx_buf[TX_PLOAD_WIDTH] = {0}; // initialize value
+unsigned char tx_buf[TX_PLOAD_WIDTH] = {0};
+//***************************************************
+void setup()
+{
+  SPI_DIR = ( CE + SCK + CSN + MOSI);
+  SPI_DIR &amp;=~ ( IRQ + MISO);
+  //  attachInterrupt(1, _ISR, LOW);// interrupt enable
+  Serial.begin(115200);
+  init_io();                        // Initialize IO port
+  unsigned char status=SPI_Read(STATUS);
+  Serial.print("status = ");
+  Serial.println(status,HEX);     // There is read the mode’s status register, the default value should be ‘E’
+  Serial.println("*******************TX_Mode Start****************************");
+  TX_Mode();                       // set TX mode
+}
+void loop()
+{
+  int k = 0;
+  for(;;)
+  {
+    for(int i=0; i&lt;32; i++)
+        tx_buf[i] = k++;
+    unsigned char status = SPI_Read(STATUS);                   // read register STATUS's value
+    if(status&amp;TX_DS)                                           // if receive data ready (TX_DS) interrupt
+    {
+      SPI_RW_Reg(FLUSH_TX,0);
+      SPI_Write_Buf(WR_TX_PLOAD,tx_buf,TX_PLOAD_WIDTH);       // write playload to TX_FIFO
+    }
+    if(status&amp;MAX_RT)                                         // if receive data ready (MAX_RT) interrupt, this is retransmit than  SETUP_RETR
+    {
+      SPI_RW_Reg(FLUSH_TX,0);
+      SPI_Write_Buf(WR_TX_PLOAD,tx_buf,TX_PLOAD_WIDTH);      // disable standy-mode
+    }
+    SPI_RW_Reg(WRITE_REG+STATUS,status);                     // clear RX_DR or TX_DS or MAX_RT interrupt flag
+    delay(1000);
+  }
+}
+
+//**************************************************
+// Function: init_io();
+// Description:
+// flash led one time,chip enable(ready to TX or RX Mode),
+// Spi disable,Spi clock line init high
+//**************************************************
+void init_io(void)
+{
+  SPI_PORT&amp;=~CE;      // chip enable
+  SPI_PORT|=CSN;      // Spi disable
+  SPI_PORT&amp;=~SCK;     // Spi clock line init high
+}
+
+/**************************************************
+ * Function: SPI_RW();
+ *
+ * Description:
+ * Writes one unsigned char to nRF24L01, and return the unsigned char read
+ * from nRF24L01 during write, according to SPI protocol
+ **************************************************/
+unsigned char SPI_RW(unsigned char Byte)
+{
+  unsigned char i;
+  for(i=0;i&lt;8;i++)                      // output 8-bit
+  {
+    if(Byte&amp;0x80)
+    {
+      SPI_PORT |=MOSI;    // output 'unsigned char', MSB to MOSI
+    }
+    else
+    {
+      SPI_PORT &amp;=~MOSI;
+    }
+    SPI_PORT|=SCK;                      // Set SCK high..
+    Byte &lt;&lt;= 1;                         // shift next bit into MSB..
+    if(SPI_IN &amp; MISO)
+    {
+      Byte |= 1;                // capture current MISO bit
+    }
+    SPI_PORT&amp;=~SCK;                     // ..then set SCK low again
+  }
+  return(Byte);                     // return read unsigned char
+}
+/**************************************************/
+
+/**************************************************
+ * Function: SPI_RW_Reg();
+ *
+ * Description:
+ * Writes value 'value' to register 'reg'
+/**************************************************/
+unsigned char SPI_RW_Reg(unsigned char reg, unsigned char value)
+{
+  unsigned char status;
+
+  SPI_PORT&amp;=~CSN;                   // CSN low, init SPI transaction
+  status = SPI_RW(reg);             // select register
+  SPI_RW(value);                    // ..and write value to it..
+  SPI_PORT|=CSN;                    // CSN high again
+
+  return(status);                   // return nRF24L01 status unsigned char
+}
+/**************************************************/
+
+/**************************************************
+ * Function: SPI_Read();
+ *
+ * Description:
+ * Read one unsigned char from nRF24L01 register, 'reg'
+/**************************************************/
+unsigned char SPI_Read(unsigned char reg)
+{
+  unsigned char reg_val;
+
+  SPI_PORT&amp;=~CSN;                // CSN low, initialize SPI communication...
+  SPI_RW(reg);                   // Select register to read from..
+  reg_val = SPI_RW(0);           // ..then read register value
+  SPI_PORT|=CSN;                 // CSN high, terminate SPI communication
+
+  return(reg_val);               // return register value
+}
+/**************************************************/
+
+/**************************************************
+ * Function: SPI_Read_Buf();
+ *
+ * Description:
+ * Reads 'unsigned chars' #of unsigned chars from register 'reg'
+ * Typically used to read RX payload, Rx/Tx address
+/**************************************************/
+unsigned char SPI_Read_Buf(unsigned char reg, unsigned char *pBuf, unsigned char bytes)
+{
+  unsigned char status,i;
+
+  SPI_PORT&amp;=~CSN;                   // Set CSN low, init SPI tranaction
+  status = SPI_RW(reg);             // Select register to write to and read status unsigned char
+
+  for(i=0;i&lt;bytes;i++)
+  {
+    pBuf[i] = SPI_RW(0);    // Perform SPI_RW to read unsigned char from nRF24L01
+  }
+
+  SPI_PORT|=CSN;                   // Set CSN high again
+
+  return(status);                  // return nRF24L01 status unsigned char
+}
+/**************************************************/
+
+/**************************************************
+ * Function: SPI_Write_Buf();
+ *
+ * Description:
+ * Writes contents of buffer '*pBuf' to nRF24L01
+ * Typically used to write TX payload, Rx/Tx address
+/**************************************************/
+unsigned char SPI_Write_Buf(unsigned char reg, unsigned char *pBuf, unsigned char bytes)
+{
+  unsigned char status,i;
+
+  SPI_PORT&amp;=~CSN;                   // Set CSN low, init SPI tranaction
+  status = SPI_RW(reg);             // Select register to write to and read status unsigned char
+  for(i=0;i&lt;bytes; i++)             // then write all unsigned char in buffer(*pBuf)
+  {
+    SPI_RW(*pBuf++);
+  }
+  SPI_PORT|=CSN;                   // Set CSN high again
+  return(status);                  // return nRF24L01 status unsigned char
+}
+/**************************************************/
+
+/**************************************************
+ * Function: TX_Mode();
+ *
+ * Description:
+ * This function initializes one nRF24L01 device to
+ * TX mode, set TX address, set RX address for auto.ack,
+ * fill TX payload, select RF channel, datarate &amp; TX pwr.
+ * PWR_UP is set, CRC(2 unsigned chars) is enabled, &amp; PRIM:TX.
+ *
+ * ToDo: One high pulse(&gt;10us) on CE will now send this
+ * packet and expext an acknowledgment from the RX device.
+ **************************************************/
+void TX_Mode(void)
+{
+  SPI_PORT&amp;=~CE;
+
+  SPI_Write_Buf(WRITE_REG + TX_ADDR, TX_ADDRESS, TX_ADR_WIDTH);    // Writes TX_Address to nRF24L01
+  SPI_Write_Buf(WRITE_REG + RX_ADDR_P0, TX_ADDRESS, TX_ADR_WIDTH); // RX_Addr0 same as TX_Adr for Auto.Ack
+
+  SPI_RW_Reg(WRITE_REG + EN_AA, 0x01);      // Enable Auto.Ack:Pipe0
+  SPI_RW_Reg(WRITE_REG + EN_RXADDR, 0x01);  // Enable Pipe0
+  SPI_RW_Reg(WRITE_REG + SETUP_RETR, 0x1a); // 500us + 86us, 10 retrans...
+  SPI_RW_Reg(WRITE_REG + RF_CH, 40);        // Select RF channel 40
+  SPI_RW_Reg(WRITE_REG + RF_SETUP, 0x07);   // TX_PWR:0dBm, Datarate:2Mbps, LNA:HCURR
+  SPI_RW_Reg(WRITE_REG + CONFIG, 0x0e);     // Set PWR_UP bit, enable CRC(2 unsigned chars) &amp; Prim:TX. MAX_RT &amp; TX_DS enabled..
+  SPI_Write_Buf(WR_TX_PLOAD,tx_buf,TX_PLOAD_WIDTH);
+
+  SPI_PORT|=CE;
+}
+</pre>
+
+<p>rx.ino</p>
+
+<pre>#include "NRF24L01.h"
+
+//***************************************************
+#define TX_ADR_WIDTH    5   // 5 unsigned chars TX(RX) address width
+#define TX_PLOAD_WIDTH  32  // 32 unsigned chars TX payload
+
+unsigned char TX_ADDRESS[TX_ADR_WIDTH]  =
+{
+  0x34,0x43,0x10,0x10,0x01
+}; // Define a static TX address
+
+unsigned char rx_buf[TX_PLOAD_WIDTH];
+unsigned char tx_buf[TX_PLOAD_WIDTH];
+//***************************************************
+void setup()
+{
+  SPI_DIR = ( CE + SCK + CSN + MOSI);
+  SPI_DIR &amp;=~ ( IRQ + MISO);
+  //  attachInterrupt(1, _ISR, LOW); // interrupt enable
+  Serial.begin(115200);
+  init_io();                        // Initialize IO port
+  unsigned char status=SPI_Read(STATUS);
+  Serial.print("status = ");
+  Serial.println(status,HEX);      // There is read the mode’s status register, the default value should be ‘E’
+  Serial.println("*****************RX_Mode start******************************R");
+  RX_Mode();                        // set RX mode
+}
+void loop()
+{
+  for(;;)
+  {
+    unsigned char status = SPI_Read(STATUS);                         // read register STATUS's value
+    if(status&amp;RX_DR)                                                 // if receive data ready (TX_DS) interrupt
+    {
+      SPI_Read_Buf(RD_RX_PLOAD, rx_buf, TX_PLOAD_WIDTH);             // read playload to rx_buf
+      SPI_RW_Reg(FLUSH_RX,0);                                        // clear RX_FIFO
+      for(int i=0; i&lt;32; i++)
+      {
+          Serial.print(" ");
+          Serial.print(rx_buf[i],HEX);                              // print rx_buf
+      }
+      Serial.println(" ");
+    }
+    SPI_RW_Reg(WRITE_REG+STATUS,status);                             // clear RX_DR or TX_DS or MAX_RT interrupt flag
+    delay(500);
+  }
+}
+
+//**************************************************
+// Function: init_io();
+// Description:
+// flash led one time,chip enable(ready to TX or RX Mode),
+// Spi disable,Spi clock line init high
+//**************************************************
+void init_io(void)
+{
+  SPI_PORT&amp;=~CE;      // chip enable
+  SPI_PORT|=CSN;      // Spi disable
+  SPI_PORT&amp;=~SCK;     // Spi clock line init high
+}
+
+/**************************************************
+ * Function: SPI_RW();
+ *
+ * Description:
+ * Writes one unsigned char to nRF24L01, and return the unsigned char read
+ * from nRF24L01 during write, according to SPI protocol
+ **************************************************/
+unsigned char SPI_RW(unsigned char Byte)
+{
+  unsigned char i;
+  for(i=0;i&lt;8;i++)                      // output 8-bit
+  {
+    if(Byte&amp;0x80)
+    {
+      SPI_PORT |=MOSI;    // output 'unsigned char', MSB to MOSI
+    }
+    else
+    {
+      SPI_PORT &amp;=~MOSI;
+    }
+    SPI_PORT|=SCK;                      // Set SCK high..
+    Byte &lt;&lt;= 1;                         // shift next bit into MSB..
+    if(SPI_IN &amp; MISO)
+    {
+      Byte |= 1;                // capture current MISO bit
+    }
+    SPI_PORT&amp;=~SCK;                     // ..then set SCK low again
+  }
+  return(Byte);                     // return read unsigned char
+}
+/**************************************************/
+
+/**************************************************
+ * Function: SPI_RW_Reg();
+ *
+ * Description:
+ * Writes value 'value' to register 'reg'
+/**************************************************/
+unsigned char SPI_RW_Reg(unsigned char reg, unsigned char value)
+{
+  unsigned char status;
+
+  SPI_PORT&amp;=~CSN;                   // CSN low, init SPI transaction
+  status = SPI_RW(reg);             // select register
+  SPI_RW(value);                    // ..and write value to it..
+  SPI_PORT|=CSN;                    // CSN high again
+
+  return(status);                   // return nRF24L01 status unsigned char
+}
+/**************************************************/
+
+/**************************************************
+ * Function: SPI_Read();
+ *
+ * Description:
+ * Read one unsigned char from nRF24L01 register, 'reg'
+/**************************************************/
+unsigned char SPI_Read(unsigned char reg)
+{
+  unsigned char reg_val;
+
+  SPI_PORT&amp;=~CSN;                // CSN low, initialize SPI communication...
+  SPI_RW(reg);                   // Select register to read from..
+  reg_val = SPI_RW(0);           // ..then read register value
+  SPI_PORT|=CSN;                 // CSN high, terminate SPI communication
+
+  return(reg_val);               // return register value
+}
+/**************************************************/
+
+/**************************************************
+ * Function: SPI_Read_Buf();
+ *
+ * Description:
+ * Reads 'unsigned chars' #of unsigned chars from register 'reg'
+ * Typically used to read RX payload, Rx/Tx address
+/**************************************************/
+unsigned char SPI_Read_Buf(unsigned char reg, unsigned char *pBuf, unsigned char bytes)
+{
+  unsigned char status,i;
+
+  SPI_PORT&amp;=~CSN;                   // Set CSN low, init SPI tranaction
+  status = SPI_RW(reg);             // Select register to write to and read status unsigned char
+
+  for(i=0;i&lt;bytes;i++)
+  {
+    pBuf[i] = SPI_RW(0);    // Perform SPI_RW to read unsigned char from nRF24L01
+  }
+
+  SPI_PORT|=CSN;                   // Set CSN high again
+
+  return(status);                  // return nRF24L01 status unsigned char
+}
+/**************************************************/
+
+/**************************************************
+ * Function: SPI_Write_Buf();
+ *
+ * Description:
+ * Writes contents of buffer '*pBuf' to nRF24L01
+ * Typically used to write TX payload, Rx/Tx address
+/**************************************************/
+unsigned char SPI_Write_Buf(unsigned char reg, unsigned char *pBuf, unsigned char bytes)
+{
+  unsigned char status,i;
+
+  SPI_PORT&amp;=~CSN;                   // Set CSN low, init SPI tranaction
+  status = SPI_RW(reg);             // Select register to write to and read status unsigned char
+  for(i=0;i&lt;bytes; i++)             // then write all unsigned char in buffer(*pBuf)
+  {
+    SPI_RW(*pBuf++);
+  }
+  SPI_PORT|=CSN;                   // Set CSN high again
+  return(status);                  // return nRF24L01 status unsigned char
+}
+/**************************************************/
+
+/**************************************************
+ * Function: RX_Mode();
+ *
+ * Description:
+ * This function initializes one nRF24L01 device to
+ * RX Mode, set RX address, writes RX payload width,
+ * select RF channel, datarate &amp; LNA HCURR.
+ * After init, CE is toggled high, which means that
+ * this device is now ready to receive a datapacket.
+/**************************************************/
+void RX_Mode(void)
+{
+  SPI_PORT&amp;=~CE;
+  SPI_Write_Buf(WRITE_REG + RX_ADDR_P0, TX_ADDRESS, TX_ADR_WIDTH); // Use the same address on the RX device as the TX device
+  SPI_RW_Reg(WRITE_REG + EN_AA, 0x01);      // Enable Auto.Ack:Pipe0
+  SPI_RW_Reg(WRITE_REG + EN_RXADDR, 0x01);  // Enable Pipe0
+  SPI_RW_Reg(WRITE_REG + RF_CH, 40);        // Select RF channel 40
+  SPI_RW_Reg(WRITE_REG + RX_PW_P0, TX_PLOAD_WIDTH); // Select same RX payload width as TX Payload width
+  SPI_RW_Reg(WRITE_REG + RF_SETUP, 0x07);   // TX_PWR:0dBm, Datarate:2Mbps, LNA:HCURR
+  SPI_RW_Reg(WRITE_REG + CONFIG, 0x0f);     // Set PWR_UP bit, enable CRC(2 unsigned chars) &amp; Prim:RX. RX_DR enabled..
+  SPI_PORT|=CE;                             // Set CE pin high to enable RX device
+  //  This device is now ready to receive one packet of 16 unsigned chars payload from a TX device sending to address
+  //  '3443101001', with auto acknowledgment, retransmit count of 10, RF channel 40 and datarate = 2Mbps.
+}
+/**************************************************/
+</pre>
+
+<p>依次建立tx和rx两个工程，编译、烧录之后，打开接收端的串口监视器，波特率调为115200，可以看见不断地输出收到的数据：</p>
+
+<p><img src="2.jpg"></p>
+
+<p>仔细观察可以发现，并不能完美地从0x00~0xFF地输出，说明即使有了自动应答和重传，中间还是会有丢包。这是因为宿舍楼内WiFi信号很复杂。</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>
