@@ -2,11 +2,16 @@
 	<head>
 		<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
 		<title>博观而约取 厚积而薄发</title>
+		<script src="./jquery.js"></script>
 		<script>
 			function viewArticle(a)
 			{
-				var url="./articles/"+a.innerHTML+"/index.html";
-				window.open(url);
+				var a=$(a)；
+				alert(a);
+				//var date=a.parent();
+				//alert(date);
+				//var url="./articles/"+a.innerHTML+"/index.html";
+				//window.open(url);
 			}
 		</script>
 	</head>
