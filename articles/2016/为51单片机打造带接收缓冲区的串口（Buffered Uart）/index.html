@@ -1,0 +1,284 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>为51单片机打造带接收缓冲区的串口（Buffered Uart）</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">为51单片机打造带接收缓冲区的串口（Buffered Uart）</h1>
+							</header>
+							<div class="entry-content">
+
+
+		<p>51单片机自带一个硬件串口模块，引脚位于P3.0（RXD）与P3.1（TXD），使用还算方便，但是依旧有些不足：</p>
+
+<p>（1）串口的初始化比较复杂，要设置定时器，而定时器的值要手动计算；</p>
+
+<p>（2）串口没有接收缓冲区，每次只能接收一个字节，如果不及时处理收到的数据，那么数据就会丢失；</p>
+
+<p>我希望做一个模块，能够让51单片机的串口带上接收缓冲区的功能。在一个初始化函数中，可以方便的设置波特率和接收缓冲区。另外可以查询接收缓冲区中是否有数据，有则可以顺序读出。也可以发送数据，函数阻塞直到所有数据都发出（本来考虑过异步发送，但是现在发现很多场合还是需要同步发送）。</p>
+
+<p>缓冲区最主要的功能就是为串口提供了异步能力，能够让程序更加专注于业务逻辑，而不是频繁地处理串口中断，把代码搞得一塌糊涂。</p>
+
+<p>为了兼容各种常见的晶振频率，目前只支持这几个波特率：300、600、1200、2400、4800。</p>
+
+<p>在编译之前，请根据目标机器的晶振频率修改buffered_uart.c中CLK_FREQ_100HZ宏的值。CLK_FREQ_100HZ的值是晶振频率（单位是Hz）的百分之一。</p>
+
+<p>比如用的是12Mhz的晶振，那么就应该：</p>
+
+<pre>#define CLK_FREQ_100HZ 120000
+</pre>
+
+<p>如果用的是11.0592Mhz的晶振，那么就应该：</p>
+
+<pre>#define CLK_FREQ_100HZ 110592
+</pre>
+
+<p>另外，串口是需要使用timer1定时器和interrupt 4中断的！注意避免冲突！</p>
+
+<p>OK，直接上代码：</p>
+
+<p>buffered_uart.h：</p>
+
+<pre>/*
+该文件用来实现一个带有缓冲机制的串口
+定义了方法
+
+void uart_init(uint16 p_baud,uint8* p_buffer,uint8 p_capacity);
+初始化串口，模式为8-n-1（8数据位，无校验位，1停止位），参数为
+波特率、缓存、缓存容量
+
+void uart_close();
+关闭串口，释放占用的资源（缓冲区、定时器1）
+
+uint8 uart_available();
+获取缓存中以接收但还未读取的字节数量
+
+uint8 uart_read();
+从缓存中读取一个字节
+
+bool uart_is_overflow();
+判断缓存是否溢出（由于没有及时读取）
+
+void uart_overflow_reset();
+清除缓存溢出标志位
+
+void uart_write(uint8 p_data);
+发送一个字节
+
+void uart_print(char* p_string);
+发送一个字符串
+
+void uart_println(char* p_string);
+发送一个字符串并换行
+
+目前只支持常用波特率300、600、1200、2400、4800
+*/
+
+#ifndef BUFFERED_UART_H
+#define BUFFERED_UART_H
+
+#include "types.h"
+
+void uart_init(uint16 p_baud,uint8* p_buffer,uint8 p_capacity);
+void uart_close();
+uint8 uart_available();
+uint8 uart_read();
+bool uart_is_overflow();
+void uart_overflow_reset();
+void uart_write(uint8 p_data);
+void uart_print(char* p_string);
+void uart_println(char* p_string);
+
+#endif
+</pre>
+
+<p>buffered_uart.c</p>
+
+<pre>/*
+buffered_uart.h的实现文件
+请务必明确单片机的时钟频率，并相应修改CLK_FREQ_100HZ
+CLK_FREQ_100HZ是晶振频率的百分之一
+*/
+
+#define CLK_FREQ_100HZ 120000
+
+#include "buffered_uart.h"
+#include &lt;reg51.h&gt;
+
+#define INTERRUPT_NO 4
+
+typedef struct
+{
+    uint8* buffer;
+    uint8 max;
+    uint8 start;
+    uint8 len;
+}
+queue;
+
+static uint8 queue_read(queue* p_queue)
+{
+    uint8 t_data;
+    if(p_queue-&gt;len==0)
+        return 0;
+    t_data=p_queue-&gt;buffer[p_queue-&gt;start];
+    ++p_queue-&gt;start;
+    --p_queue-&gt;len;
+    if(p_queue-&gt;start==p_queue-&gt;max)
+        p_queue-&gt;start=0;
+    return t_data;
+}
+
+static void queue_write(queue* p_queue,uint8 p_data)
+{
+    uint8 t_pos,t_rest;
+    if(p_queue-&gt;len==p_queue-&gt;max)
+        return;
+    t_rest=p_queue-&gt;max-p_queue-&gt;len;
+    if(p_queue-&gt;start&lt;t_rest)
+        t_pos=p_queue-&gt;start+p_queue-&gt;len;
+    else
+        t_pos=p_queue-&gt;start-t_rest;
+    p_queue-&gt;buffer[t_pos]=p_data;
+    ++p_queue-&gt;len;
+}
+
+static queue sg_recv;
+bool sg_overflow;
+bool sg_sending;
+
+static void on_uart_interrupt() interrupt INTERRUPT_NO
+{
+    if(RI==1)
+    {
+        if(sg_recv.len==sg_recv.max)
+            sg_overflow=1;
+        else
+            queue_write(&amp;sg_recv,SBUF);
+        RI=0;
+    }
+    else if(TI==1)
+    {
+        sg_sending=0;
+        TI=0;
+    }
+}
+
+void uart_init(uint16 p_baud,uint8* p_buffer,uint8 p_capacity)
+{
+    uint8 t_timer=0;
+    #define SWITCH_TIMER(baud)
+        if(p_baud==baud)
+            t_timer=CLK_FREQ_100HZ/192*100/baud;
+    SWITCH_TIMER(300)
+    SWITCH_TIMER(600)
+    SWITCH_TIMER(1200)
+    SWITCH_TIMER(2400)
+    SWITCH_TIMER(4800)
+    SCON=0x50;//8-n-1
+    PCON|=0x80;//SMOD=1,倍频
+    TMOD&amp;=0x0F;
+    TMOD|=0x20;//这两句，把TMODE高4为置为0020，即timer1工作在模式2
+    TH1=TL1=256-t_timer;
+    TR1=1;
+    PS=1;
+    ES=1;
+    EA=1;
+    sg_recv.buffer=p_buffer;
+    sg_recv.max=p_capacity;
+    sg_recv.start=0;
+    sg_recv.len=0;
+    sg_overflow=0;
+    sg_sending=0;
+}
+
+void uart_close()
+{
+    TR1=0;
+    ES=0;
+}
+
+uint8 uart_available()
+{
+    return sg_recv.len;
+}
+
+uint8 uart_read()
+{
+    uint8 t_data;
+    ES=0;
+    t_data=queue_read(&amp;sg_recv);
+    ES=1;
+    return t_data;
+}
+
+bool uart_is_overflow()
+{
+    return sg_overflow;
+}
+
+void uart_overflow_reset()
+{
+    ES=0;
+    sg_overflow=0;
+    ES=1;
+}
+
+void uart_write(uint8 p_data)
+{
+    while(sg_sending);
+    ES=0;
+    sg_sending=1;
+    SBUF=p_data;
+    ES=1;
+}
+
+void uart_print(char* p_string)
+{
+    while(*p_string)
+    {
+        uart_write(*p_string);
+        ++p_string;
+    }
+}
+
+void uart_println(char* p_string)
+{
+    uart_print(p_string);
+    uart_print("rn");
+}
+</pre>
+
+<p>里面用到的types.h：</p>
+
+<pre>#ifndef TYPES_H
+#define TYPES_H
+
+typedef bit bool;
+typedef char int8;
+typedef unsigned char uint8;
+typedef int int16;
+typedef unsigned int uint16;
+
+#endif
+</pre>
+
+			
+﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>
