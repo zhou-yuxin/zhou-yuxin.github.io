@@ -1,0 +1,290 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>用3种颜色填涂N个格子的算法问题</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">用3种颜色填涂N个格子的算法问题</h1>
+							</header>
+							<div class="entry-content">
+
+<p>今天做了大疆无人机的在线笔试题，总体感觉还行。算法题共有三道，前两道比较简单，最后一道需要动动脑子。题目大意是这样的：</p>
+
+<pre>有N个格子排成一排，用红、黄、蓝三种颜色填涂这N个格子，要求：
+（1）相邻的格子颜色不同；
+（2）第一个格子和最后一个格子颜色不同。
+问有多少种方案？
+
+输入：N（1&lt;=N&lt;=200）
+输出：方案数量 mod 79999 （因方案数过大，只需要取余数）
+
+示例输入：
+5
+示例输出：
+30</pre>
+
+<p>这道题可以用递归算法把所有可能的情况都穷尽了，那么多少种情况自然出来了。但是！用递归算法的话效率就会非常慢，我试了一下，当N=50时运算就会超时。可是当时考试还有几分钟就结束了，一着急，就写了递归算法。希望在N比较小的输入上能够赚几分吧。。。</p>
+
+<p>===================阶段一：递归算法=================</p>
+
+<p>先给出递归算法的实现：</p>
+
+<pre>#include "stdio.h"
+
+//输入的N
+int n;
+//各个格子填涂的颜色
+int colors[200];
+//方案的个数
+int solutionCount;
+
+//一次递归，即填充第index个格子
+void nextColor(int index);
+
+int main()
+{
+    //读入N
+    scanf("%d",&amp;n);
+    //单独处理一下N=1的情况
+    if(n==1)
+        printf("3\n");
+    //N&gt;=2的情况
+    else
+    {
+        solutionCount=0;
+        //从第0个格子开始填，递归入口
+        nextColor(0);
+        printf("%d\n",solutionCount);
+    }
+    return 0;
+}
+
+void nextColor(int index)
+{
+    //第一个格子可以任意填3中颜色中的一种
+    if(index==0)
+    {
+        int color;
+        for(color=1;color&lt;=3;color++)
+        {
+            colors[0]=color;
+            nextColor(1);
+        }
+    }
+    //第一个格子与最后一个之间的格子要和前一个格子颜色不同
+    else if(index&lt;n-1)
+    {
+        int color;
+        for(color=1;color&lt;=3;color++)
+        {
+            if(color==colors[index-1])
+                continue;
+            colors[index]=color;
+            nextColor(index+1);
+        }
+    }
+    //最后一个格子不仅要和前一个格子颜色不同，而且还要和第一个格子颜色不同
+    else
+    {
+        int color;
+        for(color=1;color&lt;=3;color++)
+        {
+            if(color==colors[0]||color==colors[index-1])
+                continue;
+            colors[index]=color;
+            //又多了一种方案
+            solutionCount++;
+            //保留mod 79999后的结果
+            if(solutionCount==79999)
+                solutionCount=0;
+        }
+    }
+}
+</pre>
+
+<p>递归算法的实现很容易理解，只可惜速度太慢了，时间复杂度是O(2^n)！！</p>
+
+<p>================阶段二：改进为“递推法”================</p>
+
+<p>其实这种题目都有一个“穴位”——它只要知道多少种方案，却不需要知道每个方案是什么。“每个方案是什么”要远远比“多少种方案”的条件强。用递归算法，可以知道每个方案，自然就能知道多少种，但是代价太大了。</p>
+
+<p>其实较好的算法很简单（至少我想到了一种很简单的算法），其时间复杂度是O(n)。思路是一种递推法，如下：</p>
+
+<p>假如我规定第一个格子必须填红色，并且不考虑“第一个格子和最后一个格子颜色不同”这个条件。现在我要考察最后一个格子分别填红、黄、蓝三种颜色的方案数。</p>
+
+<p>显然，当N=1时，最后一个格子（也就是第一个、唯一一个格子）只能填红色（因为规定第一个格子必须是红色），所以可以记作</p>
+
+<pre>red(1)=1,yellow(1)=0,blue(1)=0
+</pre>
+
+<p>其中，red(n)表示有n个格子时，最后一个格子取红色的方案个数，yellow(n)和blue(n)以此类推。</p>
+
+<p>另外，当N=n+1时，就是在N=n的情况的基础上，在最后追加一个格子。这个新的格子（第n+1个）的颜色不能和第n个格子的颜色相同。那么，第n+1的格子取红色的方案数就是第n个格子取黄色或蓝色的方案数之和，即</p>
+
+<pre>red(n+1)=yellow(n)+blue(n)
+</pre>
+
+<p>同理有</p>
+
+<pre>yellow(n+1)=red(n)+blue(n)
+blue(n+1)=red(n)+yellow(n)
+</pre>
+
+<p>于是递推关系就建立起来了，就能够在O(n)的时间复杂度内计算出当N=n时，最后一个方格分别是红、黄、蓝三种颜色的方案数，而且空间占用也非常小。</p>
+
+<p>现在就可以建立这样一张递推表了：</p>
+
+<table>
+<tbody>
+<tr>
+<th>N</th>
+<th>红</th>
+<th>黄</th>
+<th>蓝</th>
+</tr>
+<tr>
+<th>1</th>
+<th>1</th>
+<th>0</th>
+<th>0</th>
+</tr>
+<tr>
+<th>2</th>
+<th>0</th>
+<th>1</th>
+<th>1</th>
+</tr>
+<tr>
+<th>3</th>
+<th>2</th>
+<th>1</th>
+<th>1</th>
+</tr>
+<tr>
+<th>4</th>
+<th>2</th>
+<th>3</th>
+<th>3</th>
+</tr>
+<tr>
+<th>5</th>
+<th>6</th>
+<th>5</th>
+<th>5</th>
+</tr>
+</tbody>
+</table>
+<p>那么，这个修改后的题目的解怎么变成原题目的解呢？让我们一点点把题目改回去！</p>
+
+<p>假设我现在增加一个条件，要求“第一个格子和最后一个格子颜色不同”，那么当N=n时，方案总数就是</p>
+
+<pre>soluctionCount(n)=1,n=1
+soluctionCount(n)=yellow(n)+blue(n),n&gt;=2
+</pre>
+
+<p>这是因为第一个格子是红色，所以最后一个格子不能是红色。</p>
+
+<p>此时给递推表增加一列，表示在“第一个格子和最后一个格子颜色不同”的约束下的方案总数：</p>
+
+<table>
+<tbody>
+<tr>
+<th>N</th>
+<th>红</th>
+<th>黄</th>
+<th>蓝</th>
+<th>方案数</th>
+</tr>
+<tr>
+<th>1</th>
+<th>1</th>
+<th>0</th>
+<th>0</th>
+<th>1</th>
+</tr>
+<tr>
+<th>2</th>
+<th>0</th>
+<th>1</th>
+<th>1</th>
+<th>2</th>
+</tr>
+<tr>
+<th>3</th>
+<th>2</th>
+<th>1</th>
+<th>1</th>
+<th>2</th>
+</tr>
+<tr>
+<th>4</th>
+<th>2</th>
+<th>3</th>
+<th>3</th>
+<th>6</th>
+</tr>
+<tr>
+<th>5</th>
+<th>6</th>
+<th>5</th>
+<th>5</th>
+<th>10</th>
+</tr>
+</tbody>
+</table>
+<p>现在得到的结果是“第一个格子必须是红色”的约束下的方案数。考虑到三种颜色的互换性与互补性，所以把现在的解乘以3就是原题目的解了！</p>
+
+<p>代码如下：</p>
+
+<pre>#include "stdio.h"
+
+int main()
+{
+    //输入的N
+    int n;
+    //读入N
+    scanf("%d",&amp;n);
+    //单独处理N=1的情况
+    if(n==1)
+        printf("3\n");
+    //处理n&gt;=2的情况
+    else
+    {
+        //初始化为n=1的情况
+        int redCount=1,yellowCount=0,blueCount=0;
+        //递推n-1次
+        while(--n)
+        {
+            int newRedCount=yellowCount+blueCount;
+            int newYellowCount=redCount+blueCount;
+            int newBlueCount=redCount+yellowCount;
+            redCount=newRedCount%79999;
+            yellowCount=newYellowCount%79999;
+            blueCount=newBlueCount%79999;
+        }
+        //转化为原来的题目的解
+        int solutionCount=(yellowCount+blueCount)*3;
+        printf("%d\n",solutionCount%79999);
+    }
+    return 0;
+}
+</pre>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

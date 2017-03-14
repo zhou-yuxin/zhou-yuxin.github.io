@@ -1,0 +1,177 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>Java多媒体的使用（摄像头、扬声器与麦克风）</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">Java多媒体的使用（摄像头、扬声器与麦克风）</h1>
+							</header>
+							<div class="entry-content">
+
+<p>最近做人机交互大作业，涉及到了摄像头和扬声器的使用。过去自己也想用Java调用摄像头和扬声器的，但是当时一方面自己比较弱，另一方面也没有外在的压力强迫自己去学，所以总是不了了之。现在在学分和成绩的威逼利诱下，终于搞定了，所以特意记录一下。话说我再额外扯两个蛋：（1）《高级计算机网络》的大作业直接用了我之前博客<a href="../构造并发送Beacon帧以伪造任意WiFi热点/index.html">《构造并发送Beacon帧以伪造任意WiFi热点》</a>，轻松搞定，还很高大上，说明写博客是多么有用的事情啊~（2）我其实很喜欢Java，但是现在Java向着我讨厌的方向发展（Web开发，而且还是各种框架的堆砌），真是难过&#8230;&#8230;所以我桌面软件开发还是首选Java，但不会以Java为工作了。</p>
+
+<p>===================阶段一：摄像头==================</p>
+
+<p>从摄像头读取一帧图像其实很简单，直接使用<a href="https://github.com/sarxos/webcam-capture">Webcam</a>库就行了，这个库内部使用了OpenCV，不过这个已经和我们无关了。下载该库的<a href="http://pan.baidu.com/s/1nuEIwm1">Jar包</a>，导入工程之后，就可以这样读取一副图像：</p>
+
+<pre>Webcam webcam=Webcam.getDefault();
+webcam.open();
+BufferedImage image=webcam.getImage();
+</pre>
+
+<p>是不是相当地简单？</p>
+
+<p>更多的例子可以直接查看其<a href="https://github.com/sarxos/webcam-capture">GitHub</a>。</p>
+
+<p>===================阶段二：扬声器==================</p>
+
+<p>使用扬声器来播放音频文件或者录制的音频流也是一个常用的功能。Java自带对扬声器的支持，即javax.sound子系统。</p>
+
+<p>以播放R:\hello.wav文件为例，可以使用如下代码：</p>
+
+<pre>File file=new File("R:/hello.wav");
+AudioInputStream in=AudioSystem.getAudioInputStream(file);
+AudioFormat format=in.getFormat();
+DataLine.Info info=new DataLine.Info(SourceDataLine.class,format);
+SourceDataLine auline=(SourceDataLine)AudioSystem.getLine(info);
+auline.open(format);
+auline.start();
+byte[] buffer=new byte[512];
+int len;
+while((len=in.read(buffer))&gt;0)
+    auline.write(buffer,0,len);
+</pre>
+
+<p>而auline.write()方法是一个阻塞式方法，只有把丢给它的所有数据都播放完了才会返回，所以一般都会在一个单独的线程中调用之。</p>
+
+<p>为了将来使用方便，我封装了一个AudioPlayer类：</p>
+
+<pre>package zjs.irrec;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import javax.sound.sampled.AudioFormat;
+import javax.sound.sampled.AudioInputStream;
+import javax.sound.sampled.AudioSystem;
+import javax.sound.sampled.DataLine;
+import javax.sound.sampled.LineUnavailableException;
+import javax.sound.sampled.SourceDataLine;
+import javax.sound.sampled.UnsupportedAudioFileException;
+
+public class AudioPlayer
+{
+
+    private SourceDataLine auline;
+    private byte[] rawBytes;
+    private volatile boolean isPlaying;
+    private Thread thread;
+
+    public AudioPlayer(InputStream inputFile) throws IOException,UnsupportedAudioFileException,LineUnavailableException
+    {
+        AudioInputStream in=AudioSystem.getAudioInputStream(inputFile);
+        AudioFormat format=in.getFormat();
+        DataLine.Info info=new DataLine.Info(SourceDataLine.class,format);
+        auline=(SourceDataLine)AudioSystem.getLine(info);
+        auline.open(format);
+        ByteArrayOutputStream bytes=new ByteArrayOutputStream();
+        byte[] buffer=new byte[512];
+        int len;
+        while((len=in.read(buffer))&gt;0)
+            bytes.write(buffer,0,len);
+        in.close();
+        rawBytes=bytes.toByteArray();
+        thread=new Thread()
+        {
+            public void run()
+            {
+                while(true)
+                {
+                    if(isPlaying)
+                    {
+                        auline.write(rawBytes,0,rawBytes.length);
+                        isPlaying=false;
+                    }
+                    try
+                    {
+                        Thread.sleep(100);
+                    }
+                    catch(InterruptedException e)
+                    {
+                    }
+                }
+            }
+        };
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    public void start()
+    {
+        auline.start();
+        isPlaying=true;
+    }
+
+    public void stop()
+    {
+        auline.stop();
+    }
+
+}
+</pre>
+
+<p>然后这么调用：</p>
+
+<pre>AudioPlayer player=new AudioPlayer(Test.class.getResourceAsStream("/hello.wav"));
+player.start();
+Thread.sleep(10000);
+</pre>
+
+<p>====================阶段三：麦克风==================</p>
+
+<p>麦克风的使用也是基于javax.sound子系统，而且使用方法与扬声器的使用极为相似。看下面代码：</p>
+
+<pre>AudioFormat format=new AudioFormat(44100,16,1,true,false);
+DataLine.Info info=new DataLine.Info(TargetDataLine.class,format);
+TargetDataLine auline=(TargetDataLine)AudioSystem.getLine(info);
+auline.open(format);
+auline.start();
+ByteArrayOutputStream bytes=new ByteArrayOutputStream();
+byte[] buffer=new byte[512];
+for(int i=0;i&lt;1024;i++)
+{
+    int len=auline.read(buffer,0,buffer.length);
+    bytes.write(buffer,0,len);
+}
+byte[] rawBytes=bytes.toByteArray();
+</pre>
+
+<p>上面代码，先创建一个采样格式（采样频率44100Hz，16位数据，单声道，数据是否有符号，数据是否为大端模式），然后创建TargetDataLine，其实可以把TargetDataLine看做一个能够读取PCM音频数据的设备，比如麦克风。然后就用auline.read()方法读取原始的音频采样数据就行了。这段代码总共采了512KB，放在了rawBytes字节数组中。</p>
+
+<p>如果想要播放这段录音数据，就可以用之前播放音频文件中的代码来播放：</p>
+
+<pre>DataLine.Info info2=new DataLine.Info(SourceDataLine.class,format);
+SourceDataLine auline2=(SourceDataLine)AudioSystem.getLine(info2);
+auline2.open(format);
+auline2.start();
+auline2.write(rawBytes,0,rawBytes.length);
+</pre>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

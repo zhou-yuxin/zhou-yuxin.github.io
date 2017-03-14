@@ -1,0 +1,574 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>STM32定时器的使用（定时器中断、PWM输出和跳变捕获、主从模式）</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">STM32定时器的使用（定时器中断、PWM输出和跳变捕获、主从模式）</h1>
+							</header>
+							<div class="entry-content">
+
+<p>STM32的定时器真心强大，它共有8个16位定时器，分别为TIM0~TIM7。其中TIM6、TIM7是基本定时器，TIM2、TIM3、TIM4和TIM5是通用定时器，而TIM1和TIM8是高级定时器。这些定时器使STM32具有定时、信号的频率测量、信号的PWM测量、PWM输出、三相6步电机控制及编码器接口等功能，都是专门为工控领域量身定做的（引用自《STM32库开发实战指南》）。</p>
+
+<p>=================阶段一：基本定时器触发中断==============</p>
+
+<p>基本定时器只具备基本的定时功能，也就是在时钟源的驱动下，从0开始累加脉冲计数，直到超过预定值，然后触发中断或者触发DMA请求。基本定时器和通用定时器的时钟源都是TIMxCLK，TIMxCLK在时钟树中的位置如下：</p>
+<p><img src="1.jpg"></p>
+
+<p>当APB1的预分频系数为1时，则TIMxCLK就是APB1的频率（也等于AHB的频率）；而当APB1的预分频系数不为1时，则TIMxCLK就是APB1的频率的2倍。比如在常见的配置中，AHB=72Mhz，而APB1二分频为36Mhz，那么TIMxCLK就为36Mhz*2=72Mhz。</p>
+
+<p>TIMxCLK的脉冲还会再经过一道分频，然后被TIMx_CNT寄存器累加计数。这个分频器叫做PSC预分频器。PSC预分频器可以设置为任意16位值。当TIMx_CNT的值等于TIMx_ARR寄存器中的值时，产生溢出事件，可用于触发中断。</p>
+
+<p>本节要做一个实验，就是通过基本定时器来进行精确延时，以使LED灯每1s翻转一次。其实该实验类似于《<a href="../STM32F10x系列SysTick（系统滴答定时器）的使用/index.html">STM32F10x系列SysTick（系统滴答定时器）的使用</a>》中的实验，只不过SysTick是所有ARM处理器都有的部件，而本实验的定时器是STM32独有的东西。</p>
+
+<p>由于我手头的STM32F103C8T6的容量是64KB，属于中等密度产品，所以只有1个高级定时器TIM1和3个通用定时器TIM2、TIM3和TIM4，没有基本定时器。其实通用定时器拥有基本定时的所有功能，所以这个实验就用TIM3来演示。</p>
+
+<p>实验代码如下：</p>
+
+<pre>#include "stm32f10x_gpio.h"
+#include "stm32f10x_rcc.h"
+#include "stm32f10x_tim.h"
+#include "misc.h"
+
+void GPIO_Conf()
+{
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA,ENABLE);
+    //设置PA1为推挽输出
+    t_gpio.GPIO_Pin=GPIO_Pin_1;
+    t_gpio.GPIO_Mode=GPIO_Mode_Out_PP;
+    t_gpio.GPIO_Speed=GPIO_Speed_10MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+}
+
+void TIM_Conf()
+{
+    TIM_TimeBaseInitTypeDef t_timebase;
+    //开启TIM3时钟
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3,ENABLE);
+    //对TIM3CLK进行10000分频，72Mhz/10000=7200hz
+    t_timebase.TIM_Prescaler=10000-1;
+    //周期为7200个脉冲，则一次溢出需要7200/7200Hz=1s
+    t_timebase.TIM_Period=7200-1;
+    //数字滤波器不分频
+    t_timebase.TIM_ClockDivision=TIM_CKD_DIV1;
+    //向上计数
+    t_timebase.TIM_CounterMode=TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM3,&amp;t_timebase);
+    //自动重装
+    TIM_ARRPreloadConfig(TIM3,ENABLE);
+    //清空中断标志
+    TIM_ClearITPendingBit(TIM3,TIM_IT_Update);
+    //启用中断
+    TIM_ITConfig(TIM3,TIM_IT_Update,ENABLE);
+    //启用TIM3
+    TIM_Cmd(TIM3,ENABLE);
+}
+
+void NVIC_Conf()
+{
+    NVIC_InitTypeDef t_nvic;
+    //优先级组为1
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_1);
+    //中断向量为TIM3_IRQn
+    t_nvic.NVIC_IRQChannel=TIM3_IRQn;
+    //中断优先级
+    t_nvic.NVIC_IRQChannelPreemptionPriority=0;
+    t_nvic.NVIC_IRQChannelSubPriority=1;
+    //启用中断
+    t_nvic.NVIC_IRQChannelCmd=ENABLE;
+    NVIC_Init(&amp;t_nvic);
+}
+
+uint8_t g_state=0;
+
+void TIM3_IRQHandler(void)
+{
+    //清空中断标志位
+    TIM_ClearITPendingBit(TIM3,TIM_IT_Update);
+    //设置引脚电位
+    GPIO_WriteBit(GPIOA,GPIO_Pin_1,g_state);
+    //翻转
+    g_state=!g_state;
+}
+
+int main()
+{
+    GPIO_Conf();
+    TIM_Conf();
+    NVIC_Conf();
+    while(1);
+}
+</pre>
+
+<p>代码中，首先把PA1设置为推挽输出模式，然后配置TIM3定时器每1s触发一次中断，并在中断中翻转PA1电平。实验结果就是LED灯闪烁。</p>
+
+<p>===============阶段二：通用定时器输出PWM波=============</p>
+
+<p>通过上面的例子已经得知，在脉冲的驱动下，TIMx_CNT会从0开始累加，直到等于TIMx_ARR寄存器中的值，然后重新归0。那么，如果再引入一个寄存器TIMx_CCR，当TIMx_CNT中的值小于TIMx_CCR中的值时，就输出某种电平，而当TIMx_CNT中的值大于（或等于）TIMx_CCR中值时，就输出另一种电平，那么不就能周而复始地输出稳定的PWM波了吗？这就是通用定时器输出PWM波的原理。</p>
+
+<p>至于当TIMx_CNT的值小于TIMx_CCR中的值时，输出的是高电平还是低电平，这个由“极性”决定。</p>
+
+<p>由此可知，通用寄存器输出PWM的代码，应该只是在多一些配置，没有太大变化。</p>
+
+<p>接下来的实验中，我要输出一个占空比为20%的PWM波，以驱动LED。注意，本实验直接使用定时器输出PWM，没有使用中断手动输出。实验代码如下：</p>
+
+<pre>#include "stm32f10x_gpio.h"
+#include "stm32f10x_rcc.h"
+#include "stm32f10x_tim.h"
+
+void GPIO_Conf()
+{
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA,ENABLE);
+    //设置PA6为复用推挽输出
+    t_gpio.GPIO_Pin=GPIO_Pin_6;
+    t_gpio.GPIO_Mode=GPIO_Mode_AF_PP;
+    t_gpio.GPIO_Speed=GPIO_Speed_50MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+}
+
+void TIM_Conf()
+{
+    TIM_TimeBaseInitTypeDef t_timebase;
+    TIM_OCInitTypeDef t_oc;
+    //开启TIM3时钟
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3,ENABLE);
+    //对TIM3CLK进行10000分频，72Mhz/10000=7200hz
+    t_timebase.TIM_Prescaler=10000-1;
+    //周期为7200个脉冲，则一次溢出需要7200/7200Hz=1s
+    t_timebase.TIM_Period=7200-1;
+    //数字滤波器不分频
+    t_timebase.TIM_ClockDivision=TIM_CKD_DIV1;
+    //向上计数
+    t_timebase.TIM_CounterMode=TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM3,&amp;t_timebase);
+    //自动重装
+    TIM_ARRPreloadConfig(TIM3,ENABLE);
+    //启用TIM3
+    TIM_Cmd(TIM3,ENABLE);
+    //通道模式为PWM1
+    t_oc.TIM_OCMode=TIM_OCMode_PWM1;
+    //使能输出
+    t_oc.TIM_OutputState=TIM_OutputState_Enable;
+    //分界点为1440
+    t_oc.TIM_Pulse=1440-1;
+    //极性为高电平
+    t_oc.TIM_OCPolarity=TIM_OCPolarity_High;
+    //开启通道1预装载
+    TIM_OC1PreloadConfig(TIM3,TIM_OCPreload_Enable);
+    //初始化TIM3的通道1
+    TIM_OC1Init(TIM3,&amp;t_oc);
+}
+
+int main()
+{
+    GPIO_Conf();
+    TIM_Conf();
+    while(1);
+}
+</pre>
+
+<p>代码中，首先把PA6引脚设置为推挽输出。为什么是PA6引脚呢？这个是因为我们使用了TIM3的通道1，查看下表：</p>
+<p><img src="2.jpg"></p>
+
+<p>第一行可以看到，在没有重映射时，TIM3_CH1的引脚就是PA6。</p>
+
+<p>接着，把TIM3配置成7200个脉冲为一个周期。TIM3CLK的72Mhz频率，通过10000分频后，输出到TIM3_CNT时成了7200Hz，当把TIM3配置成7200个脉冲一个周期时，TIM3_CNT从0开始累加到7200，然后又重新回到0,。这样一个周期是1秒。</p>
+
+<p>接着配置通道1为PWM1输出模式，并使能输出。除了PWM1外，还有PWM2模式，它们的区别在于，PWM1模式下，当TIMx_CNT的值小于TIMx_ARR的值时为有效电平，大于或等于时为无效电平；而在PWM2则相反。我把TIMx_ARR寄存器，也就是TIM_Pulse成员设置为1440-1，这样当计数器小于1440-1时输出有效电平，否则输出无效电平。而通过</p>
+
+<pre>t_oc.TIM_OCPolarity=TIM_OCPolarity_High;</pre>
+
+<p>这行代码，把极性设置为高电平，也就规定了有效电平为高电平。</p>
+
+<p>至此，定时器开始工作，1s为一个周期，其中前1440/7200=20%的时间（也就是0.2s）里，输出高电平，之后80%的时间（也就是0.8s）里，输出低电平。</p>
+
+<p>==================阶段三：跳变捕获之测量脉冲频率================</p>
+
+<p>除了输出脉冲之外，STM32的定时器也可以输入脉冲，最常见的应用就是测量脉冲频率和测量脉冲宽度。</p>
+
+<p>测量脉冲频率的原理很简单：当遇到某次上升沿（或下降沿）时记录定时器的值，当再次遇到上升沿（或下降沿）时再次记录定时器的值，假设整个过程中定时器都没有溢出，那么两个值相减就是脉冲的周期，即可得到频率。如果整个过程中有溢出，那么做相应的处理即可。</p>
+
+<p>实验大致如下：在“阶段二”的实验基础上稍作修改，用一根导线把PA6和PA1相连。PA6输出周期为0.1s、占空比为20%的PWM波，PA1测量该PWM波，并计算得到周期。之所以选择使用PA1引脚测量，是因为PA1对应于TIM2的通道2（如下图），独立于PA6对应的TIM3的通道1，可以避免理解上的混淆。</p>
+<p><img src="3.jpg"></p>
+
+<p>实验代码如下：</p>
+
+<pre>#include "stm32f10x_gpio.h"
+#include "stm32f10x_rcc.h"
+#include "stm32f10x_tim.h"
+#include "misc.h"
+
+void GPIO_Conf()
+{
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA,ENABLE);
+    //设置PA6为复用推挽输出
+    t_gpio.GPIO_Pin=GPIO_Pin_6;
+    t_gpio.GPIO_Mode=GPIO_Mode_AF_PP;
+    t_gpio.GPIO_Speed=GPIO_Speed_50MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //设置PA1为浮空输入
+    t_gpio.GPIO_Pin=GPIO_Pin_1;
+    t_gpio.GPIO_Mode=GPIO_Mode_IN_FLOATING;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+}
+
+void TIM3_Conf()
+{
+    TIM_TimeBaseInitTypeDef t_timebase;
+    TIM_OCInitTypeDef t_oc;
+    //开启TIM3时钟
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3,ENABLE);
+    //对TIM3CLK进行1000分频，72Mhz/1000=72khz
+    t_timebase.TIM_Prescaler=1000-1;
+    //周期为7200个脉冲，则一次溢出需要7200/72kHz=0.1s
+    t_timebase.TIM_Period=7200-1;
+    //数字滤波器不分频
+    t_timebase.TIM_ClockDivision=TIM_CKD_DIV1;
+    //向上计数
+    t_timebase.TIM_CounterMode=TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM3,&amp;t_timebase);
+    //自动重装
+    TIM_ARRPreloadConfig(TIM3,ENABLE);
+    //启用TIM3
+    TIM_Cmd(TIM3,ENABLE);
+    //通道模式为PWM1
+    t_oc.TIM_OCMode=TIM_OCMode_PWM1;
+    //使能输出
+    t_oc.TIM_OutputState=TIM_OutputState_Enable;
+    //分界点为1440
+    t_oc.TIM_Pulse=1440-1;
+    //极性为高电平
+    t_oc.TIM_OCPolarity=TIM_OCPolarity_High;
+    //开启通道1预装载
+    TIM_OC1PreloadConfig(TIM3,TIM_OCPreload_Enable);
+    //初始化TIM3的通道1
+    TIM_OC1Init(TIM3,&amp;t_oc);
+}
+
+void TIM2_Conf()
+{
+    TIM_TimeBaseInitTypeDef t_timebase;
+    TIM_ICInitTypeDef t_ic;
+    //开启TIM2时钟
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2,ENABLE);
+    //对TIM2CLK进行720分频，72Mhz/720=100khz，可精确到10us
+    t_timebase.TIM_Prescaler=720-1;
+    //周期为20000个脉冲，则一次溢出需要20000/100kHz=0.2s
+    t_timebase.TIM_Period=20000;
+    //数字滤波器不分频
+    t_timebase.TIM_ClockDivision=TIM_CKD_DIV1;
+    //向上计数
+    t_timebase.TIM_CounterMode=TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM2,&amp;t_timebase);
+    //自动重装
+    TIM_ARRPreloadConfig(TIM2,ENABLE);
+    //启用TIM2
+    TIM_Cmd(TIM2,ENABLE);
+    //通道2
+    t_ic.TIM_Channel=TIM_Channel_2;
+    //上升沿触发
+    t_ic.TIM_ICPolarity=TIM_ICPolarity_Rising;
+    //直连
+    t_ic.TIM_ICSelection=TIM_ICSelection_DirectTI;
+    //不分频，每次检测到一次跳变就捕获
+    t_ic.TIM_ICPrescaler=TIM_ICPSC_DIV1;
+    //选择输入比较滤波器，滤波设置，经历几个周期跳变认定波形稳定0x0～0xF
+    t_ic.TIM_ICFilter=0;
+    TIM_ICInit(TIM2,&amp;t_ic);
+    //清空比较器中断标志位
+    TIM_ClearITPendingBit(TIM2,TIM_IT_CC2);
+    //启用比较器中断
+    TIM_ITConfig(TIM2,TIM_IT_CC2,ENABLE);
+    //清空定时器溢出中断标志位
+    TIM_ClearITPendingBit(TIM2,TIM_IT_Update);
+    //启用定时器溢出中断
+    TIM_ITConfig(TIM2,TIM_IT_Update,ENABLE);
+}
+
+void NVIC_Conf()
+{
+    NVIC_InitTypeDef t_nvic;
+    //优先级组为1
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_1);
+    //中断向量为TIM2_IRQn
+    t_nvic.NVIC_IRQChannel=TIM2_IRQn;
+    //中断优先级
+    t_nvic.NVIC_IRQChannelPreemptionPriority=0;
+    t_nvic.NVIC_IRQChannelSubPriority=1;
+    //启用中断
+    t_nvic.NVIC_IRQChannelCmd=ENABLE;
+    NVIC_Init(&amp;t_nvic);
+}
+
+//是否遇到了第一个上升沿
+uint8_t g_has_started=0;
+//遇到第一个上升沿时定时器的值
+uint16_t g_start_time;
+//第一个上升沿到第二个上升沿之间定时器溢出的次数
+uint16_t g_overflow_count;
+//测得的频率
+uint32_t g_freq;
+
+void TIM2_IRQHandler(void)
+{
+    //如果之前还未遇到第一个上升沿
+    if(!g_has_started)
+    {
+        //如果现在已经遇到了第一个上升沿
+        if(TIM_GetITStatus(TIM2,TIM_IT_CC2)==SET)
+        {
+            g_has_started=1;
+            g_start_time=TIM_GetCapture2(TIM2);
+            g_overflow_count=0;
+        }
+    }
+    else
+    {
+        //如果定时器溢出
+        if(TIM_GetITStatus(TIM2,TIM_IT_Update)==SET)
+            g_overflow_count++;
+        //如果现在已经遇到了第二个上升沿
+        if(TIM_GetITStatus(TIM2,TIM_IT_CC2)==SET)
+        {
+            //遇到第二个上升沿时定时器的值
+            uint16_t t_end_time;
+            //两次上升沿之间脉冲个数
+            uint32_t t_interval;
+            g_has_started=0;
+            t_end_time=TIM_GetCapture2(TIM2);
+            //计算两次上升沿之间的脉冲个数(一次溢出相当于20000个脉冲)
+            t_interval=((uint32_t)g_overflow_count)*20000+t_end_time-g_start_time;
+            g_freq=100000/t_interval;
+        }
+    }
+    //清空定时器溢出中断标志位
+    TIM_ClearITPendingBit(TIM2,TIM_IT_Update);
+    //清空比较器中断标志位
+    TIM_ClearITPendingBit(TIM2,TIM_IT_CC2);
+}
+
+int main()
+{
+    GPIO_Conf();
+    TIM3_Conf();
+    TIM2_Conf();
+    NVIC_Conf();
+    while(1);
+}
+</pre>
+
+<p>代码的原理还是比较简单的——监听上升沿中断和定时器溢出中断。当监听到第一次上升沿时，记录定时器的值为time1，监听到第二次上升沿时记录定时器的值为time2，并且记录两次上升沿之间定时器溢出次数为count，那么两次上升沿之间经历的定时器计数为</p>
+
+<pre>n=count*20000+time2-time1
+</pre>
+
+<p>之所以是20000，是因为TIM2的设置中，溢出值设定的是20000，也就是定时器每次到20000就溢出。而每次定时器计数的时间间隔是10us，所以两次上升沿之间经历的时间为</p>
+
+<pre>interval=n*10us=10<sup>-5</sup>*n s
+</pre>
+
+<p>所以频率就是</p>
+
+<pre>freq=1/interval=10<sup>5</sup>/n Hz
+</pre>
+
+<p>为了验证结果的正确性，可以把程序下载到开发板中，然后连接PA1和PA6，让程序运行一段时间后，使用JLink硬件调试去查看g_freq全局变量的值，如图：</p>
+<p><img src="4.jpg"></p>
+
+<p>g_freq的值为0x0A，也就是10。而PA6引脚输出的PWM波的周期是0.1s，频率正是10Hz，结果完全正确！</p>
+
+<p>=============阶段四：跳变捕获之PWM占空比测量================</p>
+
+<p>除了测量脉冲周期外，STM32的定时器还可以测量占空比。要知道占空比，那么就得知道高电平的时间，也就是脉宽。</p>
+
+<p>一个想法就是把“阶段三”中的配置稍作修改，把</p>
+
+<pre>//上升沿触发
+t_ic.TIM_ICPolarity=TIM_ICPolarity_Rising;
+</pre>
+
+<p>改为</p>
+
+<pre>//上升沿、下降沿都触发
+t_ic.TIM_ICPolarity=TIM_ICPolarity_BothEdge;
+</pre>
+
+<p>但是这样的话，就无法确定两次中断之间的电平是高电平还是低电平了。如果你说，我在中断中进一步判断是高电平还是低电平，额，好吧，你赢了~不过，既然STM32在硬件上已经提供了“主从模式”，那么就使用之呗~</p>
+
+<p>所谓“主从模式”，就是说某个寄存器作为主寄存器，另一个寄存器作为从寄存器。当主寄存器发生某个事件时，触发从寄存器的某个动作。</p>
+
+<p>在测量PWM的占空比时，需要同时知道PWM的高电平脉宽和整个周期长度。</p>
+
+<p>在下面的例子中，我把通道2配置为主通道，把通道1配置为从通道。当通道2（PA1引脚）检测到上升沿时，复位TIM2_CNT计数器；当检测到下降沿时，把TIM2_CNT计数器的值放入通道1的寄存器IC1中；当检测到上升沿时，把TIM2_CNT计数器的值放入通道2的寄存器IC2中。该流程如下：</p>
+<p><img src="5.png"></p>
+代码如下：</p>
+
+<pre>#include "stm32f10x_gpio.h"
+#include "stm32f10x_rcc.h"
+#include "stm32f10x_tim.h"
+#include "misc.h"
+
+void GPIO_Conf()
+{
+    GPIO_InitTypeDef t_gpio;
+    //开启GPIOA的时钟
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA,ENABLE);
+    //设置PA6为复用推挽输出
+    t_gpio.GPIO_Pin=GPIO_Pin_6;
+    t_gpio.GPIO_Mode=GPIO_Mode_AF_PP;
+    t_gpio.GPIO_Speed=GPIO_Speed_50MHz;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+    //设置PA1为浮空输入
+    t_gpio.GPIO_Pin=GPIO_Pin_1;
+    t_gpio.GPIO_Mode=GPIO_Mode_IN_FLOATING;
+    GPIO_Init(GPIOA,&amp;t_gpio);
+}
+
+void TIM3_Conf()
+{
+    TIM_TimeBaseInitTypeDef t_timebase;
+    TIM_OCInitTypeDef t_oc;
+    //开启TIM3时钟
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3,ENABLE);
+    //对TIM3CLK进行1000分频，72Mhz/1000=72khz
+    t_timebase.TIM_Prescaler=1000-1;
+    //周期为7200个脉冲，则一次溢出需要7200/72kHz=0.1s
+    t_timebase.TIM_Period=7200-1;
+    //数字滤波器不分频
+    t_timebase.TIM_ClockDivision=TIM_CKD_DIV1;
+    //向上计数
+    t_timebase.TIM_CounterMode=TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM3,&amp;t_timebase);
+    //自动重装
+    TIM_ARRPreloadConfig(TIM3,ENABLE);
+    //启用TIM3
+    TIM_Cmd(TIM3,ENABLE);
+    //通道模式为PWM1
+    t_oc.TIM_OCMode=TIM_OCMode_PWM1;
+    //使能输出
+    t_oc.TIM_OutputState=TIM_OutputState_Enable;
+    //分界点为1440
+    t_oc.TIM_Pulse=1440-1;
+    //极性为高电平
+    t_oc.TIM_OCPolarity=TIM_OCPolarity_High;
+    //开启通道1预装载
+    TIM_OC1PreloadConfig(TIM3,TIM_OCPreload_Enable);
+    //初始化TIM3的通道1
+    TIM_OC1Init(TIM3,&amp;t_oc);
+}
+
+void TIM2_Conf()
+{
+    TIM_TimeBaseInitTypeDef t_timebase;
+    TIM_ICInitTypeDef t_ic;
+    //开启TIM2时钟
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2,ENABLE);
+    //对TIM2CLK进行720分频，72Mhz/720=100khz，可精确到10us
+    t_timebase.TIM_Prescaler=720-1;
+    //周期为20000个脉冲，则一次溢出需要20000/100kHz=0.2s
+    t_timebase.TIM_Period=20000;
+    //数字滤波器不分频
+    t_timebase.TIM_ClockDivision=TIM_CKD_DIV1;
+    //向上计数
+    t_timebase.TIM_CounterMode=TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM2,&amp;t_timebase);
+    //自动重装
+    TIM_ARRPreloadConfig(TIM2,ENABLE);
+    //启用TIM2
+    TIM_Cmd(TIM2,ENABLE);
+    //通道2
+    t_ic.TIM_Channel=TIM_Channel_2;
+    //上升沿触发
+    t_ic.TIM_ICPolarity=TIM_ICPolarity_Rising;
+    //直连
+    t_ic.TIM_ICSelection=TIM_ICSelection_DirectTI;
+    //不分频，每次检测到一次跳变就捕获
+    t_ic.TIM_ICPrescaler=TIM_ICPSC_DIV1;
+    //选择输入比较滤波器，滤波设置，经历几个周期跳变认定波形稳定0x0～0xF
+    t_ic.TIM_ICFilter=0;
+    //配置PWM输入模式
+    TIM_PWMIConfig(TIM2,&amp;t_ic);
+    //选择输入触发模式：通道2触发（通道2为主通道）
+    TIM_SelectInputTrigger(TIM2,TIM_TS_TI2FP2);
+    //选择从模式：通道2触发后重置
+    TIM_SelectSlaveMode(TIM2,TIM_SlaveMode_Reset);
+    //使能主从模式
+    TIM_SelectMasterSlaveMode(TIM2,TIM_MasterSlaveMode_Enable);
+    //清空比较器中断标志位
+    TIM_ClearITPendingBit(TIM2,TIM_IT_CC2);
+    //启用比较器中断
+    TIM_ITConfig(TIM2,TIM_IT_CC2,ENABLE);
+}
+
+void NVIC_Conf()
+{
+    NVIC_InitTypeDef t_nvic;
+    //优先级组为1
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_1);
+    //中断向量为TIM2_IRQn
+    t_nvic.NVIC_IRQChannel=TIM2_IRQn;
+    //中断优先级
+    t_nvic.NVIC_IRQChannelPreemptionPriority=0;
+    t_nvic.NVIC_IRQChannelSubPriority=1;
+    //启用中断
+    t_nvic.NVIC_IRQChannelCmd=ENABLE;
+    NVIC_Init(&amp;t_nvic);
+}
+
+//测得的频率
+uint32_t g_freq;
+//测得的占空比
+uint32_t g_duty;
+
+void TIM2_IRQHandler(void)
+{
+    //获取通道2的值
+    uint16_t t_value=TIM_GetCapture2(TIM2);
+    //如果不为0，说明一个PWM周期结束
+    if(t_value!=0)
+    {
+        //计算频率
+        g_freq=100000/t_value;
+        //计算占空比（百分比）
+        g_duty=TIM_GetCapture1(TIM2)*100/t_value;
+    }
+    //清空比较器中断标志位
+    TIM_ClearITPendingBit(TIM2,TIM_IT_CC2);
+}
+
+int main()
+{
+    GPIO_Conf();
+    TIM3_Conf();
+    TIM2_Conf();
+    NVIC_Conf();
+    while(1);
+}
+</pre>
+
+<p>注意这个代码中没有考虑定时器溢出的问题。事实上，要检测定时器溢出需要有点复杂的代码。因为当高电平的下降沿到达时，计数器的TIM2_CNT的值被放入IC1寄存器，但是并不会触发中断，也就无法通过寄存器溢出次数来矫正。好在实际应用中，一般都知道频率的范围，通过适当的分频系数来保证测量时不会溢出。</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

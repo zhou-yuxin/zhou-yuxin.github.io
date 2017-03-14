@@ -1,0 +1,40 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>ULN2803芯片的使用</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">ULN2803芯片的使用</h1>
+							</header>
+							<div class="entry-content">
+
+<p>步进电机驱动板上基本都是使用的ULN2003，不过ULN2003只有7个通道，如果想同时控制两个步进电机，那么需要使用ULN2803，它有8个通道。</p>
+
+<p>其实ULN2803说白了就是八个NPN三极管，没什么大花头。它的引脚如图所示：</p>
+
+<p><img src="1.jpg"></p>
+
+<p>输入引脚是左边从上往下数的8个引脚，而输出引脚是右边从上往下数的8个引脚。左右一一对应。当向左边第i个引脚输入1时，那么右边第i个引脚就会接地；而当左边第i个引脚输入0时，那么右边第i个引脚就会悬空。</p>
+
+<p>使用时，9号引脚接地，10号引脚接VCC或者不接。1~8号引脚接单片机的8个IO口（注意需要较强的上拉），然后11~18引脚接步进电机。</p>
+
+<p>使用时51单片机驱动ULN2803时一定要注意一点就是，输入引脚必须外接上拉电阻，不然上拉能力不够。我一开始没有接上拉电阻，结果就是，当单片机的引脚输出1时，却无法把引脚电平拉高。</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

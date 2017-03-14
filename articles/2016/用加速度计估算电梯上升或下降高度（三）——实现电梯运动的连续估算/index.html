@@ -1,0 +1,768 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>用加速度计估算电梯上升或下降高度（三）——实现电梯运动的连续估算</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">用加速度计估算电梯上升或下降高度（三）——实现电梯运动的连续估算</h1>
+							</header>
+							<div class="entry-content">
+
+<p><span style="color: red;">2016年9月10日：有重要更新，修正了之前在确定运动起点与终点算法中的bug。详见“更新一分界线之后的内容”。</span></p>
+
+<p>！！！！！！！！！！！！！！原文！！！！！！！！！！！！！！！</p>
+
+<p>继续进行专业化。。。接下来要用C#实现算法，而且需要实现连续估算。</p>
+
+<p>连续估算这个词是我瞎掰的，到底什么意思呢？先把IBM工程师的原话搬上来：</p>
+<p><img src="1.jpg"></p>
+
+<p>其实就是说，本来的用例只有一个直愣愣的上升或者下降过程就结束了。现在需要能够连续的估算多次上升或下降。可以想象用户是一整天都开着这个程序，一天可能多次乘坐电梯，那么需要把一天的高度变化都记录下来。形象地说，就是要把本来这样的一张图：</p>
+<p><img src="2.png"></p>
+变成这样的一张图：</p>
+<p><img src="3.png"></p>
+
+<p>出于复杂性的考虑，我打算把电梯运动算法部分和画图部分拆分成两个程序（剧透一下，最终更是拆成了三个程序）。这个算法的输入是《<a href="../用加速度计估算电梯上升或下降高度（二）——实现专用数据记录软件/index.html">用加速度计估算电梯上升或下降高度（二）——实现专用数据记录软件</a>》中采集到的数据。输出的是一个个电梯运动过程。输出文件的格式为普通txt文件，每一行代表一个运动过程，每一行的格式为：</p>
+
+<pre>&lt;startTime&gt; &lt;endTime&gt; &lt;distance&gt;
+</pre>
+
+<p>先贴上代码：</p>
+
+<pre>using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.IO;
+
+namespace ZhouJianShi
+{
+
+    class Program
+    {
+
+        static void Main(string[] args)
+        {
+            //======================参数处理=======================
+            if(args.Length&lt;4)
+            {
+                Console.WriteLine("usage: &lt;inputFile&gt; &lt;outputFile&gt; &lt;startTime or null&gt; &lt;endTime or null&gt;");
+                return;
+            }
+            string inputFile = args[0];
+            string outputFile = args[1];
+            DateTime? startTime = null;
+            if (!args[2].Equals("null"))
+                startTime = DateTime.Parse(args[2]);
+            DateTime? endTime = null;
+            if (!args[3].Equals("null"))
+                endTime = DateTime.Parse(args[3]);
+
+            //=====================运算部分========================
+            ElevatorDistance distance = new ElevatorDistance(inputFile,outputFile);
+            distance.setStartTime(startTime);
+            distance.setEndTime(endTime);
+            if (!distance.run())
+                Console.WriteLine("No elevator movement found!");
+        }
+
+    }
+
+    class ElevatorDistance
+    {
+
+        //重力加速度，单位m/s^2
+        private const double GRAVITY = 9.8;
+        private const double ADXL345_ACC_SCALE = 0.004 * 9.8;
+
+        private string inputFile;
+        private string outputFile;
+        private DateTime? startTime;
+        private DateTime? endTime;
+        private DateTime timeBase = DateTime.Parse("1970-1-1");
+
+        public ElevatorDistance(string inputFile, string outputFile)
+        {
+            this.inputFile=inputFile;
+            this.outputFile=outputFile;
+        }
+
+        public void setStartTime(DateTime? startTime)
+        {
+            this.startTime = startTime;
+        }
+
+        public void setEndTime(DateTime? endTime)
+        {
+            this.endTime = endTime;
+        }
+
+        public bool run()
+        {
+            //========================数据预处理部分=============================
+            double[][] arrays = TextReadWithinTimeRange();
+            //时间序列
+            double[] time = arrays[0];
+            //得到合加速度
+            double[] acc = normOfVectors(new double[][] { arrays[1], arrays[2], arrays[3] });
+            //剔除重力，得到运动加速度
+            acc = deAverage(acc);
+            //计算滑动加权平均值，使曲线更加平滑
+            acc = movingAverage(acc, new double[10] { 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1 });
+
+            //======================过滤电梯运动之外的数据================================
+            //elevatorAcc是电梯的加速度
+            double[] elevatorAcc = new double[acc.Length];
+            //滑动窗口大小1.5秒
+            int winSize = 1500*time.Length/((int)(time[time.Length-1]-time[0]));
+            //如果某个点的加速度与其前面的窗口中的所有加速度同号、或与其后面的窗口中的所有加速度同号，那么认为是电梯加速度
+            for (int i = winSize; i &lt; acc.Length - winSize; i++)
+            {
+                int start = i - winSize;
+                int end = i + winSize;
+                if (isAllSameSign(acc, start, i) || isAllSameSign(acc, i, end))
+                    elevatorAcc[i] = acc[i];
+            }
+            //过滤后的加速度数据，只有电梯运动数据了
+            acc = elevatorAcc;
+
+            //======================获取所有电梯开始和停下来的时间点================================
+            List&lt;int&gt; startPoss = new List&lt;int&gt;();
+            List&lt;int&gt; stopPoss=new List&lt;int&gt;();
+            int count = 0;
+            for (int i = 1; i &lt; acc.Length;i++ )
+            {
+                //如果前一个为零而这个点不为零，则为电梯开始加速的点
+                if (acc[i - 1] == 0 &amp;&amp; acc[i] != 0)
+                {
+                    count++;
+                    //如果这个点为4n+1，则为电梯开始的点
+                    if (count % 4 == 1)
+                        startPoss.Add(i);
+                }
+                //如果前一个不为零而这个点为0，则为电梯停止加速的点
+                if (acc[i - 1] != 0 &amp;&amp; acc[i] == 0)
+                {
+                    count++;
+                    //如果这个点为偶数点，则为电梯停止的点
+                    if (count % 4 == 0)
+                        if(startPoss.Count&gt;stopPoss.Count)
+                            stopPoss.Add(i);
+                }
+            }
+            if (startPoss.Count != stopPoss.Count)
+                return false;
+
+            //===============================积分阶段=============================
+            //最后要获得的距离数列
+            double[] distance=new double[startPoss.Count];
+            for (int i = 0; i &lt; distance.Length; i++)
+            {
+                //当前速度
+                double velocity = 0;
+                //起始点的位置
+                int startPos = startPoss[i];
+                //停止点的位置
+                int stopPos = stopPoss[i];
+                //正向积分
+                for (int j = startPos+1; j &lt;= stopPos; j++)
+                {
+                    //时间间隔
+                    double deltaTime = time[j] - time[j - 1];
+                    //对速度积分
+                    velocity += acc[j] * deltaTime;
+                    //对距离积分
+                    distance[i] += velocity * deltaTime;
+                }
+                velocity = 0;
+                //反向积分
+                for (int j = stopPos; j &gt; startPos; j--)
+                {
+                    //时间间隔
+                    double deltaTime = time[j] - time[j - 1];
+                    //对速度积分
+                    velocity += acc[j] * deltaTime;
+                    //对距离积分
+                    distance[i] -= velocity * deltaTime;
+                }
+                distance[i] /= 2;
+            }
+            //对距离进行尺度变换
+            distance = multiplyArray(distance, ADXL345_ACC_SCALE / 1000/ 1000);
+
+            //=======================保存文件=========================
+            StreamWriter file = new StreamWriter(outputFile, false);
+            for (int i = 0; i &lt; distance.Length; i++)
+                file.WriteLine(time[startPoss[i]] + "," + time[stopPoss[i]] + "," + distance[i]);
+            file.Close();
+            return true;
+        }
+
+        //从文件中读取数据，但只保留时间戳在指定区间内的
+        private double[][] TextReadWithinTimeRange()
+        {
+            double[][] arrays = TextRead(inputFile, ',', new uint[] { 0, 1, 2, 3 });
+            int length=arrays[0].Length;
+            //根据时间戳判断开始位置和结束位置
+            int startIndex = 0, endIndex = length-1;
+            for(int i=0;i&lt;length;i++)
+            {
+                if(startTime!=null)
+                    if(arrays[0][i]&lt;((DateTime)startTime).Subtract(timeBase).TotalMilliseconds)
+                        startIndex = i+1;
+                if(endTime!=null)
+                    if (arrays[0][i] &lt;= ((DateTime)endTime).Subtract(timeBase).TotalMilliseconds)
+                        endIndex = i;
+            }
+            //截取数组
+            int newLength=endIndex-startIndex+1;
+            double[][] newArrays=new double[arrays.Length][];
+            for (int i = 0; i &lt; newArrays.Length; i++)
+            {
+                newArrays[i] = new double[newLength];
+                Array.Copy(arrays[i],startIndex,newArrays[i],0,newLength);
+            }
+            return newArrays;
+        }
+
+        //按行读取文本文件fileName，每行以splitor分割，取columns指定的列，返回各个列
+        private double[][] TextRead(string fileName, char splitor, uint[] columns)
+        {
+            //统计最大的列编号
+            uint maxCol = 0;
+            for (int i = 0; i &lt; columns.Length; i++)
+                maxCol = Math.Max(maxCol, columns[i]);
+            StreamReader reader = new StreamReader(new FileStream(fileName, FileMode.Open));
+            List&lt;double[]&gt; list = new List&lt;double[]&gt;();
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                string[] items = line.Split(splitor);
+                //如果某行没有这么多列
+                if (items.Length &lt;= maxCol)
+                    throw new ArgumentException("items.Length &lt;= maxCol");
+                double[] datas = new double[columns.Length];
+                for (int i = 0; i &lt; columns.Length; i++)
+                    datas[i] = Double.Parse(items[columns[i]]);
+                list.Add(datas);
+            }
+            reader.Close();
+            //重组数组，行列转置
+            double[][] result = new double[columns.Length][];
+            for (int i = 0; i &lt; columns.Length; i++)
+                result[i] = new double[list.Count()];
+            int lineIndex = 0;
+            foreach (double[] datas in list)
+            {
+                for (int i = 0; i &lt; columns.Length; i++)
+                    result[i][lineIndex] = datas[i];
+                lineIndex++;
+            }
+            return result;
+        }
+
+        //求向量的模，(datas[0][i],datas[1][i],datas[2][i]...)为第i个向量
+        private static double[] normOfVectors(double[][] datas)
+        {
+            for (int i = 1; i &lt; datas.Length; i++)
+            {
+                if (datas[i - 1].Length != datas[i].Length)
+                    throw new ArgumentException("datas[i-1].Length!=datas[i].Length");
+            }
+            double[] result = new double[datas[0].Length];
+            for (int i = 0; i &lt; result.Length; i++)
+            {
+                //求平方和
+                double sum = 0;
+                for (int j = 0; j &lt; datas.Length; j++)
+                    sum += datas[j][i] * datas[j][i];
+                result[i] = Math.Sqrt(sum);
+            }
+            return result;
+        }
+
+        //把数据的平均值从数据中剔除
+        private static double[] deAverage(double[] datas)
+        {
+            double[] result = new double[datas.Length];
+            double sum = 0;
+            for (int i = 0; i &lt; datas.Length; i++)
+                sum += datas[i];
+            double avg = sum / datas.Length;
+            for (int i = 0; i &lt; datas.Length; i++)
+                result[i] = datas[i] - avg;
+            return result;
+        }
+
+        //计算数据的加权平均移动值
+        private static double[] movingAverage(double[] datas, double[] weights)
+        {
+            double[] result = new double[datas.Length];
+            for (int i = 0; i &lt; datas.Length; i++)
+            {
+                double sum = 0;
+                for (int j = weights.Length - 1; j &gt;= 0; j--)
+                {
+                    int k = i + j - weights.Length + 1;
+                    if (k &lt; 0)
+                        break;
+                    sum += datas[k] * weights[j];
+                }
+                result[i] = sum;
+            }
+            return result;
+        }
+
+        //判断数组指定区间内是否同号
+        private static bool isAllSameSign(double[] datas, int start, int end)
+        {
+            for (int i = start; i &lt; end; i++)
+            {
+                if (datas[i] &gt; 0 &amp;&amp; datas[i + 1] &lt; 0)
+                    return false;
+                if (datas[i] &lt; 0 &amp;&amp; datas[i + 1] &gt; 0)
+                    return false;
+            }
+            return true;
+        }
+
+        //对数组的每一个元素进行乘法运算
+        private static double[] multiplyArray(double[] datas, double k)
+        {
+            double[] result = new double[datas.Length];
+            for (int i = 0; i &lt; datas.Length; i++)
+                result[i] = datas[i] * k;
+            return result;
+        }
+
+    }
+
+}
+</pre>
+
+<p>在ElevatorDistance.run()方法中，“数据预处理部分”和“过滤电梯运动之外的数据”这两部分的代码还是很简洁明了的，而且在《<a href="../用加速度计估算电梯上升或下降高度（一）——可行性验证/index.html">用加速度计估算电梯上升或下降高度（一）——可行性验证</a>》有对应的MATLAB，理解起来很容易。接下来是“获取所有电梯开始和停下来的时间点”部分。这一个部分的开始定义了两个List，一个用以盛放所有的开始点，一个用以盛放所有的结束点。什么是开始点和结束点呢？看下图：</p>
+<p><img src="4.jpg"></p>
+
+<p>这个图对应的是我按1-4-12-16-6-13-1的顺序坐电梯（中途可能走出电梯）所采集到的原始数据，经过过滤之后产生的数据。也就是代码中</p>
+
+<pre>acc = elevatorAcc;</pre>
+
+<p>这一句之后acc中保存的数据。如果把图中所有“前一个点为0而该点不为0”的点和“前一个点不为0而该点为0”的点依次标记出来并编号，那么，所有编号为4n+1点就是一段运动的开始点，所有编号为4(n+1)的点就是一段运动的结束点。正如图中，1~4是一段上升运动，5~8、9~12和17~20也是上升运动段；而13~16、21~24则是下降运动段。因此不难理解“获取所有电梯开始和停下来的时间点”这一段代码的逻辑了吧。</p>
+
+<p>OK，正式进入积分阶段。既然知道了所有的起始点和结束点，那么有多少个运动阶段就确定了。distance[i]的值，就是从startPoss[i]积分到stopPoss[i]。先不管什么反向积分，就看正向积分。在运动开始前，速度变量</p>
+
+<pre>//当前速度
+double velocity = 0;
+</pre>
+
+<p>然后就一个个时间点看过去，在两个时间点之间的时间间隔内，可以认为速度恒定为</p>
+
+<pre>//时间间隔
+double deltaTime = time[j] - time[j - 1];
+</pre>
+
+<p>而这段微小的时间内可以认为加速度恒定为acc[j]，所以速度增加一点：</p>
+
+<pre>//对速度积分
+velocity += acc[j] * deltaTime;
+</pre>
+
+<p>同样的，在这段微小的时间内，可以认为速度恒定，所以距离增加一点：</p>
+
+<pre>//对距离积分
+distance[i] += velocity * deltaTime;
+</pre>
+
+<p>于是到了结束点的时候distance[i]的结果就是这段运动的总距离了。</p>
+
+<p>乍一看，反向积分和正向积分一模一样啊。再仔细一看，哦，原来j的变化反过来了，从结束点积分到开始点，而且distance[i]每次居然是减去一个距离值！这是因为，“时间倒流”，所以符号需要变号。</p>
+
+<p>如果数据是完美的，那么正向积分与反向积分之后，distance[i]的值就成了真实值的两倍了，所以最后需要</p>
+
+<pre>distance[i] /= 2;
+</pre>
+
+<p>那么为啥需要做两次积分呢？原因稍微有点复杂，根本原因是——加速过程与减速过程中，两块面积可能不完全相等。下图是一个上升运动的加速度图像：</p>
+<p><img src="5.jpg"></p>
+
+<p>前面的那个在0轴以上的面积，其实就是整个加速过程中增加的速度。而后面的那个在0轴以下的面积，其实就是整个减速过程中减少的速度。物理上，这两个速度应该互为相反数，因为你坐电梯之前速度为0，坐完电梯速度还是0。<span style="color: red;"><strong>但是，由于采集的数据肯定存在误差，所以不能保证这两个面积是相等的。</strong></span>事实上，采集的数据中，这两个面积几乎不可能完全相等，哪有这么完美的实验数据呢？！</p>
+
+<p>于是问题出现了。<span style="color: red;"><strong>如果误差导致加速过程的面积偏大，那么整个运动的距离就会偏大，因为匀速过程的速度完全由加速过程决定。同理，如果加速过程偏小，那么整个运动的距离就会偏小。话句话说，前一块面积对最终结果的影响远大于后一块面积。而这会增大偶然性。</strong></span>所以办法就是，求加速和减速的两块面积的平均值来进行积分。不过这么做就会麻烦的多，所以改用另一种做法——正向积分+反向积分。前一块面积对正向积分的结果影响较大，后一块面积对反向积分的结果影响较大，于是两个结果取平均，就相当于把两块面积的误差取平均，能够减小偶然性，提高精度。</p>
+
+<p>OK，这个就是这段代码的精髓了~</p>
+
+<p>再看一下输出结果：</p>
+<p><img src="6.jpg"></p>
+
+<p>也就是说，我从1楼到4楼的距离是12.46米，从4楼到12楼的距离是30.17米，从12楼到16楼的距离是14.90米，从16楼到6楼的距离是-37.38米，从6楼到13楼的距离是27.00米，从13楼到1楼的距离是-46.40米。</p>
+
+<p>一个简单的验证方式就是求累计误差。我从1楼出发又重新回到1楼，那么所有电梯运动阶段的距离总和应该为0。上面的6个数据，累计和为0.76米。别看这个累计误差还是挺大的，你得看看电梯总共经过多少路程。上面六个数据绝对值之和为168.33米，所以相对的累计误差只有0.45%！！！</p>
+
+<p>画成图像如下：</p>
+<p><img src="7.png"></p>
+
+<p>可以看到几乎又重新回到了0。</p>
+
+<p>而之前，没有反向积分的时候，图像是这样：</p>
+<p><img src="8.png"></p>
+
+<p>最后的累计误差居然有-8.17米！</p>
+
+<p>误差居然缩小了一个数量级！！由此可见反向积分的威力了！</p>
+
+<p>&nbsp;</p>
+
+<p>！！！！！！！！！！！！！更新一！！！！！！！！！！！！！！！！</p>
+
+<p>原文中，对于运动阶段的起点和终点的判断算法是存在问题的。之所以会存在问题，是被“比较良好”的实验数据所迷惑的。原文中所用的实验数据如下：</p>
+<p><img src="4.jpg"></p>
+
+<p>可以看到，其中每一个加速阶段或者减速阶段都是独立的。也就是说，电梯都会经历加速过程、匀速过程与减速过程。但是存在这么一种特殊情况——我只上升或下降一层楼，那么电梯往往先加速后减速，中间根本没有时间做匀速运动！所以产生的图像大致如下：</p>
+<p><img src="9.jpg"></p>
+
+<p>可以看到，红圈里面的运动就是我从8楼坐到9楼的时候采集到的数据，加速度直接从正值跳变到负值。虽然从物理的角度来说，必然存在一个时间点使得加速度为0，但是采样是有频率限制的，于是造成了这种非连续型。</p>
+
+<p>新的寻找开始点与结束点的方法是用了有限状态机的思想。定义一个变量step表示当前的状态。</p>
+
+<p>当step为0时，表示当前还没有找到起始点。那么如果找到这么一个点i，它自身为正而它之前的点为0，那么这个点就是一个上升阶段的起始点；此时把step标记为1，表示当前找到了一个上升阶段的起始点。同样地，当step为0时，如果找到这么一个点i，它自身为负而它之前的点为0，则把step标记为2，表明已经找到了一个下降阶段的起始点。</p>
+
+<p>当step为1时，如果找到一个点i，它之前的点为负，而其自身为0，那么这个点就是上升阶段的结束点，则把step标记为0。</p>
+
+<p>当step为2时，如果找到一个点i，它之前的点为正，而其自身为0，那么这个点就是下降阶段的结束点，则把step标记为0。</p>
+
+<p>另外呢，就是对输入数据格式的调整。输入数据要求有两列，第一列是unix时间戳，第二列是以m/s^2为单位的加速度值。这样做的目的是把计算程序与ADXL345解耦，使其能够处理各种加速度传感器采集的数据。</p>
+
+<p>修改后的代码如下：</p>
+
+<pre>using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.IO;
+
+namespace ZhouJianShi
+{
+
+    class Program
+    {
+
+        static void Main(string[] args)
+        {
+            //======================参数处理=======================
+            if (args.Length &lt; 4)
+            {
+                Console.WriteLine("usage: &lt;inputFile&gt; &lt;outputFile&gt; &lt;startTime or null&gt; &lt;endTime or null&gt;");
+                return;
+            }
+            string inputFile = args[0];
+            string outputFile = args[1];
+            DateTime? startTime = null;
+            if (!args[2].Equals("null"))
+                startTime = DateTime.Parse(args[2]);
+            DateTime? endTime = null;
+            if (!args[3].Equals("null"))
+                endTime = DateTime.Parse(args[3]);
+
+            //=====================运算部分========================
+            ElevatorDistance distance = new ElevatorDistance(inputFile, outputFile);
+            distance.setStartTime(startTime);
+            distance.setEndTime(endTime);
+            if (!distance.run())
+                Console.WriteLine("No elevator movement found!");
+        }
+
+    }
+
+    class ElevatorDistance
+    {
+
+        private string inputFile;
+        private string outputFile;
+        private DateTime? startTime;
+        private DateTime? endTime;
+        private DateTime timeBase = DateTime.Parse("1970-1-1");
+
+        public ElevatorDistance(string inputFile, string outputFile)
+        {
+            this.inputFile = inputFile;
+            this.outputFile = outputFile;
+        }
+
+        public void setStartTime(DateTime? startTime)
+        {
+            this.startTime = startTime;
+        }
+
+        public void setEndTime(DateTime? endTime)
+        {
+            this.endTime = endTime;
+        }
+
+        public bool run()
+        {
+            //========================数据预处理部分=============================
+            double[][] arrays = TextReadWithinTimeRange();
+            //时间序列
+            double[] time = arrays[0];
+            //加速度序列
+            double[] acc = arrays[1];
+            //剔除重力，得到运动加速度
+            acc = deAverage(acc);
+            //计算滑动加权平均值，使曲线更加平滑。窗口大小为0.1s
+            double[] weights = new double[100 * time.Length / ((int)(time[time.Length - 1] - time[0]))];
+            for (int i = 0; i &lt; weights.Length; i++)
+                weights[i] = 1.0 / weights.Length;
+            //这样处理后，电梯运动更容易被识别出来
+            acc = movingAverage(acc, weights);
+
+            //======================过滤电梯运动之外的数据================================
+            //elevatorAcc是电梯的加速度
+            double[] elevatorAcc = new double[acc.Length];
+            //滑动窗口大小1.5秒
+            int winSize = 1500 * time.Length / ((int)(time[time.Length - 1] - time[0]));
+            //如果某个点的加速度与其前面的窗口中的所有加速度同号、或与其后面的窗口中的所有加速度同号，那么认为是电梯加速度
+            for (int i = winSize; i &lt; acc.Length - winSize; i++)
+            {
+                int start = i - winSize;
+                int end = i + winSize;
+                if (isAllSameSign(acc, start, i) || isAllSameSign(acc, i, end))
+                    elevatorAcc[i] = acc[i];
+            }
+            //过滤后的加速度数据，只有电梯运动数据了
+            acc = elevatorAcc;
+
+            //======================获取所有电梯开始和停下来的时间点================================
+            List&lt;int&gt; startPoss = new List&lt;int&gt;();
+            List&lt;int&gt; stopPoss = new List&lt;int&gt;();
+            //当前状态。如果为0，则表示还没找到开始点，如果为1表明正在找一个上升阶段的结束点，如果为2表明正在找一个下降阶段的结束点
+            int step = 0;
+            for (int i = 1; i &lt; acc.Length; i++)
+            {
+                if(step == 0)
+                {
+                    //找到了一个上升阶段开始点
+                    if(acc[i-1] == 0 &amp;&amp; acc[i] &gt; 0 )
+                    {
+                        startPoss.Add(i);
+                        step = 1;
+                    }
+                    //找到一个下降阶段开始点
+                    if(acc[i-1] == 0 &amp;&amp; acc[i] &lt; 0 )
+                    {
+                        startPoss.Add(i);
+                        step = 2;
+                    }
+                }
+                else if(step == 1)
+                {
+                    //找到了上升阶段结束点
+                    if (acc[i - 1] &lt; 0 &amp;&amp; acc[i] == 0)
+                    {
+                        stopPoss.Add(i);
+                        step = 0;
+                    }
+                }
+                else if( step == 2 )
+                {
+                    //找到了下降阶段结束点
+                    if ( acc[i-1] &gt; 0 &amp;&amp; acc[i] == 0)
+                    {
+                        stopPoss.Add(i);
+                        step = 0;
+                    }
+                }
+            }
+            //完整的阶段数
+            int count = Math.Min(startPoss.Count, stopPoss.Count);
+            if (count == 0)
+                return false;
+            if (count &lt; startPoss.Count)
+                startPoss = (List&lt;int&gt;)startPoss.Take(count);
+            if (count &lt; stopPoss.Count)
+                stopPoss = (List&lt;int&gt;)stopPoss.Take(count);
+
+            //===============================积分阶段=============================
+            //最后要获得的距离数列
+            double[] distance = new double[count];
+            for (int i = 0; i &lt; distance.Length; i++)
+            {
+                //当前速度
+                double velocity = 0;
+                //起始点的位置
+                int startPos = startPoss[i];
+                //停止点的位置
+                int stopPos = stopPoss[i];
+                //正向积分
+                for (int j = startPos + 1; j &lt;= stopPos; j++)
+                {
+                    //时间间隔
+                    double deltaTime = time[j] - time[j - 1];
+                    //对速度积分
+                    velocity += acc[j] * deltaTime;
+                    //对距离积分
+                    distance[i] += velocity * deltaTime;
+                }
+                velocity = 0;
+                //反向积分
+                for (int j = stopPos; j &gt; startPos; j--)
+                {
+                    //时间间隔
+                    double deltaTime = time[j] - time[j - 1];
+                    //对速度积分
+                    velocity += acc[j] * deltaTime;
+                    //对距离积分
+                    distance[i] -= velocity * deltaTime;
+                }
+                distance[i] /= 2;
+            }
+            //对距离进行尺度变换
+            distance = multiplyArray(distance, 0.000001);
+
+            //=======================保存文件=========================
+            StreamWriter file = new StreamWriter(outputFile, false);
+            for (int i = 0; i &lt; distance.Length; i++)
+                file.WriteLine(time[startPoss[i]] + "," + time[stopPoss[i]] + "," + distance[i]);
+            file.Close();
+            return true;
+        }
+
+        //从文件中读取数据，但只保留时间戳在指定区间内的
+        private double[][] TextReadWithinTimeRange()
+        {
+            double[][] arrays = TextRead(inputFile, ',', new uint[] { 0, 1,});
+            int length = arrays[0].Length;
+            //根据时间戳判断开始位置和结束位置
+            int startIndex = 0, endIndex = length - 1;
+            for (int i = 0; i &lt; length; i++)
+            {
+                if (startTime != null)
+                    if (arrays[0][i] &lt; ((DateTime)startTime).Subtract(timeBase).TotalMilliseconds)
+                        startIndex = i + 1;
+                if (endTime != null)
+                    if (arrays[0][i] &lt;= ((DateTime)endTime).Subtract(timeBase).TotalMilliseconds)
+                        endIndex = i;
+            }
+            //截取数组
+            int newLength = endIndex - startIndex + 1;
+            double[][] newArrays = new double[arrays.Length][];
+            for (int i = 0; i &lt; newArrays.Length; i++)
+            {
+                newArrays[i] = new double[newLength];
+                Array.Copy(arrays[i], startIndex, newArrays[i], 0, newLength);
+            }
+            return newArrays;
+        }
+
+        //按行读取文本文件fileName，每行以splitor分割，取columns指定的列，返回各个列
+        private double[][] TextRead(string fileName, char splitor, uint[] columns)
+        {
+            //统计最大的列编号
+            uint maxCol = 0;
+            for (int i = 0; i &lt; columns.Length; i++)
+                maxCol = Math.Max(maxCol, columns[i]);
+            StreamReader reader = new StreamReader(new FileStream(fileName, FileMode.Open));
+            List&lt;double[]&gt; list = new List&lt;double[]&gt;();
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                string[] items = line.Split(splitor);
+                //如果某行没有这么多列
+                if (items.Length &lt;= maxCol)
+                    throw new ArgumentException("items.Length &lt;= maxCol");
+                double[] datas = new double[columns.Length];
+                for (int i = 0; i &lt; columns.Length; i++)
+                    datas[i] = Double.Parse(items[columns[i]]);
+                list.Add(datas);
+            }
+            reader.Close();
+            //重组数组，行列转置
+            double[][] result = new double[columns.Length][];
+            for (int i = 0; i &lt; columns.Length; i++)
+                result[i] = new double[list.Count()];
+            int lineIndex = 0;
+            foreach (double[] datas in list)
+            {
+                for (int i = 0; i &lt; columns.Length; i++)
+                    result[i][lineIndex] = datas[i];
+                lineIndex++;
+            }
+            return result;
+        }
+
+        //把数据的平均值从数据中剔除
+        private static double[] deAverage(double[] datas)
+        {
+            double[] result = new double[datas.Length];
+            double sum = 0;
+            for (int i = 0; i &lt; datas.Length; i++)
+                sum += datas[i];
+            double avg = sum / datas.Length;
+            for (int i = 0; i &lt; datas.Length; i++)
+                result[i] = datas[i] - avg;
+            return result;
+        }
+
+        //计算数据的加权平均移动值
+        private static double[] movingAverage(double[] datas, double[] weights)
+        {
+            double[] result = new double[datas.Length];
+            for (int i = 0; i &lt; datas.Length; i++)
+            {
+                double sum = 0;
+                for (int j = weights.Length - 1; j &gt;= 0; j--)
+                {
+                    int k = i + j - weights.Length + 1;
+                    if (k &lt; 0)
+                        break;
+                    sum += datas[k] * weights[j];
+                }
+                result[i] = sum;
+            }
+            return result;
+        }
+
+        //判断数组指定区间内是否同号
+        private static bool isAllSameSign(double[] datas, int start, int end)
+        {
+            for (int i = start; i &lt; end; i++)
+            {
+                if (datas[i] &gt; 0 &amp;&amp; datas[i + 1] &lt; 0)
+                    return false;
+                if (datas[i] &lt; 0 &amp;&amp; datas[i + 1] &gt; 0)
+                    return false;
+            }
+            return true;
+        }
+
+        //对数组的每一个元素进行乘法运算
+        private static double[] multiplyArray(double[] datas, double k)
+        {
+            double[] result = new double[datas.Length];
+            for (int i = 0; i &lt; datas.Length; i++)
+                result[i] = datas[i] * k;
+            return result;
+        }
+
+    }
+
+}
+</pre>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

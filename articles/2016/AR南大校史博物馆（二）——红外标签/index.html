@@ -1,0 +1,187 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>AR南大校史博物馆（二）——红外标签</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">AR南大校史博物馆（二）——红外标签</h1>
+							</header>
+							<div class="entry-content">
+
+<p>首先需要实现的是红外标签。红外标签其实就是一个红外LED，在单片机的控制下发出遵循一定编码的脉冲。如果一个单片机只控制一个（两个以上并联的红外LED当做一个处理），那么可以很简单地使用一个大循环，然后不停delay()。但是我希望的是，一个单片机能够同时控制很多组的红外标签，至少一个GPIO引脚要能够控制一对红外标签。</p>
+
+<p>怎么实现呢？其实并不复杂，把一组红外标签的控制逻辑封装成一个类IrTag，这个类提供一个叫做tick1ms()的方法。每次调用tick1ms()，就相当于告诉这一组控制逻辑：“当前又过去了1毫秒，你自己决定你控制的红外LED是应该亮呢还是应该灭呢？”</p>
+
+<p>而IrTag内部使用一个有限状态机的模式，共3种状态，即“正在发送0”、“正在发送1”和“正在发送RST”。同时，IrTag内部有一个计数器pastTime，累计从上次状态转换之后，已经过去的毫秒数，每次调用tick1ms()方法pastTime就加一。我们假设0的跳变间隔是100ms，1的跳变间隔是200ms，RST的跳变间隔是300ms。那么如果当前处于“正在发送0”状态，那么当pastTime增加到100时，就翻转对应的GPIO的电平，然后把pastTime清零，并切换到下一个状态，并根据下一个状态来确定pastTime的阈值。</p>
+
+<p>如果对编码格式有疑惑，参加《<a href="../针对51单片机的315Mhz无线模块协议与软件的改进/index.html">针对51单片机的315Mhz无线模块协议与软件的改进</a>》。</p>
+
+<p>说的再多不如直接看代码：</p>
+
+<p>IrTag.h</p>
+
+<pre>#ifndef IRTAG_H
+
+//红外标签定义
+class IrTag
+{
+private:
+    //0、1和RST位的跳变间隔
+    int interval0,interval1,intervalRST;
+    //该标签所表达的数字
+    long code;
+    //该数字占用的位数
+    int bitCount;
+    //通过哪个GPIO发送
+    int pin;
+    //当前已经发送出去的位数
+    int sentCount;
+    //自上次跳变已经过去的毫秒数
+    int timePast;
+    //当前GPIO的电平状态
+    int pinState;
+    //下次跳变的时间
+    int nextTriggerTime;
+    //是否发送校验数据位（发送完bitCount位数据后是否需要发送反码）
+    bool check;
+
+public:
+    IrTag(int interval0,int interval1,int intervalRST,long code,int bitCount,int pin,bool check);
+    //由外部调用，表示过去了1毫秒
+    void tick1Ms();
+
+};
+
+#endif
+</pre>
+
+<p>IrTag.cpp</p>
+
+<pre>#include "IrTag.h"
+#include &lt;Arduino.h&gt;
+
+IrTag::IrTag(int interval0,int interval1,int intervalRST,long code,int bitCount,int pin,bool check)
+{
+    //初始化成员变量
+    this-&gt;interval0=interval0;
+    this-&gt;interval1=interval1;
+    this-&gt;intervalRST=intervalRST;
+    this-&gt;code=code;
+    this-&gt;bitCount=bitCount;
+    this-&gt;pin=pin;
+    this-&gt;check=check;
+    sentCount=0;
+    timePast=0;
+    pinState=1;
+    nextTriggerTime=intervalRST;
+    //初始化GPIO
+    pinMode(pin,OUTPUT);
+    digitalWrite(pin,pinState);
+}
+
+void IrTag::tick1Ms()
+{
+    timePast++;
+    //如果当前时间还没有达到则返回
+    if(timePast&lt;nextTriggerTime)
+        return;
+    //反正GPIO电平
+    pinState=1-pinState;
+    digitalWrite(pin,pinState);
+    timePast=0;
+    sentCount++;
+    //如果不需要发送校验数据
+    if(!check)
+    {
+        //如果已经发送了bitCount+1位数据了（1位RST+bitCount位数据）
+        if(sentCount&gt;=bitCount+1)
+        {
+            sentCount=0;
+            //进入下一个状态（正在发送RST）
+            nextTriggerTime=intervalRST;
+        }
+        //如果还未发送完
+        else
+        {
+            //下一个需要发送的数据位的偏移量
+            int bitIndex=sentCount-1;
+            //下一个需要发送的数据位
+            int bitToSent=(code&gt;&gt;(bitCount-bitIndex-1))&amp;0x01;
+            //下一个触发的时间由bitToSend决定（如果是1，那么就是interval1，否则就是interval0）
+            nextTriggerTime=bitToSent?interval1:interval0;
+        }
+    }
+    //如果需要发送校验数据
+    else
+    {
+        //如果已经发送完了2*bitCount+1位（1位RST+bitCount位数据+bitCount位数据反码）
+        if(sentCount&gt;=2*bitCount+1)
+        {
+            sentCount=0;
+            //进入下一个状态（正在发送RST）
+            nextTriggerTime=intervalRST;
+        }
+        //如果在发送数据
+        else if(sentCount&lt;=bitCount)
+        {
+            //下一个需要发送的数据位的偏移量
+            int bitIndex=sentCount-1;
+            //下一个需要发送的数据位
+            int bitToSent=(code&gt;&gt;(bitCount-bitIndex-1))&amp;0x01;
+            //下一个触发的时间由bitToSend决定（如果是1，那么就是interval1，否则就是interval0）
+            nextTriggerTime=bitToSent?interval1:interval0;
+        }
+        //如果在发送数据反码
+        else
+        {
+            //下一个需要发送的数据位的偏移量
+            int bitIndex=sentCount-1-bitCount;
+            //下一个需要发送的数据位（取反码）
+            int bitToSent=!((code&gt;&gt;(bitCount-bitIndex-1))&amp;0x01);
+            //下一个触发的时间由bitToSend决定（如果是1，那么就是interval1，否则就是interval0）
+            nextTriggerTime=bitToSent?interval1:interval0;
+        }
+    }
+}
+</pre>
+
+<p>接下来就可以在外部这么使用：</p>
+IrTags.ino：</p>
+
+<pre>#include "IrTag.h"
+
+IrTag irTag1(500,1500,2500,0,2,2,true);
+IrTag irTag2(500,1500,2500,1,2,3,true);
+
+void setup()
+{
+}
+
+void loop()
+{
+    delay(1);
+    irTag1.tick1Ms();
+    irTag2.tick1Ms();
+}
+</pre>
+
+<p>irTag1控制GPIO2引脚的电平，并且向外发送数字0，使用反码校验，发送0的跳变间隔是500ms，发送1的跳变间隔是1500ms，发送RST的跳变间隔是2500ms。同理，irTag2控制GPIO3引脚的电平，并且向外发送数字1，使用反码校验，发送0的跳变间隔是500ms，发送1的跳变间隔是1500ms，发送RST的跳变间隔是2500ms。GPIO2和GPIO3各自独立地发送脉冲~</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>
