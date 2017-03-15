@@ -35,7 +35,7 @@ void gpio_set_value(unsigned gpio,int value);
 ls
 </pre>
 
-<p><img src="1.png"></p>
+<p><img src="1.jpg"></p>
 
 <p>export文件用于导出GPIO引脚，unexport用于释放GPIO引脚，而gpiochip0代表gpio芯片的信息。</p>
 
@@ -46,13 +46,13 @@ ls
 
 <p>如果成功，就会在/sys/class/gpio目录下多出一个gpio7的目录。然后gpio7目录中包含了若干的文件：</p>
 
-<p><img src="./Linux的GPIO子系统（一）——_sys_class_gpio目录 _ 胡萝卜的技术仓库_files/ls_gpio7.png"></p>
+<p><img src="2.jpg"></p>
 
 <p>应用程序需要用到的就只有direction、edge和value。而在shell中可用的就只有direction和value。direction控制GPIO的工作模式是输入还是输出，而value则用于写出或读入GPIO的值。</p>
 
 <p>我先告诉你，gpio7对应了Orange Pi Zero的PA7引脚（待会儿会说怎么个对应关系）。现在我们做几个实验。首先，把一个LED的GND接Pi的GND，LED的VCC接Pi的PA7引脚。额，你不知道哪个是PA7？丢给你Orange Pi Zero的GPIO分配图（在<a href="https://pan.baidu.com/s/1qYtt6g8">orange_pi-zero-v1_11.pdf</a>第11页）：</p>
 
-<p><img src="2.jpg"></p>
+<p><img src="3.png"></p>
 
 <p>这个布局其实和树莓派B+的26引脚是一致的，也就是兼容的。</p>
 
@@ -173,7 +173,7 @@ echo both &gt; /sys/class/gpio/gpio7/edge
 
 <p>最后，再来讲解一下引脚和编号是怎么对应的。最简单的方法就是看<a href="http://linux-sunxi.org/GPIO">wiki</a>上的说明：</p>
 
-<p><img src="3.png"></p>
+<p><img src="4.jpg"></p>
 
 <p>计算还是很简单的。</p>
 
