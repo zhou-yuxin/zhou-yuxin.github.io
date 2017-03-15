@@ -1,0 +1,93 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>Linux下修改磁盘分区大小</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">Linux下修改磁盘分区大小</h1>
+							</header>
+							<div class="entry-content">
+
+<p>今天遇到一个问题，就是使用树莓派（其实是香蕉派，无所谓）的时候，提示说磁盘空间不足。当然，所说的磁盘就是SD卡了。</p>
+
+<p>我一看，一个8GB的SD卡，/root分区只用了10GB，还有一大堆空闲扇区处于分区之外。这是因为树莓派官方给的镜像里面的分区大小只有10GB。所以我想到了扩容。如何在不损坏逻辑文件的情况下增大分区呢？百度了一番，找到了与我情况最最相近的一篇博客<a href="http://blog.csdn.net/azure190/article/details/51044743">《使用fdisk e2fsck resize2fs调整Linux分区大小 》</a>，按照他的方式试验了一番，果然可以，在此感谢作者<a href="http://blog.csdn.net/azure190">azure190</a>。</p>
+
+<p>我以树莓派官方给的镜像文件2016-11-25-raspbian-jessie.img（下载<a href="https://pan.baidu.com/s/1mi6oWgK">2016-11-25-raspbian-jessie.zip</a>解压可以得到）为例来做示例实验。</p>
+
+<p>本实验全程都是在电脑上完成的，其实不需要用到树莓派，而且方法对于硬盘、U盘都是通用的。</p>
+
+<p>在电脑上插入SD卡后，我的SD卡被标记为/dev/sdb。如果里面有文件系统，就会被自动挂载。在刷镜像之前，先把挂载的分区卸载掉：</p>
+
+<pre>sudo umount /dev/sdb1
+sudo umount /dev/sdb2
+</pre>
+
+<p>使用dd命令把2016-11-25-raspbian-jessie.img刷到一张8GB的SD卡中：</p>
+
+<pre>dd if=2016-11-25-raspbian-jessie.img of=/dev/sdb bs=4M
+</pre>
+
+<p>执行完之后，重新。启动之后，使用如下命令查看磁盘分区及大小：</p>
+
+<pre>df -h
+</pre>
+
+<p>得到如下输出：</p>
+
+<p><img src="1.jpg"></p>
+
+<p>/dev/sdb1是63M，/dev/sdb2是3.9G。而我的SD卡有8GB，后面的4G就空着了。所以我希望把/dev/sdb2扩大，把SD卡剩下的空间全部利用上。这就要涉及到分区表的修改，还要保证文件不被破坏。</p>
+
+<p>首先，卸载掉这两个分区：</p>
+
+<pre>sudo umount /dev/sdb1
+sudo umount /dev/sdb2
+</pre>
+
+<p>然后</p>
+
+<pre>sudo fdisk  /dev/sdb
+</pre>
+
+<p>输入p，回车，可以看到下图：</p>
+
+<p><img src="2.jpg"></p>
+
+<p>记录下sdb2的“起点”，这里是137216。</p>
+
+<p>然后输入d，回车，再输入2，回车，那么就删除了2号分区，也就是sdb2。此时可以看一下分区表（输入p，回车），只剩sdb1了。</p>
+
+<p>接下来输入n，回车，表示要新建分区。fdisk要求选择是主分区还是扩展分区。这里选择主分区，即输入p，回车。接着输入2，回车，表示创建sdb2。然后输入起始扇区，我们把刚刚记录的137216填写进去。然后输入结束扇区，可以使用默认值，也就是最后一个扇区。过程如图：</p>
+
+<p><img src="3.jpg"></p>
+
+<p>最后，输入w，回车，把修改后的分区表写入SD卡即可。</p>
+
+<p>输入命令：</p>
+
+<pre>sudo e2fsck -af /dev/sdb2
+sudo resize2fs /dev/sdb2
+</pre>
+
+<p>以修复可能存在的文件系统问题。</p>
+
+<p>重新挂载一下SD卡，会发现/dev/sdb2已经变成7.7GB了～</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

@@ -5,6 +5,28 @@
 	</head>
 	<body>
 		<ul style="display:none">
+			<li>2017年03月04日 Linux的GPIO子系统（一）——/sys/class/gpio目录</li>
+			<li>2017年03月03日 Linux+全志H3处理器在用户态操作GPIO（mmap+读写寄存器）</li>
+			<li>2017年02月18日 LSP(Lua Server Page)动态页面的提速（提速了140%~）</li>
+			<li>2017年02月17日 NodeMCU实现简易HTTP服务器与LSP动态页面</li>
+			<li>2017年02月13日 OpenSCAD 船体的构造</li>
+			<li>2017年02月11日 Linux 驱动ADXL345加速度传感器——I2C设备的用户态驱动与内核态驱动</li>
+			<li>2017年01月30日 第一个Linux驱动程序（三）——aMsg的非阻塞式IO之select/poll</li>
+			<li>2017年01月23日 第一个Linux驱动程序（二）——aMsg的阻塞式IO（互斥与同步）</li>
+			<li>2017年01月20日 第一个Linux驱动程序（一）——aMsg的open()、read()和write()（驱动程序的基本结构）</li>
+			<li>2017年01月17日 Orange Pi Zero使用USB 4G网卡（Linux 手动加载驱动并启动USB 4G网卡）</li>
+			<li>2017年01月08日 Linux 使用USB 4G上网卡（usb_modeswitch的使用）</li>
+			<li>2017年01月07日 Linux 使用USB 3G上网卡（wvdial的使用）</li>
+			<li>2017年01月02日 Linux 搭建OpenVPN服务器和客户端（一）——最简配置</li>
+			<li>2016年12月28日 树莓派+Linux+Java驱动SIM800C GPRS模块实现TCP数据传输</li>
+			<li>2016年12月25日 TimeoutableReader 带有超时功能的行读取器（Java）</li>
+			<li>2016年12月23日 结合链表与数组各自优点的字节流ByteStream</li>
+			<li>2016年12月20日 Linux下安装VNC以使用远程桌面</li>
+			<li>2016年12月20日 Linux下修改磁盘分区大小</li>
+			<li>2016年12月18日 Linux 串口操作（C++实现同步发、异步收的串口类）</li>
+			<li>2016年11月29日 NodeMCU实现SD卡扇区级读写</li>
+			<li>2016年11月19日 AR南大校史博物馆（四）——多媒体展示</li>
+			<li>2016年11月19日 AR南大校史博物馆（三）——识别算法</li>
 			<li>2016年11月19日 AR南大校史博物馆（二）——红外标签</li>
 			<li>2016年11月18日 AR南大校史博物馆（一）——概述</li>
 			<li>2016年11月17日 Java多媒体的使用（摄像头、扬声器与麦克风）</li>
@@ -103,7 +125,7 @@
 				$("#title").html(title);
 				$("#date").html(date);
 				var year=date.substring(0,4);
-				$("#title").attr("href","./articles/"+year+"/"+title+"/index.html");
+				$("#title").attr("href","./articles/"+year+"/"+title.replace(/\//g,"-")+"/index.html");
 				var row=$("#rowExample").clone();
 				row.show();
 				$("#articles").append(row);

@@ -1,0 +1,377 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>AR南大校史博物馆（四）——多媒体展示</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">AR南大校史博物馆（四）——多媒体展示</h1>
+							</header>
+							<div class="entry-content">
+
+<p>现在能够识别一个个的红外标签了，那么离最终结果不远了。接下来还需要做两件事：（1）识别展品位置；（2）配上文字说明和语音讲解。</p>
+
+<p>=================阶段一：识别展品=================</p>
+
+<p>红外标签所表达的数字就是其负责的展品的编号。我目前设定每个展品有2个红外标签。于是策略可以很简单：把编号相同的红外标签归为同一个组，如果一个组有超过2个标签，那么只取最后加入的2个。如果某个组有恰好两个红外标签，那么就以这两个红外标签构成的线段为直径画圆，这个圆圈出的位置就是展品所在。很简单吧？唯一需要注意的就是可能需要设置一个timeout，把那些长时间没有出现的红外标签给删除。</p>
+
+<p>ExhibitsRec.java：</p>
+
+<pre>package zjs.irrec;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import zjs.irrec.util.Circle;
+import zjs.irrec.util.IrTag;
+
+public class ExhibitsRec
+{
+
+    //IrTag超时时间
+    private long timeout;
+    //红外标签对
+    private Map&lt;Integer,List&lt;IrTagWithTime&gt;&gt; irTagPairs;
+    //找出的圆
+    private List&lt;Circle&gt; circles;
+
+    public ExhibitsRec(long timeout)
+    {
+        this.timeout=timeout;
+        irTagPairs=new HashMap&lt;Integer,List&lt;IrTagWithTime&gt;&gt;();
+        circles=new ArrayList&lt;Circle&gt;();
+    }
+
+    //传入红外标签，获取展品圆圈
+    public List&lt;Circle&gt; getExhibitCircles(long time,List&lt;IrTag&gt; irTags)
+    {
+        //遍历当前保存的红外标签对
+        for(List&lt;IrTagWithTime&gt; irTagPair:irTagPairs.values())
+        {
+            //遍历每一个红外标签
+            Iterator&lt;IrTagWithTime&gt; irTagIterator=irTagPair.iterator();
+            while(irTagIterator.hasNext())
+            {
+                //删除超时的红外标签
+                IrTagWithTime irTag=irTagIterator.next();
+                if(time-irTag.startTime&gt;timeout)
+                    irTagIterator.remove();
+            }
+        }
+        //遍历新的帧中发现的红外标签
+        for(IrTag irTag:irTags)
+        {
+            //找到该红外标签应当隶属的当前红外标签对
+            int code=irTag.getCode();
+            List&lt;IrTagWithTime&gt; irTagPair=irTagPairs.get(code);
+            //不存在则新建
+            if(irTagPair==null)
+            {
+                irTagPair=new ArrayList&lt;IrTagWithTime&gt;();
+                irTagPairs.put(code,irTagPair);
+            }
+            //把这个标签对中标签数删减到1（含）以下
+            while(irTagPair.size()&gt;1)
+                irTagPair.remove(0);
+            //增加新的红外标签，并附上时间
+            IrTagWithTime irTagWithTime=new IrTagWithTime();
+            irTagWithTime.irTag=irTag;
+            irTagWithTime.startTime=time;
+            irTagPair.add(irTagWithTime);
+        }
+        //寻找所有的展品圆圈
+        circles.clear();
+        for(Map.Entry&lt;Integer,List&lt;IrTagWithTime&gt;&gt; entry:irTagPairs.entrySet())
+        {
+            int code=entry.getKey();
+            List&lt;IrTagWithTime&gt; irTagPair=entry.getValue();
+            //如果某个标签对有2个标签
+            if(irTagPair.size()&gt;=2)
+            {
+                IrTag irTag1=irTagPair.get(0).irTag;
+                IrTag irTag2=irTagPair.get(1).irTag;
+                int x=(irTag1.getX()+irTag2.getX())/2;
+                int y=(irTag1.getY()+irTag2.getY())/2;
+                int deltaX=irTag1.getX()-irTag2.getX();
+                int deltaY=irTag1.getY()-irTag2.getY();
+                int r=(int)Math.sqrt(deltaX*deltaX+deltaY*deltaY)/2;
+                //则创建一个圆圈，以其中点为原型，线段长度为直径
+                Circle circle=new Circle(x,y,r,code);
+                circles.add(circle);
+            }
+        }
+        return Collections.unmodifiableList(circles);
+    }
+
+}
+
+class IrTagWithTime
+{
+
+    public IrTag irTag;
+    public long startTime;
+
+}
+</pre>
+
+<p>其中的Circle是一个简单的POJO，</p>
+
+<p>Circle.java：</p>
+
+<pre>package zjs.irrec.util;
+
+public class Circle
+{
+
+    private int x,y;
+    private int r;
+    private int code;
+
+    public Circle(int x,int y,int r,int code)
+    {
+        this.x=x;
+        this.y=y;
+        this.r=r;
+        this.code=code;
+    }
+
+    public int getX()
+    {
+        return x;
+    }
+
+    public int getY()
+    {
+        return y;
+    }
+
+    public int getR()
+    {
+        return r;
+    }
+
+    public int getCode()
+    {
+        return code;
+    }
+
+    @Override
+    public String toString()
+    {
+        return String.format("(%d,%d)=%d,R=%d",x,y,code,r);
+    }
+
+}
+</pre>
+
+<p>===============阶段二：文字展示、语音讲解==============</p>
+
+<p>文字展示和语音讲解部分就很简单了，唯一需要注意的就是避免语音的循环播放，直接看代码吧~</p>
+
+<p>VoiceAndView.java:</p>
+
+<pre>package zjs.irrec;
+
+import java.awt.Color;
+import java.awt.Dimension;
+import java.awt.Graphics;
+import java.awt.Point;
+import java.awt.image.BufferedImage;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.util.List;
+import javax.sound.sampled.LineUnavailableException;
+import javax.sound.sampled.UnsupportedAudioFileException;
+import javax.swing.JPanel;
+import com.github.sarxos.webcam.Webcam;
+import zjs.irrec.util.Circle;
+import zjs.irrec.util.IrTag;
+
+public class ViewAndVoice extends JPanel
+{
+
+    private static final long serialVersionUID=1L;
+
+    //摄像头
+    private Webcam webcam;
+    //图像宽度和高度
+    private int width,height;
+    //LED点识别模块
+    private PointsRec pointsRec;
+    //LED解码模块
+    private PointsTrac pointsTrac;
+    //展品识别模块
+    private ExhibitsRec exhibitsRec;
+    //是否展示白板背景
+    private boolean showWhiteBoard;
+    //拍到的帧
+    private BufferedImage capture;
+    //当前锁定的展品圆圈
+    private volatile Circle circle;
+    //各个展品描述
+    private String[][] descriptions;
+    //上次播放的语音的编号
+    private int lastCode;
+    //语音播放器
+    private AudioPlayer[] audios;
+
+    public ViewAndVoice(Webcam webcam,int maxExhibitCount,PointsRec pointsRec,PointsTrac pointsTrac,ExhibitsRec exhibitsRec,boolean showWhiteBoard) throws IOException,UnsupportedAudioFileException,LineUnavailableException
+    {
+        this.webcam=webcam;
+        Dimension size=webcam.getViewSize();
+        this.width=size.width;
+        this.height=size.height;
+        this.pointsRec=pointsRec;
+        this.pointsTrac=pointsTrac;
+        this.exhibitsRec=exhibitsRec;
+        this.showWhiteBoard=showWhiteBoard;
+        this.setPreferredSize(size);
+        descriptions=new String[maxExhibitCount][];
+        audios=new AudioPlayer[maxExhibitCount];
+        StringBuilder sb=new StringBuilder();
+        for(int i=0;i&lt;maxExhibitCount;i++)
+        {
+            BufferedReader reader=new BufferedReader(new InputStreamReader(ViewAndVoice.class.getResourceAsStream("/description"+i+".txt")));
+            sb.setLength(0);
+            String line;
+            while((line=reader.readLine())!=null)
+                sb.append(line).append("\n");
+            reader.close();
+            //按行分割描述
+            descriptions[i]=sb.toString().split("\n");
+            //加载语音
+            audios[i]=new AudioPlayer(ViewAndVoice.class.getResourceAsStream("/description"+i+".wav"));
+        }
+        lastCode=-1;
+        new Thread()
+        {
+            public void run()
+            {
+                while(true)
+                {
+                    ViewAndVoice.this.tick();
+                }
+            }
+        }.start();
+    }
+
+    @Override
+    public void paint(Graphics g)
+    {
+        //如果要显示白板背景
+        if(showWhiteBoard)
+            g.fillRect(0,0,width,height);
+        //否则显示拍摄到的帧
+        else if(capture!=null)
+            g.drawImage(capture,0,0,width,height,null);
+        //当前锁定圆圈存在而且合理
+        if(circle!=null&amp;&amp;circle.getCode()&lt;descriptions.length)
+        {
+            //画一个圆形和方框，方框里面写介绍文字
+            g.setColor(Color.RED);
+            int left=circle.getX()-circle.getR();
+            int top=circle.getY()-circle.getR();
+            int width=circle.getR()*2;
+            int height=circle.getR()*2;
+            int right=left+width;
+            int rectLeft=right+30;
+            int rectWidth=100;
+            int rectHeight=200;
+            int rectTop=circle.getY()-(int)(rectHeight*(1-0.618));
+            g.drawOval(left,top,width,height);
+            g.drawLine(right,circle.getY(),rectLeft,circle.getY());
+            g.drawRoundRect(rectLeft,rectTop,rectWidth,rectHeight,5,5);
+            int textLeft=rectLeft+10;
+            int textTop=rectTop+20;
+            //介绍文字一行行写
+            for(String line:descriptions[circle.getCode()])
+            {
+                g.drawString(line,textLeft,textTop);
+                textTop+=18;
+            }
+        }
+    }
+
+    private void tick()
+    {
+        //抓取一帧
+        capture=webcam.getImage();
+        long time=System.currentTimeMillis();
+        //分析获得LED点
+        List&lt;Point&gt; points=pointsRec.getPoints(capture);
+        //分析获得红外标签
+        List&lt;IrTag&gt; irTags=pointsTrac.getIrTags(time,points);
+        //分析获得展品圆圈
+        List&lt;Circle&gt; circles=exhibitsRec.getExhibitCircles(time,irTags);
+        //如果存在圆圈
+        if(circles.size()&gt;0)
+        {
+            //找离中心最近的圆圈
+            Circle centerCircle=null;
+            int minDistance=Integer.MAX_VALUE;
+            for(Circle circle:circles)
+            {
+                int deltaX=circle.getX()-width/2;
+                int deltaY=circle.getY()-height/2;
+                int distance=(int)Math.sqrt(deltaX*deltaX+deltaY*deltaY);
+                if(distance&lt;minDistance)
+                {
+                    centerCircle=circle;
+                    minDistance=distance;
+                }
+            }
+            circle=centerCircle;
+        }
+        else
+            circle=null;
+        super.repaint();
+        //播放语音
+        playVoice();
+    }
+
+    private void playVoice()
+    {
+        //圆圈存在且合理
+        if(circle!=null&amp;&amp;circle.getCode()&lt;audios.length)
+        {
+            //新的一个展品（避免循环播放用一个展品的语音）
+            if(circle.getCode()!=lastCode)
+            {
+                //停止上一段语音
+                if(0&lt;=lastCode&amp;&amp;lastCode&lt;audios.length)
+                    audios[lastCode].stop();
+                //播放当前语音
+                audios[circle.getCode()].start();
+                lastCode=circle.getCode();
+            }
+        }
+    }
+
+}
+</pre>
+
+<p>其中用到的AudioPlayer的代码参考《<a href="../Java多媒体的使用（摄像头、扬声器与麦克风）/index.html">Java多媒体的使用（摄像头、扬声器与麦克风）</a>》。</p>
+
+<p>OK，所以代码至此结束，PC端的Java工程可以点击这里下载：<a href="http://pan.baidu.com/s/1i5OAkSl">IrRec.rar</a>。</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

@@ -1,0 +1,672 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>NodeMCU实现SD卡扇区级读写</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">NodeMCU实现SD卡扇区级读写</h1>
+							</header>
+							<div class="entry-content">
+
+<p>大作业、复习、考试、写论文，最近一大堆事情使得我的很多技术积累都没来得及进行文档化。现在第二个小学期开始了，在松香中毒大病初愈之后，终于得到了一丝喘息的机会，于是来一点点文档化之前的技术。</p>
+
+<p>这篇讲单片机如何使用SPI接口进行SD卡的裸读写。所谓裸读写，就是指直接读写扇区，一个扇区是512字节。换句话说，你可以把SD卡当做一个可以随机读写的内存啦，存放各种数据。其实文件系统就是在裸读写的基础上再封装一层罢了。</p>
+
+<p>我最近的项目需要使用SD卡来暂存传感器采样数据，本来呢，NodeMCU是自带支持读写SD卡上的文件系统的，但是文件系统的读写时间是不确定的，而且往往会占用很多时间（因为需要各种运算）。这就导致我的采样频率很不稳定。所以我想到了直接读写扇区，这样基本可以做到硬实时，而且也可以充分利用存储空间。</p>
+
+<p>废话不多说，先来介绍原理吧。</p>
+
+<p>============阶段一：SD卡初始化为SPI模式==========</p>
+
+<p>SD卡有两种读写方式，一种是SDIO，一种是SPI。SDIO的读写速度可以非常高，一般手机、电脑、相机等都是使用SDIO的。SPI其实也不慢啦，可以达到10Mbit/s，对于大多数嵌入式应用绰绰有余了。</p>
+
+<p>怎么告知SD卡使用SPI模式而不要使用SDIO模式呢？SD卡在上电时自动进入SDIO模式，在此模式下，使用SPI的时序向SD卡发送复位命令CMD0（命令的概念接下来解释）。如果SD卡在接收CMD0命令过程中CS为低电平，则进入SPI模式，否则工作在SD 总线模式。</p>
+
+<p>那么SD卡的操作命令是怎样的呢？见下图：</p>
+
+<p><img src="1.png"></p>
+
+<p>每个命令由6个字节构成。第一个字节的高两位固定为01，低6位表示命令编号n（对于命令CMDn）。接下来的4个字节为命令的参数。最后一个字节的最低位为0，高7位为命令的循环冗余校验码（CRC）。</p>
+
+<p>SD卡收到命令后，会在接下来的8个时钟之后返回响应，响应的字节会根据命令的不同而不同。</p>
+
+<p>CMD0为复位命令，同时通过CS引进的电平告知SD卡使用SDIO模式还是SPI模式。既然是编号0，所以第一个字节就是0x40。CMD0没有参数，所以后面的4个字节都为0。CMD0的CRC固定为0x95。CMD0的响应是一个字节，为0x01，表示进入IDLE状态。</p>
+
+<p>复位之后，就需要获取SD卡的类型。SD卡有若干种标准，比如SDv1.1，SDv2.0、SDHC和SDXC等。目前市面上2G的SD卡一般都是SDv2.0标准，而4G以上32G以上的卡一般都是SDHC标准，而64G以上的卡都是SDXC标准。我打算只支持SDv1.1、SDv2.0和SDHC标准。获得SD卡类型的命令是CMD8，参数是0x01AA。该命令返回一个字节，如果第2位为1，则表示为SDv1.1版本，否则是SDv2.0或者SDHC版本。</p>
+
+<p>接下来就需要初始化，初始化使用ACMD41命令。ACMDn表示应用命令，具体而言就是先发送CMD55，参数为0，然后发送CMDn，参数就是ACMDn命令的参数。如果是SDv1.1版本，那么ACMD41命令的参数是0，否则是0x40000000。如果命令返回0，那么说明初始化成功。</p>
+
+<p>最后，如果不是SDv1.1的话，还需要进一步区分是SDv2.0还是SDHC，这个是依靠CMD58的返回值来判断的。CMD58返回两个字节，第一个字节为0，第二个字节如果是0xC0，那么说明是SDHC。</p>
+
+<p>至此，初始化过程完成。</p>
+
+<p>另外需要注意，SPI模式下默认是不需要CRC校验的，但是因为初始化完成之前，还未进入SPI模式，所以还是需要CRC的。好在在初始化完成之前，只用到了CMD0和CMD8，而且它们的参数都是固定的，所以对应的CRC也是固定的。</p>
+
+<p>这里可以先给出发送命令和接收回应通用函数：</p>
+
+<pre>--发送命令CMDn，并发送其参数
+local function sendCommand(cmd,param)
+    --最高两位为01
+    spi.send(1,bit.bor(0x40,cmd))
+    --把参数分解为4个字节，高字节先发送
+    for i=1,4 do
+        local aByte=bit.band(bit.rshift(param,8*(4-i)),0xff)
+        spi.send(1,aByte)
+    end
+    --确定CRC，如果是CMD0，那么CRC为0x95，如果是CMD8，那么CRC为0x87，否则为0xff
+    local crc=0xff
+    if cmd==0 then
+        crc=0x95
+    elseif cmd==8 then
+        crc=0x87
+    end
+    --发送CRC
+    spi.send(1,crc)
+    --等待回应，有效的回应最高位为0
+    local response=0
+    for i=1,200 do
+        response=string.byte(spi.recv(1,1))
+        if bit.band(response,0x80)==0x00 then
+            break
+        end
+    end
+    return response
+end
+
+--发送ACMDn，并发送其参数
+local function sendAppCommand(acmd,param)
+    sendCommand(55,0)
+    local response=sendCommand(acmd,param)
+    return response
+end
+</pre>
+
+<p>那么接下来就可以定义初始化SD卡的函数了：</p>
+
+<pre>--初始化SD卡，成功返回true，并把SD卡类型存在cardType变量中，失败返回false
+local function initSD()
+    --拉高CS
+    gpio.mode(csPin,gpio.OUTPUT)
+    gpio.write(csPin,gpio.HIGH)
+    --初始化SPI，速率为80Mhz/256（初始化过程不能超过400Khz）
+    spi.setup(1,spi.MASTER,spi.CPOL_LOW,spi.CPHA_LOW,8,256)
+    --发送80个时钟，让SD卡同步
+    for i=1,10 do
+        spi.send(1,0xff)
+    end
+    --拉低CS
+    gpio.write(csPin,gpio.LOW)
+    --不停发送CMD0，直到收到0x01
+    local response=0
+    for i=1,200 do
+        response=sendCommand(0,0)
+        if response==0x01 then
+            break
+        end
+    end
+    --尝试次数耗尽，拉高CS，返回错误
+    if response~=0x01 then
+        gpio.write(csPin,gpio.HIGH)
+        return false
+    end
+    --发送CMD8
+    response=sendCommand(8,0x01aa)
+    --如果第2位为1，则为SD1
+    if bit.band(response,0x04)~=0 then
+        cardType="SD1"
+    --否则至少是SD2（也可能是SDHC），此时SD卡会返回5个字节，所以需要额外再读4字节
+    else
+        spi.recv(1,4)
+        cardType="SD2"
+    end
+    --确定ACMD41的参数
+    local param=0
+    --如果是SD2（或SDHC），那么参数为0x40000000，否则为0
+    if(cardType=="SD2") then
+        param=0x40000000
+    end
+    --不停发送ACMD41，直到收到0
+    for i=1,200 do
+        response=sendAppCommand(41,param)
+        if response==0x00 then
+            break
+        end
+    end
+    --尝试次数耗尽，拉高CS，返回错误
+    if response~=0x00 then
+        gpio.write(csPin,gpio.HIGH)
+        return false
+    end
+    --此时初始化已完成，需要进一步确定是SD2还是SDHC
+    if cardType=="SD2" then
+        --发送CMD58
+        response=sendCommand(58,0)
+        --如果收到的不是0，拉高CS，返回错误
+        if response~=0x00 then
+            gpio.write(csPin,gpio.HIGH)
+            return false
+        end
+        --CMD58返回5个字节，读取第二个字节
+        response=string.byte(spi.recv(1,1))
+        --如果是0xC0，那么就是SDHC
+        if response==0xc0 then
+            cardType="SDHC"
+        end
+        --跳过最后三个字节
+        spi.recv(1,3)
+    end
+    --拉高CS
+    gpio.write(csPin,gpio.HIGH)
+    --初始化完成，可以提高SPI速率（80Mhz/8）进行高速传输了
+    spi.setup(1,spi.MASTER,spi.CPOL_LOW,spi.CPHA_LOW,8,8)
+    return true
+end
+</pre>
+
+<p>================阶段二：获取扇区数量=================</p>
+
+<p>初始化过程除了获取SD卡类型以外，最好还能获取SD卡大小。SD卡大小可以使用扇区数量来表达。</p>
+
+<p>获取扇区数量使用的是CMD9命令。发送CMD9之后，SD卡应该要返回0x00。返回0x00说明CMD9执行成功，那么接下来就需要不断读取，直到读到非0xFF的值（通常是0xFE），则表明SD卡已经准备好数据，MCU接下来要接收数据了。总共需要接收18字节的数据，其中前16字节叫做CSD，包含了扇区数量、块大小等等信息，后2字节是CRC。</p>
+
+<p>CSD有两种标准，一种是v1标准，一种是v2标准，这个是通过第1个字节（从1计数）的最高两位区分的。两种标准下，对16字节的解析方法是不同的。我相信自然语言肯定没有代码来的清楚，我就直接给出代码吧：</p>
+
+<pre>--发送CMD9
+response=sendCommand(9,0)
+--结果不为0x00说明出错
+if response~=0x00 then
+    gpio.write(csPin,gpio.HIGH)
+    return false
+end
+--等待数据开始标志0xFE
+for i=1,200 do
+    response=string.byte(spi.recv(1,1))
+    if response==0xfe then
+        break
+    end
+end
+--尝试次数耗尽，拉高CS，返回错误
+if response~=0xfe then
+    gpio.write(csPin,gpio.HIGH)
+    return false
+end
+--读取16字节数据，但是是字符串形式
+local csdStr=spi.recv(1,16)
+--读取2字节CRC（丢弃）
+spi.recv(1,2)
+--把16字节的字符串转换成字节数组
+local csd={}
+for i=1,16 do
+    csd[i]=string.byte(string.sub(csdStr,i,i))
+end
+--获取版本号，第1字节的高2位
+local version=bit.rshift(csd[1],6)
+--版本v1.0
+if version==0 then
+    --这是什么我也不知道，第6字节的低4位
+    local readBlLen=bit.band(csd[6],0x0f)
+    --size字段的高部分，第7字节的低2位
+    local sizeHigh=bit.band(csd[7],0x03)
+    --size字段的中部分，第8字节
+    local sizeMid=csd[8]
+    --size字段的低部分，第9字节的高2位
+    local sizeLow=bit.rshift(csd[9],6)
+    --拼装size字段
+    local size=sizeHigh*1024+sizeMid*4+sizeLow
+    --sizeMulti字段的高部分，第10字节的低2位
+    local sizeMultiHigh=bit.band(csd[10],0x03)
+    --sizeMulti字段的低部分，第11字节的高1位
+    local sizeMultiLow=bit.rshift(csd[11],7)
+    --拼装sizeMulti字段
+    local sizeMulti=sizeMultiHigh*2+sizeMultiLow
+    --按照规定计算扇区数量
+    blockCount=bit.lshift(size+1,sizeMulti+readBlLen-7)
+--版本号v2.0
+elseif version==1 then
+    --size字段的高部分，第8字节的高2位
+    local sizeHigh=bit.rshift(csd[8],2)
+    --size字段的中部分，第9字节
+    local sizeMid=csd[9]
+    --size字段的低部分，第10字节
+    local sizeLow=csd[10]
+    --拼装size字段
+    local size=sizeHigh*65536+sizeMid*256+sizeLow
+    --按规定计算扇区数量
+    blockCount=(size+1)*1024
+else
+    gpio.write(csPin,gpio.HIGH)
+    return false
+end
+</pre>
+
+<p>================阶段三：读取单个扇区=================</p>
+
+<p>完成初始化之后，SD卡已经准备好读写了。这里先讲如何读取单个扇区。</p>
+
+<p>读取单个扇区使用命令CMD17，参数有两种情况。如果是SDv1.1或者SDv2.0，那么CMD17的参数就是以字节为单位表示的地址，比如第0扇区的地址就是0，第1个扇区的地址就是512，第2个扇区的地址就是1024，以此类推。不难理解，这种表示方法很浪费，因为地址的最低9位永远为0。而且因为使用4字节表示地址，所以最大寻址4GB。这就是为什么SDHC改变了参数的含义。SDHC中，CMD17的参数就是指第几个扇区，第0个扇区的地址是0，第1个扇区的地址是1，第2个扇区的地址是2，以此类推。因此参数需要根据cardType确定。</p>
+
+<p>发送了CMD17之后，应该收到回应0x00。之后，MCU应该不停读取，直到读到0xFE，这个是数据开始的标志。0xFE之后的512字节就是扇区的原始数据了。读完512字节的数据之后，还需要读取2字节的CRC。</p>
+
+<p>OK，很简单，代码如下：</p>
+
+<pre>--读取一个扇区，参是是扇区号，返回一个512字节长的字符串
+local function readBlock(blockNo)
+    --拉第CS
+    gpio.write(csPin,gpio.LOW)
+    --确定CMD17的参数
+    local param=blockNo
+    --如果不是SDHC,那么参数就是扇区号*512，否则就是扇区号本身
+    if cardType~="SDHC" then
+        param=blockNo*512
+    end
+    --发送CMD17
+    local response=sendCommand(17,param)
+    --如果不回应0x00，则拉高CS，返回错误
+    if response~=0x00 then
+        gpio.write(csPin,gpio.HIGH)
+        return false
+    end
+    --不停读直到读到0xFE
+    for i=1,200 do
+        response=string.byte(spi.recv(1,1))
+        if response==0xfe then
+            break
+        end
+    end
+    --尝试次数耗尽，拉高CS，返回错误
+    if response~=0xfe then
+        gpio.write(csPin,gpio.HIGH)
+        return false
+    end
+    --读取512字节的数据
+    local block=spi.recv(1,512)
+    --跳过2字节的CRC
+    spi.recv(1,2)
+    --拉高CS
+    gpio.write(csPin,gpio.HIGH)
+    return block
+end
+</pre>
+
+<p>==================阶段四：写入单个扇区==================</p>
+
+<p>写入单个扇区和读取单个扇区一样简单，使用CMD24。CMD24的参数与CMD17是一样的，表示写入的地址，也需要根据cardType进行调整。发送CMD24之后，需要收到回应0x00。然后发送0xFE，表示开始写入数据，然后写入512字节的数据到扇区中，最后附带两字节的伪CRC。所谓伪CRC，就是说SD卡不会真的去检验，所以可以固定为0xff。之后，SD卡会发送一个字节，如果低5位是00101，说明数据已经被SD卡接收（但可能还未固化）。接着不停读，直到读到0xff，说明数据已经固化。</p>
+
+<p>OK，很简单，直接上代码：</p>
+
+<pre>--向一个扇区写入数据，参数为扇区号和数据（字符串）
+local function writeBlock(blockNo,data)
+    --拉第CS
+    gpio.write(csPin,gpio.LOW)
+    --确定CMD24的参数
+    local param=blockNo
+    --如果不是SDHC，那么参数是扇区号*512，否则就是扇区号本身
+    if cardType~="SDHC" then
+        param=blockNo*512
+    end
+    --发送CMD24
+    local response=sendCommand(24,param)
+    --如果不回应0x00，拉高CS，返回错误
+    if response~=0x00 then
+        gpio.write(csPin,gpio.HIGH)
+        return false
+    end
+    --发送0xFE，表示开始写入数据
+    spi.send(1,0xfe)
+    --获取传入数据的长度
+    local length=string.len(data)
+    --如果&lt;=512字节
+    if length&lt;=512 then
+        --先发送data
+        spi.send(1,data)
+        --再用0x00补到512字节长
+        for i=1,(512-length) do
+            spi.send(1,0x00)
+        end
+    --如果&gt;512字节
+    else
+        --只发送前512字节
+        spi.send(1,string.sub(data,1,512))
+    end
+    --发送伪CRC
+    spi.send(1,0xff,0xff)
+    --接收回应字节，并只取低5位
+    response=bit.band(string.byte(spi.recv(1,1)),0x1f)
+    --如果低5位不是00101，则拉高CS，返回错误
+    if response~=0x05 then
+        gpio.write(csPin,gpio.HIGH)
+        return false
+    end
+    --不停读取，直到读到0xff
+    for i=1,200 do
+        response=string.byte(spi.recv(1,1))
+        if response==0xff then
+            break
+        end
+    end
+    --尝试次数耗尽，则拉高CS，返回错误
+    if response~=0xff then
+        gpio.write(csPin,gpio.HIGH)
+        return false
+    end
+    gpio.write(csPin,gpio.HIGH)
+    return true
+end
+</pre>
+
+<p>================阶段五：最终整合=================</p>
+
+<p>好吧，其实我是先有完整版，然后再一段段拆分再注释的。。。</p>
+
+<p>再插一句屁话！Arduino和NodeMCU结合简直完美——各种硬件驱动程序可以看Arduino的源码来翻译，而NodeMCU的基于Lua的交互式编程使得验证代码非常方便！</p>
+
+<p>完整代码：</p>
+
+<p>sdCard.lua</p>
+
+<pre>--this file create an object that representing a sd card
+--csPin: the pin connected to CS of SD card
+--the object returned contains following methods:
+--getCardType(): return "SD1" or "SD2" or "SDHC"
+--getBlockCount(): return the count of blocks
+--readBlock(blockNo): return 512-byte-length string from block
+--writeBlock(blockNo,data): write 512 bytes to block
+
+function newSdCard(csPin)
+    local cardType=0
+    local blockCount=0
+    local function sendCommand(cmd,param)
+        spi.send(1,bit.bor(0x40,cmd))
+        for i=1,4 do
+            local aByte=bit.band(bit.rshift(param,8*(4-i)),0xff)
+            spi.send(1,aByte)
+        end
+        local crc=0xff
+        if cmd==0 then
+            crc=0x95
+        elseif cmd==8 then
+            crc=0x87
+        end
+        spi.send(1,crc)
+        local response=0
+        for i=1,200 do
+            response=string.byte(spi.recv(1,1))
+            if bit.band(response,0x80)==0x00 then
+                break
+            end
+        end
+        return response
+    end
+    local function sendAppCommand(acmd,param)
+        sendCommand(55,0)
+        local response=sendCommand(acmd,param)
+        return response
+    end
+    local function initSD()
+        gpio.mode(csPin,gpio.OUTPUT)
+        gpio.write(csPin,gpio.HIGH)
+        spi.setup(1,spi.MASTER,spi.CPOL_LOW,spi.CPHA_LOW,8,256)
+        for i=1,10 do
+            spi.send(1,0xff)
+        end
+        gpio.write(csPin,gpio.LOW)
+        local response=0
+        for i=1,200 do
+            response=sendCommand(0,0)
+            if response==0x01 then
+                break
+            end
+        end
+        if response~=0x01 then
+            gpio.write(csPin,gpio.HIGH)
+            return false
+        end
+        response=sendCommand(8,0x01aa)
+        if bit.band(response,0x04)~=0 then
+            cardType="SD1"
+        else
+            spi.recv(1,4)
+            cardType="SD2"
+        end
+        local param=0
+        if(cardType=="SD2") then
+            param=0x40000000
+        end
+        for i=1,200 do
+            response=sendAppCommand(41,param)
+            if response==0x00 then
+                break
+            end
+        end
+        if response~=0x00 then
+            gpio.write(csPin,gpio.HIGH)
+            return false
+        end
+        if cardType=="SD2" then
+            response=sendCommand(58,0)
+            if response~=0x00 then
+                gpio.write(csPin,gpio.HIGH)
+                return false
+            end
+            response=string.byte(spi.recv(1,1))
+            if response==0xc0 then
+                cardType="SDHC"
+            end
+            spi.recv(1,3)
+        end
+        response=sendCommand(9,0)
+        if response~=0x00 then
+            gpio.write(csPin,gpio.HIGH)
+            return false
+        end
+        for i=1,200 do
+            response=string.byte(spi.recv(1,1))
+            if response==0xfe then
+                break
+            end
+        end
+        if response~=0xfe then
+            gpio.write(csPin,gpio.HIGH)
+            return false
+        end
+        local csdStr=spi.recv(1,16)
+        spi.recv(1,2)
+        local csd={}
+        for i=1,16 do
+            csd[i]=string.byte(string.sub(csdStr,i,i))
+        end
+        local version=bit.rshift(csd[1],6)
+        if version==0 then
+            local readBlLen=bit.band(csd[6],0x0f)
+            local sizeHigh=bit.band(csd[7],0x03)
+            local sizeMid=csd[8]
+            local sizeLow=bit.rshift(csd[9],6)
+            local size=sizeHigh*1024+sizeMid*4+sizeLow
+            local sizeMultiHigh=bit.band(csd[10],0x03)
+            local sizeMultiLow=bit.rshift(csd[11],7)
+            local sizeMulti=sizeMultiHigh*2+sizeMultiLow
+            blockCount=bit.lshift(size+1,sizeMulti+readBlLen-7)
+        elseif version==1 then
+            local sizeHigh=bit.rshift(csd[8],2)
+            local sizeMid=csd[9]
+            local sizeLow=csd[10]
+            local size=sizeHigh*65536+sizeMid*256+sizeLow
+            blockCount=(size+1)*1024
+        else
+            gpio.write(csPin,gpio.HIGH)
+            return false
+        end
+        gpio.write(csPin,gpio.HIGH)
+        spi.setup(1,spi.MASTER,spi.CPOL_LOW,spi.CPHA_LOW,8,8)
+        return true
+    end
+    local function getBlockCount()
+        return blockCount
+    end
+    local function getCardType()
+        return cardType
+    end
+    local function readBlock(blockNo)
+        gpio.write(csPin,gpio.LOW)
+        local param=blockNo
+        if cardType~="SDHC" then
+            param=blockNo*512
+        end
+        local response=sendCommand(17,param)
+        if response~=0x00 then
+            gpio.write(csPin,gpio.HIGH)
+            return false
+        end
+        for i=1,200 do
+            response=string.byte(spi.recv(1,1))
+            if response==0xfe then
+                break
+            end
+        end
+        if response~=0xfe then
+            gpio.write(csPin,gpio.HIGH)
+            return false
+        end
+        local block=spi.recv(1,512)
+        spi.recv(1,2)
+        gpio.write(csPin,gpio.HIGH)
+        return block
+    end
+    local function writeBlock(blockNo,data)
+        gpio.write(csPin,gpio.LOW)
+        local param=blockNo
+        if cardType~="SDHC" then
+            param=blockNo*512
+        end
+        local response=sendCommand(24,param)
+        if response~=0x00 then
+            gpio.write(csPin,gpio.HIGH)
+            return false
+        end
+        spi.send(1,0xfe)
+        local length=string.len(data)
+        if length&lt;=512 then
+            spi.send(1,data)
+            for i=1,(512-length) do
+                spi.send(1,0x00)
+            end
+        else
+            spi.send(1,string.sub(data,1,512))
+        end
+        spi.send(1,0xff,0xff)
+        response=bit.band(string.byte(spi.recv(1,1)),0x1f)
+        if response~=0x05 then
+            gpio.write(csPin,gpio.HIGH)
+            return false
+        end
+        for i=1,200 do
+            response=string.byte(spi.recv(1,1))
+            if response==0xff then
+                break
+            end
+        end
+        if response~=0xff then
+            gpio.write(csPin,gpio.HIGH)
+            return false
+        end
+        gpio.write(csPin,gpio.HIGH)
+        return true
+    end
+    if not initSD() then
+        return false
+    end
+    local sdCard={}
+    sdCard.getCardType=getCardType
+    sdCard.getBlockCount=getBlockCount
+    sdCard.readBlock=readBlock
+    sdCard.writeBlock=writeBlock
+    sendAppCommand=nil
+    initSD=nil
+    newSdCard=nil
+    return sdCard
+end
+</pre>
+
+<p>=================阶段五：一个小示例===============</p>
+
+<p>使用的SPI模式的SD卡读卡器，如图：</p>
+
+<p><img src="2.jpg"></p>
+
+<p>注意这个读卡器使用5V电源（其实感觉真坑爹，SD卡本身使用3.3V的电平，结果这个读卡器用电平转换模块变成5V的电平，然后我的NodeMCU又是3.3V供电。。。）。</p>
+
+<p>读卡器和NodeMCU之间的连线如下表：</p>
+
+<table>
+<tbody>
+<tr>
+<th>读卡器</th>
+<th>NodeMCU</th>
+</tr>
+<tr>
+<td>SCK</td>
+<td>pin5</td>
+</tr>
+<tr>
+<td>MISO</td>
+<td>pin6</td>
+</tr>
+<tr>
+<td>MOSI</td>
+<td>pin7</td>
+</tr>
+<tr>
+<td>CS</td>
+<td>pin8</td>
+</tr>
+<tr>
+<td>VCC</td>
+<td>Vin</td>
+</tr>
+<tr>
+<td>GND</td>
+<td>GND</td>
+</tr>
+</tbody>
+</table>
+<p>插入一张8GB的SD卡，执行代码：</p>
+
+<pre>sd=newSdCard(8)
+print(sd.getCardType())
+print(sd.getBlockCount())</pre>
+
+<p>正常情况下应该能够看到输出：</p>
+
+<pre>SDHC
+15126528</pre>
+
+<p>当然啦，扇区数量可能会略有不同。</p>
+
+<p>然后执行代码：</p>
+
+<pre>writeStr=string.rep("zjs!",128)
+print(sd.writeBlock(1228,writeStr))
+readStr=sd.readBlock(1228)
+print(readStr)
+</pre>
+
+<p>可以看到先输出true，表示写入成功，然后输出128个“zjs!”，读出的和写入的值相同，说明确实成功了。</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

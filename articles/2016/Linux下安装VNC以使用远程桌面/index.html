@@ -1,0 +1,76 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>Linux下安装VNC以使用远程桌面</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">Linux下安装VNC以使用远程桌面</h1>
+							</header>
+							<div class="entry-content">
+
+<p>使用的树莓派的时候，虽然可以直接用USBTTL来操作，但是没法多个终端并行，而且不能使用浏览器等等，有些时候还是不得不使用图形界面。</p>
+
+<p>穷屄买不起HDMI接口的显示器怎么办，就用远程桌面！</p>
+
+<p>首先用USBTTL开minicom向树莓派输入如下命令：</p>
+
+<pre>sudo apt-get install tightvncserver
+</pre>
+
+<p>安装好tightvncserver之后，就可以开启一个VNC服务进程了，命令：</p>
+
+<pre>tightvncserver
+</pre>
+
+<p>如果是第一次运行，那么会提示输入密码。然后会提示</p>
+
+<pre>New 'X' desktop is raspberrypi:1
+</pre>
+
+<p>:1就是指1号远程桌面进程。对于第i号远程桌面进程，其监听的端口号就是5900+i。</p>
+
+<p>当然，也可以设置很多参数，比如分辨率：</p>
+
+<pre>tightvncserver -geometry 640x480
+</pre>
+
+<p>接着，在电脑上安装xtightvncview：</p>
+
+<pre>sudo apt-get install xtightvncviewer
+</pre>
+
+<p>然后运行xtightvncviewer，命令如下：</p>
+
+<pre>xtightvncviewer
+</pre>
+
+<p>xtightvncviewer的图形界面我也不想吐槽了，相当简易：</p>
+<p><img src="1.png"></p>
+
+<p>这个界面是让你输入VNC服务器的端口和地址。假设我的树莓派的地址是192.168.75.80，端口是5901，那么输入192.168.75.80:5901，然后回车：</p>
+<p><img src="2.png"></p>
+
+<p>如果能够连上，就会要求输入密码：</p>
+<p><img src="3.png"></p>
+
+<p>回车之后，如果正确，那么就会显示树莓派的桌面了：</p>
+<p><img src="4.jpg"></p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

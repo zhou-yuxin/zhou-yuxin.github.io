@@ -1,0 +1,195 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>LSP(Lua Server Page)动态页面的提速（提速了140%~）</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">LSP(Lua Server Page)动态页面的提速（提速了140%~）</h1>
+							</header>
+							<div class="entry-content">
+							
+<p>《<a href="../NodeMCU实现简易HTTP服务器与LSP动态页面/index.html">NodeMCU实现简易HTTP服务器与LSP动态页面</a>》中我实现了一个动态页面技术LSP，也就是可以在HTML中夹杂Lua代码，以达到页面的动态性。</p>
+
+<p>我粗略测试了一下，在NodeMCU的CPU频率为80MHz时，处理test.lsp等lsp文件，从浏览器发出GET请求到收到响应报文，来回大约需要300ms，而处理test.css等静态文件大约需要180ms。当CPU频率为160MHz时，处理lsp文件，来回大约需要160ms，而处理静态文件需要105ms。</p>
+
+<p>如果把处理静态文件的时间作为必要的开销（读取文件内容、组装HTTP报文、网络传输），那么80MHz时，用于处理页面脚本的时间就是300-180=120ms，160MHz时，用于处理处理脚本的时间是160-105=55ms。120ms大约是55ms的两倍，这也从侧面说明了这段时间确实是以运算为主。</p>
+
+<p>这个速度真心不快。我后来一直在寻找时间都用在哪里了。我试过传参数的时候使用更加简单的字符串，而不是json，貌似没用。我也试过echo()内部拼接字符串，而不是返回时统一拼接，也没有用。后来我查了一些资料，才得知，loadstring()中，每次都会把传入的字符串编译一遍，而把字符串编译成可执行的Lua字节码才是最大的性能开销。其实早该想到的，但是脑子不太好使。</p>
+
+<p>那么解决办法很自然就出来了——使用缓冲技术。具体而言，就是建立一个Hash表funcTab，里面保存了页面路径path到对应函数func的映射。比如我访问页面test.lsp，那么就去funcTab中找</p>
+
+<pre>func=funcTab[path]
+</pre>
+
+<p>如果是第一次访问，那么肯定没有对应的func，这时就要去读取test.lsp文件，然后按照《<a href="../NodeMCU实现简易HTTP服务器与LSP动态页面/index.html">NodeMCU实现简易HTTP服务器与LSP动态页面</a>》中的方法，处理成能够直接执行的Lua代码script，交由loadstring()解析。loadstring()会返回一个函数，于是要把这个函数加入funcTab中，这样下次就能直接访问了，而不需要再次编译。</p>
+
+<pre>func=loadstring(script)
+funcTab[path]=func</pre>
+
+<p>有了func之后（不管是刚刚编译出来的还是从Hash表里拿出来的），就可以通过</p>
+
+<pre>result=func()
+</pre>
+
+<p>执行了。</p>
+
+<p>等等！参数怎么传入？《<a href="../NodeMCU实现简易HTTP服务器与LSP动态页面/index.html">NodeMCU实现简易HTTP服务器与LSP动态页面</a>》中，由于每次都是把参数使用json加入到脚本中，重新编译，所以每次都能够使用最新的参数，可是现在使用了Hash表，func是预先编译好的，参数不可能也被编译进去。那么能否这样：</p>
+
+<pre>result=func(params)
+</pre>
+
+<p>然后在func中获取参数呢？然而很可惜，loadstring()无法指定编译出来的函数的参数列表。那么是否能够使用闭包的原理呢——直接在func的代码中引用params，然后Lua解释器发现func自己的context中不存在变量params，就去它的外层找，于是在doLSP()的context中发现了params？然而很可惜，loadstring()是在全局环境中编译代码的，换句话说，func的外层就是全局环境，而不是doLSP()。所以唯有一种办法，就是在全局空间中定义一个变量，然后让func去引用。为了尽可能少地污染全局命名空间，我使用了全局变量__LSPParams。</p>
+
+<p>新的代码如下：</p>
+
+<p>lsp.lua</p>
+
+<pre>--创建一个Lua Server Page解释器，
+--函数返回一个http服务器可用的handler
+
+function newLSPHandler()
+    --lsp函数表，path=&gt;func
+    local funcTab={}
+    
+    --获取文件扩展名
+    local function getType(path)
+        --最后一个“.”的位置
+        local index=string.find(path,"\.[^\.]*$")
+        if index==nil then
+            return nil
+        end
+        --获取文件扩展名
+        return string.sub(path,index+1)
+    end
+
+    --读取文件内容
+    local function readFile(path)
+        --去掉开头的/
+        path=string.gsub(path,"^/","")
+        --无法打开文件
+        if not file.open(path,"r") then
+            return nil
+        end
+        --文件内容
+        local content=""
+        --读出文件所有内容
+        while true do
+            local part=file.read()
+            --读到EOF
+            if not part then
+                break
+            end
+            content=content..part
+        end
+        file.close()
+        return content
+    end
+    
+    --执行lsp脚本
+    local function doLSP(path,params)
+        --查找已有的函数
+        local func=funcTab[path]
+        --如果之前没有执行过
+        if not func then
+            --读取脚本文件
+            local script=readFile(path)
+            --包裹反转
+            script="%&gt;"..string.gsub(script,"%c"," ").."&lt;%"
+            script=string.gsub(script,"%%&gt;"," echo('")
+            script=string.gsub(script,"&lt;%%","') ")
+            --参数params
+            local paramsStr=" local params=__LSPParams"
+            --echo()
+            local echoStr=" local __echos={} function echo(msg) table.insert(__echos,msg) end "
+            --转换后的脚本，返回输出内容
+            script=paramsStr..echoStr..script.." return table.concat(__echos) "
+            --解析成函数
+            func=loadstring(script)
+            --加入映射表
+            funcTab[path]=func
+        end
+        --设置全局变量以传参
+        __LSPParams=params
+        --输出结果
+        local result=func()
+        --清理参数
+        __LSPParams=nil
+        return result
+    end
+    
+    --发送http响应报文
+    local function output(socket,status,content)
+        --状态头
+        local response="HTTP/1.1 "..status.."\r\n"
+        --Content-Length字段
+        response=response.."Content-Length: "..string.len(content).."\r\n"
+        --内容
+        response=response.."\r\n"..content
+        --发送
+        socket:send(response)
+    end
+    
+    --处理lsp和静态文件
+    local function handler(socket,path,params)
+        local content=""
+        --如果是lsp脚本
+        if getType(path)=="lsp" then
+            --执行脚本
+            content=doLSP(path,params)
+        else
+            --读取文件内容
+            content=readFile(path)
+            --如果打开文件失败
+            if not content then
+                output(socket,"404 Not Found","")
+                return
+            end
+        end
+        --输出结果
+        output(socket,"200 OK",content)
+    end
+
+    return handler
+end
+</pre>
+
+<p>可以看出，func与doLSP()之间通过全局变量__LSPParams来传递请求参数，并且func中又通过</p>
+
+<pre>local params=__LSPParams</pre>
+
+<p>把参数引用至局部空间，从而对脚本隐藏细节。</p>
+
+<p>这样改进之后，LSP就更加像JSP了——在第一次被访问时编译代码。</p>
+
+<p>改进之后，我做了一个对比实验。只看80MHz的情况，本来的平均时间是300ms，现在降到了230ms。如果把处理静态文件的时间作为必要的开销（读取文件内容、组装HTTP报文、网络传输），那么原始方法中用于处理页面脚本的时间就是300-180=120ms，改进方法中是230-180=50ms，运算速度提高了140%！</p>
+
+<p>当然呢，这样的缓冲技术也是有缺点的：</p>
+
+<p>（1）无法热更新LSP文件；</p>
+
+<p>（2）占用更多内存，能够容纳的LSP文件数量有限；</p>
+
+<p>因此，如果对响应速度不是很敏感，但是页面庞杂的，建议使用原始技术。如果追求响应速度的，那么只能牺牲容量了~</p>
+
+<p>==================后记===================</p>
+
+<p>我本来研究这个技术就是想要制造一艘能够通过手机浏览器控制的WiFi遥控船，当然以后也可能是遥控车什么的，自己玩，以后也可以给小孩子玩。当看到一个请求要300ms时，心都凉了。现在提速后，结合160MHz的主频，一个请求只需110ms，应该够玩具级别的遥控应用了~</p>
+
+							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

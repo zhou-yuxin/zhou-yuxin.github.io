@@ -1,0 +1,318 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>结合链表与数组各自优点的字节流ByteStream</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">结合链表与数组各自优点的字节流ByteStream</h1>
+							</header>
+							<div class="entry-content">
+
+<p>在处理字节级别的数据流的时候，常常需要一个“流”的数据结构，而且需要这么6个基本功能：</p>
+
+<table>
+<tbody>
+<tr>
+<th>方法原型</th>
+<th>功能描述</th>
+</tr>
+<tr>
+<td>void put(byte aByte)</td>
+<td>向流末尾塞入一个字节</td>
+</tr>
+<tr>
+<td>byte unput()</td>
+<td>从流末尾取出一个字节（撤销一次put动作）</td>
+</tr>
+<tr>
+<td>byte take()</td>
+<td>从流的开头取出一个字节</td>
+</tr>
+<tr>
+<td>void untake(byte aByte)</td>
+<td>向流的开头塞入一个字节（撤销一次take动作）</td>
+</tr>
+<tr>
+<td>byte peek(int index)</td>
+<td>查看从流开头开始第index个字节的值（但不取出）</td>
+</tr>
+<tr>
+<td>int getLength()</td>
+<td>查看流的总长度</td>
+</tr>
+</tbody>
+</table>
+<p>有两种直观的方法可以实现这么一个字节流：</p>
+
+<p>（1）直接使用链表LinkedList&lt;Byte&gt;实现；</p>
+
+<p>（2）使用数组构建一个循环队列；</p>
+
+<p>这两个方法有各自的优缺点。</p>
+
+<p>首先说使用链表LinkedList&lt;Byte&gt;实现的方式，其基本特征是：</p>
+
+<p>（1）put()、untake()的效率较高（但不是很高，因为会频繁地有节点的动态分配）；</p>
+
+<p>（2）unput()、take()和getLength()的的效率很高；</p>
+
+<p>（3）peek()的效率很低，因为要顺着链表遍历；</p>
+
+<p>再说说基于数组的循环队列，其基本特征是：</p>
+
+<p>（1）put()、unput()、take()、untake()、getLength()和peek()的效率很高；</p>
+
+<p>（2）但是一旦数组长度不够，扩容的时候效率很低。</p>
+
+<p>我想到了一种把链表和数组结合起来的方法。它的基本数据结构是LinkedList&lt;byte[]&gt;，也就是说，高层是一个链表，而链表的每一个元素则是一个长度确定的数组，我称之为数据块。此外，还有一个读指针、写指针、当前长度和回收链表。太抽象了，直接看代码：</p>
+
+<pre>package zjs.util;
+
+import java.util.LinkedList;
+
+/**
+ * 字节流
+ */
+public class ByteStream
+{
+
+    //每一个数据块的大小
+    private static final int BUFSIZE=1024;
+
+    //空闲数据块
+    private LinkedList&lt;byte[]&gt; freeBuffers;
+    //正在使用的数据块的链表
+    private LinkedList&lt;byte[]&gt; usedBuffers;
+    //下一个读取位置（相对于第一个数据块开头的偏移）
+    private int readPos;
+    //下一个写入位置（相对于最后一个数据块开头的偏移）
+    private int writePos;
+    //流的长度
+    private int length;
+
+    /**
+     * 构造一个字节流
+     */
+    public ByteStream()
+    {
+        freeBuffers=new LinkedList&lt;byte[]&gt;();
+        usedBuffers=new LinkedList&lt;byte[]&gt;();
+        usedBuffers.add(allocateBuffer());
+        readPos=0;
+        writePos=0;
+        length=0;
+    }
+
+    /**
+     * 获取字节流当前长度
+     * @return 包含的长度
+     */
+    public int getLength()
+    {
+        return length;
+    }
+
+    /**
+     * 从流的开头取出一个字节
+     * @return 开头的字节，如果当前长度为0，则返回0
+     */
+    public byte take()
+    {
+        if(length==0)
+            return 0;
+        //获取第一个数据块
+        byte[] buffer=usedBuffers.getFirst();
+        //读取流头部的字节
+        byte aByte=buffer[readPos];
+        //下一个读取位置后移
+        readPos++;
+        //如果超出了第一个数据块
+        if(readPos&gt;=BUFSIZE)
+        {
+            //把第一个数据块移除
+            usedBuffers.removeFirst();
+            //把第一个数据块放入空闲队列中，回收以备用
+            freeBuffers.add(buffer);
+            //下一读取位置为新的数据块的开头
+            readPos=0;
+        }
+        length--;
+        return aByte;
+    }
+
+    /**
+     * 把一个字节塞回流的开头
+     * @param aByte 一个字节
+     */
+    public void untake(byte aByte)
+    {
+        //先回退读取位置
+        readPos--;
+        //如果掉出了开头
+        if(readPos&lt;0)
+        {
+            //分配一块空闲数据块，加到链表开头
+            usedBuffers.addFirst(allocateBuffer());
+            //读取位置就是新的数据块的末尾
+            readPos=BUFSIZE-1;
+        }
+        //获取当前第一个数据块
+        byte[] buffer=usedBuffers.getFirst();
+        //写入数据
+        buffer[readPos]=aByte;
+        length++;
+    }
+
+    /**
+     * 向流的末尾放入一个字节
+     * @param aByte 字节
+     */
+    public void put(byte aByte)
+    {
+        //获取链表最后一个数据块
+        byte[] buffer=usedBuffers.getLast();
+        //写入字节
+        buffer[writePos]=aByte;
+        //写入位置后移
+        writePos++;
+        //如果写入位置超出数据块长度
+        if(writePos&gt;=BUFSIZE)
+        {
+            //分配一个新的数据块，加到链表末尾
+            usedBuffers.addLast(allocateBuffer());
+            //下一个写入位置指向新数据块的开头
+            writePos=0;
+        }
+        length++;
+    }
+
+    /**
+     * 从字节流末尾取出一个字节
+     * @return 流尾的字节
+     */
+    public byte unput()
+    {
+        if(length==0)
+            return 0;
+        //回退写入位置
+        writePos--;
+        //如果掉出了数据块开头
+        if(writePos&lt;0)
+        {
+            //从链表末尾删除数据块，并回收以备用
+            freeBuffers.add(usedBuffers.removeLast());
+            //写入位置指向新的数据块的末尾
+            writePos=BUFSIZE-1;
+        }
+        //取出当前最后一个数据块
+        byte[] buffer=usedBuffers.getLast();
+        //读取数据
+        byte aByte=buffer[writePos];
+        length--;
+        return aByte;
+    }
+
+    /**
+     * 查看流中某个字节的值
+     * @param index 编号
+     * @return 值
+     */
+    public byte peek(int index)
+    {
+        if(index&lt;0||index&gt;=length)
+            return 0;
+        //如果把整个链表中的数据块连在一起看作一个长长的数组
+        //那么该位置所在的索引
+        int logicPos=readPos+index;
+        //计算处于第几个数据块
+        int bufferIndex=logicPos/BUFSIZE;
+        //计算相对那块数据块开头的偏移
+        int indexInBuffer=logicPos%BUFSIZE;
+        //取出数据块
+        byte[] buffer;
+        //适当的优化，如果是第0块，那么直接使用getFirst()，如果是最后一块，直接使用getLast()
+        if(bufferIndex==0)
+            buffer=usedBuffers.getFirst();
+        else if(bufferIndex==usedBuffers.size()-1)
+            buffer=usedBuffers.getLast();
+        else
+            buffer=usedBuffers.get(bufferIndex);
+        //读取数据
+        byte aByte=buffer[indexInBuffer];
+        return aByte;
+    }
+
+    /**
+     * 分配一个新的数据块
+     * @return 空闲数据块
+     */
+    private byte[] allocateBuffer()
+    {
+        if(freeBuffers.size()&gt;0)
+            return freeBuffers.remove();
+        return new byte[BUFSIZE];
+    }
+
+}
+</pre>
+
+<p>写了这么一个Demo进行性能对比：</p>
+
+<pre>package zjs.wirelessSample;
+
+import java.util.LinkedList;
+
+import zjs.util.ByteStream;
+
+public class Test6
+{
+
+    public static void main(String[] args)
+    {
+        ByteStream s=new ByteStream();
+        long startTime=System.currentTimeMillis();
+        for(int j=0;j&lt;10000;j++)
+        {
+            for(int i=0;i&lt;100000;i++)
+                s.put((byte)0);
+            for(int i=0;i&lt;100000;i++)
+                s.take();
+        }
+        long endTime=System.currentTimeMillis();
+        System.out.println(endTime-startTime);
+        LinkedList&lt;Byte&gt; l=new LinkedList&lt;Byte&gt;();
+        startTime=System.currentTimeMillis();
+        for(int j=0;j&lt;10000;j++)
+        {
+            for(int i=0;i&lt;100000;i++)
+                l.add((byte)0);
+            for(int i=0;i&lt;100000;i++)
+                l.remove();
+        }
+        endTime=System.currentTimeMillis();
+        System.out.println(endTime-startTime);
+    }
+
+}
+</pre>
+
+<p>我的ByteStream用了6507毫秒，LinkedList用了15408毫秒，两倍多的性能～</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>

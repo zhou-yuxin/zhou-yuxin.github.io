@@ -1,0 +1,376 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>OpenSCAD 船体的构造</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">OpenSCAD 船体的构造</h1>
+							</header>
+							<div class="entry-content">
+
+<p>不知怎么地我就是这么喜欢船，尤其是帆船。。。自从去年暑假前看了一点遥控帆船的视频，这将近一年来，脑子里都是帆船，总是试图自己能够通过3D打印和嵌入式技术造一艘。中间失败了很多次，基本都是建模和打印的问题。说到底，就是船体既要防水，又要有优美的流线体以减少阻力，这对我这种用OpenSCAD脚本建模和最廉价的桌面打印机的学生党来说真是困难。</p>
+
+<p>但是，功夫不负有心人，今天我终于构造出了一个还算优美的船体，如下：</p>
+<p><img src="1.jpg"></p>
+<p><img src="2.jpg"></p>
+<p><img src="3.jpg"></p>
+<p><img src="4.jpg"></p>
+<p><img src="5.jpg"></p>
+<p><img src="6.jpg"></p>
+<p><img src="7.jpg"></p>
+
+<p>构建这个船体的思路用到了很多数学原理，我将分若干个阶段来讲解。</p>
+
+<p>==============阶段一：船体横截面============</p>
+
+<p>过去船体一直建不好的一个重要原因就是不知道船体的横截面应该是怎样的。后来自己花了700大洋买了一艘大大的遥控帆船，然后就开始不停琢磨。今天，我忽然有了灵感——可不可能是一个抛物线？或者推广一下，是不是一个幂函数曲线？</p>
+
+<p>我依次尝试了各种指数的幂函数，在[-1,1]之间图像如下：</p>
+<p><img src="8.png"></p>
+
+<p>可以发现，指数越大，曲线就越“饱满”，包络的面积就越大。一方面，船体的稳定性很大程度上取决于船体横截面的形状，底部越宽，越稳定；另一方面，包络的面积越大，那么在其他条件不变的情况下船体排水量就越大。</p>
+
+<p>所以，我选用了四次曲线来作为船体横截面。代码如下：</p>
+
+<pre>//截面粒度
+CUT_SLICE=0.2;
+
+//截面2D图形
+module cut(width,height)
+{
+    translate([0,-height,0])
+    resize([width,height])
+    polygon([for(x=[-10:CUT_SLICE:10])[x,pow(x,4)]]);
+}
+</pre>
+
+<p>其中，polygon()函数用来绘制多边形，参数是顶点的列表。顶点的列表可以使用for循环的形式给出，x的从-10增加到10，步长是CUT_SLICE，y的坐标是pow(x,4)，也就是x的四次方。</p>
+
+<p>可以如下使用：</p>
+
+<pre>cut(60,30);
+</pre>
+
+<p>产生一个宽为60，高为30的船体截面：</p>
+<p><img src="9.png"></p>
+
+<p>===============阶段二：宽度函数=============</p>
+
+<p>一个船体可以看做无数船体截面的积分。所以，确定了船体的截面图形之后，就需要确定每一处船体的宽度和高度。于是我很自然的想到，应该确定两个函数fw(l)和fh(l)，分别表达l位置上船体的宽度和高度，其中l为从船头开始的距离。</p>
+
+<p>观察了很多的船体，发现大多数休闲类船体都有这样的俯视图：</p>
+<p><img src="1.jpg"></p>
+
+<p>一开始我想到的是两个圆的交，但是这样的话表达式比较难写。后来我想到了正弦函数！看下图：</p>
+<p><img src="10.png"></p>
+
+<p>只要取sin(x)在[0,3/4*π]之间的图像就行了。因此，我定义了一个函数：</p>
+
+<pre>//宽度函数
+function fw(length,width,l)
+    =sin(l/length*145)*width;
+</pre>
+
+<p>其中length,width是船体的长度和最大处宽度。比如船长300，最大宽度是80，那么在距离船头100的地方，宽度就是</p>
+
+<pre>fw(300,80,100)</pre>
+
+<p>==============阶段三：高度函数===============</p>
+
+<p>类似于宽度函数，我们还需要一个高度函数，以描述从船头起高度的变化。首先，船头应该是倾斜向下的，然后有一段平的，船尾一段要慢慢收起，就像这样：</p>
+<p><img src="2.jpg"></p>
+至于船尾为什么要慢慢收起，有两个原因，一是为了减小水的阻力，二是为了方便放置螺旋桨。</p>
+
+<p>这个高度函数fh(l)看似困难，其实也方便。可以这么表达：</p>
+
+<pre>//高度函数
+function fh(length,height,l)
+    =sin(min(l*12,length,(length-l)+length*0.4)/length*90)*height;
+</pre>
+
+<p>其中length表示船体的长度，height表示船体最大高度，l表示从船头开始的距离。看上去一下子复杂了很多，其实拆开来看还是很清楚的。函数的最最内层有三个量，分别是l*12、length和(length-l)+length*0.4。如果表达为</p>
+
+<pre>y1=l*12
+y2=length
+y3=(length-l)+length*0.4
+</pre>
+
+<p>那么这三条曲线的图像如下：</p>
+<p><img src="11.png"></p>
+
+<p>如果取他们中的最小值</p>
+
+<pre>y=min(y1,y2,y3)</pre>
+
+<p>，那么就是图像：</p>
+<p><img src="12.png"></p>
+
+<p>之后再把y∈[0,length]线性映射到[0°,90°]，通过sin函数对折角处进行平滑处理（当x为90°时，sin(x)的倒数为0，刚好能够与水平直线平滑过渡），就得到了我们要高度函数fh()。</p>
+
+<p>===============阶段四：堆叠===============</p>
+
+<p>有了任意一个位置的船体截面，又有了任意一处的船体的宽度和高度，那么只要把所有的船体截面堆叠起来就可以了。给出如下代码：</p>
+
+<pre>//薄片
+module slice(length,width,height,l,delta)
+{
+    l1=l;
+    l2=l+delta;
+    w1=fw(length,width,l1);
+    w2=fw(length,width,l2);
+    h1=fh(length,height,l1);
+    h2=fh(length,height,l2);
+    hull()
+    {
+        translate([0,0,l1])
+        linear_extrude(height=0.01)
+        cut(w1,h1);
+        translate([0,0,l2])
+        linear_extrude(height=0.01)
+        cut(w2,h2);
+    }
+}
+</pre>
+
+<p>cut()产生的是一个2D图形，而用来堆叠的薄片则是一个3D实体。为此，我定义了这么一个slice()函数，用来产生一个薄片。参数中length,width和height分别是船的长宽高，而l则是距离船头的距离，delta是薄皮的厚度。l1就是薄片下表面的位置，l2就是薄片上表面的位置，根据fw()和fh()计算出相应的下表面宽度w1、下表面高度h1、上表面宽度w2和上表面高度h2，然后通过hull()来构建一个薄片。</p>
+
+<pre>//部分实体
+module solidPart(length,width,height,start,end,step)
+{
+    for(l=[start:step:end-step])
+    {
+        slice(length,width,height,l,step);
+    }
+    lastL=start+floor((end-step-start)/step)*step;
+    slice(length,width,height,lastL,end-lastL);
+}
+</pre>
+
+<p>有了薄皮，就可以对薄皮进行堆叠。solidPart()就是把薄皮堆叠起来产生一个竖直放置的船体的某一部分。代码的整体结构是一个for循环，循环变量l从start增长到end，步长是step，其实step就是每一个船体截面薄片的厚度。每次循环，把所有薄片放在一起，就是一个平滑的船体了。不过需要注意两点：（1）for循环中l的上界是end-step，而不是end，因为每一个薄片自身是有step的厚度的，如果上界是end，那么整个船可能长度会超过(end-start)；（2）for循环之后需要额外增加一个薄皮，因为如果(end-start)不能被step整除，那么通过for循环产生的船体长度可能不足(end-start)，所以要在最后补一块，使得长度刚刚好。</p>
+
+<p>整个造船的过程中船体是竖直放置的，比如</p>
+
+<pre>solidPart(300,80,40,1,100,2);</pre>
+
+<p>意思就是建造一个长为300，宽为80，高为40的船体的1~100的部分，截面堆叠薄片的厚度是2。于是建造的实体如下：</p>
+<p><img src="13.png"></p>
+
+<p>那么为什么船体不直接一次成型，而要使用solidPart()分段构造呢？这是出于计算机性能与模型精细度的折中考虑。仔细观察在薄片厚度为2时船头弯折处的样子：</p>
+
+<p><p><img src="14.png"></p>
+
+<p>可以看到过渡不太平滑。这是因为弯折处曲度较大，薄片厚度取2的话不够精细。如果厚度取0.2的话，那么就像这样平滑：</p>
+<p><img src="15.png"></p>
+
+<p>但是呢，如果整个船体的精细度都是0.2，那么渲染开销会非常大（我试过，内存炸了）。而且除了船头外，其他地方的曲度都很小，堆叠厚度为2的时候也足够精细了。因此折中的方案就是船体的堆叠厚度为0.2，其他部分都是2。所以整个船体的建模代码是：</p>
+
+<pre>//船头堆叠粒度
+HEAD_SLICE=0.2;
+//船身堆叠粒度
+BODY_SLICE=2;
+
+//实体
+module solid(length,width,height)
+{
+    rotate([90,0,180])
+    {
+        solidPart(length,width,height,HEAD_SLICE,length/12,HEAD_SLICE);
+        solidPart(length,width,height,length/12,length,BODY_SLICE);
+    }
+}
+</pre>
+
+<p>由上面的高度函数可以知道，船头的长度是length/12。使用</p>
+
+<pre>solid(300,80,40);</pre>
+
+<p>就能建造出一个实心船体：</p>
+<p><img src="16.png"></p>
+
+<p>===============阶段五：镂空=============</p>
+
+<p>现在是一个实心的船体，而我们最终要的肯定是一个空心的船体，像这样：</p>
+<p><img src="7.jpg"></p>
+
+<p>一个自然的想法就是通过“大船体减小船体”来实现。是的，比如我要船体的长是300，宽是80，高度是40，壁厚是2，那么先创建大船体：</p>
+
+<pre>solid(300,80,40);</pre>
+
+<p>再创建小船体：</p>
+
+<pre>solid(300-4,80-4,40-2);</pre>
+
+<p>然后相减：</p>
+
+<pre>difference()
+{
+    solid(300,80,40);
+    translate([0,2,0])
+    solid(300-4,80-4,40-2);
+}</pre>
+
+<p>但是！你有没有发现什么问题？船头处的壁厚不对劲！是的，如果想当然的认为船头处的长度减去2，那么就错了！</p>
+<p><img src="17.jpg"></p>
+
+<p>这是因为，船头有一个比较尖锐的锐角，如果放大看，船头就是这样的：</p>
+<p><img src="18.png"></p>
+
+<p>我们要的是d为2，而不是D为2。现在已知的是d，要求D，于是重点就是得知角度a的值。如果有了a，那么D=d/sin(a)就出来了。那么a怎么求？</p>
+
+<p>想一下，船体的宽度是按照正弦变化的。y=sin(x)的图像在x=0处的导数为1，</p>
+<p><img src="19.png"></p>
+
+<p>如果x轴拉伸width/2倍，而y轴拉伸(2/3*length)/(π/2)倍，那么图像就是这样的了：</p>
+<p><img src="20.png"></p>
+
+<p>其中</p>
+
+<pre>k'=k*(width/2)/[(2/3*length)/(π/2)]=3π*width/(8*length)</pre>
+
+<p>知道斜率之后，角度也出来了：</p>
+
+<pre>a=atan(k')=atan(3π*width/(8*length))
+</pre>
+
+<p>因此，船体空腔的建模代码如下：</p>
+
+<pre>//腔体
+module cavity(length,width,height,delta,hasLid)
+{
+    angle=atan(3*PI*width/8/length);
+    headDelta=delta/sin(angle);
+    difference()
+    {
+        solid(length,width,height);
+        if(hasLid)
+        {
+            translate([0,headDelta,-delta])
+            solid(length-headDelta-delta,width-2*delta,height-2*delta);
+        }
+        else
+        {
+            translate([0,headDelta,0.01])
+            solid(length-headDelta-delta,width-2*delta,height-delta);
+        }
+    }
+}
+</pre>
+
+<p>参数中delta就是壁厚，hasLid表示是否有盖。</p>
+
+<p>OK，所以细节都讲解完了，附上完整的代码吧~</p>
+
+<pre>//截面粒度
+CUT_SLICE=0.2;
+//船头堆叠粒度
+HEAD_SLICE=0.5;
+//船身堆叠粒度
+BODY_SLICE=5;
+
+//宽度函数
+function fw(length,width,l)
+    =sin(l/length*145)*width;
+
+//高度函数
+function fh(length,height,l)
+    =sin(min(l*12,length,(length-l)+length*0.4)/length*90)*height;
+
+//截面2D图形
+module cut(width,height)
+{
+    translate([0,-height,0])
+    resize([width,height])
+    polygon([for(x=[-10:CUT_SLICE:10])[x,pow(x,4)]]);
+}
+
+//薄片
+module slice(length,width,height,l,delta)
+{
+    l1=l;
+    l2=l+delta;
+    w1=fw(length,width,l1);
+    w2=fw(length,width,l2);
+    h1=fh(length,height,l1);
+    h2=fh(length,height,l2);
+    hull()
+    {
+        translate([0,0,l1])
+        linear_extrude(height=0.01)
+        cut(w1,h1);
+        translate([0,0,l2])
+        linear_extrude(height=0.01)
+        cut(w2,h2);
+    }
+}
+
+//部分实体
+module solidPart(length,width,height,start,end,step)
+{
+    for(l=[start:step:end-step])
+    {
+        slice(length,width,height,l,step);
+    }
+    lastL=start+floor((end-step-start)/step)*step;
+    slice(length,width,height,lastL,end-lastL);
+}
+
+//实体
+module solid(length,width,height)
+{
+    rotate([90,0,180])
+    {
+        solidPart(length,width,height,HEAD_SLICE,length/12,HEAD_SLICE);
+        solidPart(length,width,height,length/12,length,BODY_SLICE);
+    }
+}
+
+//腔体
+module cavity(length,width,height,delta,hasLid)
+{
+    angle=atan(3*PI*width/8/length);
+    headDelta=delta/sin(angle);
+    difference()
+    {
+        solid(length,width,height);
+        if(hasLid)
+        {
+            translate([0,headDelta,-delta])
+            solid(length-headDelta-delta,width-2*delta,height-2*delta);
+        }
+        else
+        {
+            translate([0,headDelta,0.01])
+            solid(length-headDelta-delta,width-2*delta,height-delta);
+        }
+    }
+}
+</pre>
+
+<p>如果要创建一个实心船体</p>
+
+<pre>solid(300,80,40);
+</pre>
+
+<p>如果要创建一个空腔船体：</p>
+
+<pre>cavity(300,80,40,2,false);
+</pre>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>
