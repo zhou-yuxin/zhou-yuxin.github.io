@@ -1,0 +1,259 @@
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>第一个Linux驱动程序（四）——aMsg使用/proc文件系统</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">第一个Linux驱动程序（四）——aMsg使用/proc文件系统</h1>
+							</header>
+							<div class="entry-content">
+
+<p>经常看到应用程序可以通过/proc目录下的文件读取一些系统信息，而驱动程序也可以通过/proc对外提供一些信息，或者通过/proc给驱动程序设置一些参数。/proc其实是一个虚拟文件系统，并不占用磁盘，而是存在于内存中。这是一个比ioctl()好用得多的、可用于应用程序与驱动程序交互的机制！</p>
+
+<p>在我们之前的示例中，所有的操作都是针对/dev/aMsg这个设备文件操作的。如果我们想要获取一些额外的状态信息，比如获取aMsg中缓冲区中有效数据的长度，那么要怎么做呢？最简单的办法就是使用/proc文件系统。比如我可以创建一个虚拟文件叫做/proc/aMsg/length，那么只要使用cat命令访问：</p>
+
+<pre>
+cat /proc/aMsg/length
+</pre>
+
+<p>那么就会返回明文的：</p>
+
+<pre>
+length=6
+</pre>
+
+<p>这样的文本信息。</p>
+
+<p>要在驱动程序中使用/proc文件系统其实很简单，至少在3.1内核之后变得非常简单了。首先通过proc_mkdir()函数在/proc根目录上创建一个子目录，比如/proc/aMsg，然后再使用proc_create()在子目录中创建一个文件节点，比如/proc/aMsg/length，并绑定一个struct file_operations结构体就可以了。换句话说，每一个/proc文件节点都可以看做一个新的/dev节点，只有为其实现read()和write()操作即可（可以只实现其一）。</p>
+
+<p>
+就以上面提到的这个场景为例。首先，创建/proc/aMsg子目录：
+</p>
+
+<pre>
+//proc/aMsg目录
+static struct proc_dir_entry* g_proc_dir;
+
+//....
+
+//创建/proc/aMsg目录
+g_proc_dir=proc_mkdir(&quot;aMsg&quot;,0);
+if(g_proc_dir==0)
+{
+    printk(&quot;Unable to mkdir /proc/aMsg\n&quot;);
+    return -ENOMEM;
+}
+</pre>
+
+<p>然后，创建/proc/aMsg/length节点：</p>
+
+<pre>
+//创建/proc/aMsg/length文件
+struct proc_dir_entry* t_proc_length=proc_create(&quot;length&quot;,0644,g_proc_dir,&amp;g_amsg_proc_length_fops);
+if(t_proc_length==0)
+{
+    printk(&quot;Unable to create /proc/aMsg/length\n&quot;);
+    return -ENOMEM;
+}
+</pre>
+
+<p>其中涉及到一个proc_create()函数，其第一个参数是节点的文件名，第二个参数是节点的访问权限，第三个参数是其隶属的/proc子目录，最后一个参数是一个struct file_operations结构体的指针。这个struct file_operations应该很熟悉了吧？一般只要实现read()或者write()就好了，至于能不能用其他高级的文件操作，我还没试过。这个结构体很简单，就只实现了read()操作，用明文返回“length=%d”。</p>
+
+<pre>
+//对/proc/aMsg/length的read操作
+static ssize_t amsg_proc_length_read(struct file* p_file,char* p_buf,size_t p_count,loff_t* p_offset)
+{
+    //结果缓冲区
+    char t_buf[64];
+    sprintf(t_buf,&quot;length=%d\n&quot;,g_length);
+    //结果长度
+    int t_length=strlen(t_buf);
+    //最多能够读取的字节数（p_count和t_length之间较小者）
+    int t_size=(p_count&lt;t_length?p_count:t_length);
+    //没有成功拷贝的字节数
+    int t_rest=copy_to_user(p_buf,t_buf,t_size);
+    //返回成功拷贝的字节数
+    return t_size-t_rest;
+}
+
+//填充/proc/aMsg/length的file_operations结构体
+static struct file_operations g_amsg_proc_length_fops=
+{
+    .owner=THIS_MODULE,
+    .read=amsg_proc_length_read
+};
+</pre>
+
+<p>是不是非常简单？好吧，直接把完整代码贴上了：</p>
+
+<p>aMsg.c</p>
+
+<pre>
+#include &lt;linux/module.h&gt;
+#include &lt;linux/init.h&gt;
+#include &lt;linux/fs.h&gt;
+#include &lt;asm/uaccess.h&gt;
+#include &lt;linux/proc_fs.h&gt;
+#include &lt;linux/kernel.h&gt;
+
+MODULE_LICENSE(&quot;Dual BSD/GPL&quot;);
+
+//主设备号
+#define DEV_MAJOR 224
+//缓冲区大小
+#define DEV_BUF_SZ 1024
+
+//当前字符串长度
+static int g_length=0;
+//缓冲区
+static char g_buffer[DEV_BUF_SZ];
+//proc/aMsg目录
+static struct proc_dir_entry* g_proc_dir;
+
+//read操作
+static ssize_t amsg_read(struct file* p_file,char* p_buf,size_t p_count,loff_t* p_offset)
+{
+    //最多能够读取的字节数（p_count和g_length之间较小者）
+    int t_size=(p_count&lt;g_length?p_count:g_length);
+    //没有成功拷贝的字节数
+    int t_rest=copy_to_user(p_buf,g_buffer,t_size);
+    //不管结果如何，都清空缓冲区
+    g_length=0;
+    //返回成功拷贝的字节数
+    return t_size-t_rest;
+}
+
+//write操作
+static ssize_t amsg_write(struct file* p_file,const char* p_buf,size_t p_count,loff_t* p_offset)
+{
+    //最多能够写入的字节数（p_count和sizeof(g_buffer)之间较小者）
+    int t_size=(p_count&lt;sizeof(g_buffer)?p_count:sizeof(g_buffer));
+    //没有成功拷贝的字节数
+    int t_rest=copy_from_user(g_buffer,p_buf,t_size);
+    //成功拷贝的字节数，也就是字符串的长度
+    g_length=t_size-t_rest;
+    //返回成功拷贝的字节数
+    return g_length;
+}
+
+//填充/dev/aMsg的file_operations结构体
+static struct file_operations g_amsg_fops=
+{
+    .owner=THIS_MODULE,
+    .read=amsg_read,
+    .write=amsg_write
+};
+
+//对/proc/aMsg/length的read操作
+static ssize_t amsg_proc_length_read(struct file* p_file,char* p_buf,size_t p_count,loff_t* p_offset)
+{
+    //结果缓冲区
+    char t_buf[64];
+    sprintf(t_buf,&quot;length=%d\n&quot;,g_length);
+    //结果长度
+    int t_length=strlen(t_buf);
+    //最多能够读取的字节数（p_count和t_length之间较小者）
+    int t_size=(p_count&lt;t_length?p_count:t_length);
+    //没有成功拷贝的字节数
+    int t_rest=copy_to_user(p_buf,t_buf,t_size);
+    //返回成功拷贝的字节数
+    return t_size-t_rest;
+}
+
+//填充/proc/aMsg/length的file_operations结构体
+static struct file_operations g_amsg_proc_length_fops=
+{
+    .owner=THIS_MODULE,
+    .read=amsg_proc_length_read
+};
+
+//模块初始化代码
+static int amsg_init_module(void)
+{
+    //注册字符设备（这是Old way）
+    int t_ret=register_chrdev(DEV_MAJOR,&quot;aMsg&quot;,&amp;g_amsg_fops);
+    //注册失败的处理
+    if(t_ret&lt;0)
+    {
+        printk(&quot;Unable to register\n&quot;);
+        return t_ret;
+    }
+    //创建/proc/aMsg目录
+    g_proc_dir=proc_mkdir(&quot;aMsg&quot;,0);
+    if(g_proc_dir==0)
+    {
+        printk(&quot;Unable to mkdir /proc/aMsg\n&quot;);
+        return -ENOMEM;
+    }
+    //创建/proc/aMsg/length文件
+    struct proc_dir_entry* t_proc_length=proc_create(&quot;length&quot;,0644,g_proc_dir,&amp;g_amsg_proc_length_fops);
+    if(t_proc_length==0)
+    {
+        printk(&quot;Unable to create /proc/aMsg/length\n&quot;);
+        return -ENOMEM;
+    }
+    return 0;
+}
+
+//模块清理代码
+static void amsg_cleanup_module(void)
+{
+    //注销字符设备
+    unregister_chrdev(DEV_MAJOR,&quot;aMsg&quot;);
+    //删除/proc/aMsg/length文件
+    remove_proc_entry(&quot;length&quot;,g_proc_dir);
+    //删除/proc/aMsg目录
+    remove_proc_entry(&quot;aMsg&quot;,0);
+}
+
+module_init(amsg_init_module);
+module_exit(amsg_cleanup_module);
+</pre>
+
+<p>Makefile</p>
+
+<pre>
+obj-m := aMsg.o
+KERNEL_DIR := /lib/modules/$(shell uname -r)/build
+PWD := $(shell pwd)
+all:
+	make -C $(KERNEL_DIR) SUBDIRS=$(PWD) modules
+clean:
+	rm *.o *.ko *.mod.c
+.PHONY:clean
+</pre>
+
+<p>make、insmod、mknod之后，可以有了/proc/aMsg/length文件了。使用cat读取：</p>
+
+<pre>
+cat /proc/aMsg/length
+</pre>
+
+<p>
+可以发现不停输出“length=0”，这符合预期。然后在一个终端中，以root身份执行：
+</p>
+
+<pre>
+echo hello > /dev/aMsg
+</pre>
+
+<p>此时再使用cat读取/proc/aMsg/length，可以看到不停输出"length=6"。咦，为啥是6而不是5？这是因为echo命令自动加上了一个换行符"\n"。OK，一切正常，说明/proc/aMsg/length的read()实现正常了！那么write()操作也很简单了，不再赘述～</p>
+
+			﻿				</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>
