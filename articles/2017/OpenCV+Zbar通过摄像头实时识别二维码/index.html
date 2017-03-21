@@ -26,8 +26,8 @@
 <p>opencv_webcam.cpp</p>
 
 <pre>
-#include &quot;opencv/cv.h&quot;
-#include &quot;opencv/highgui.h&quot;
+#include &lt;opencv/cv.h&gt;
+#include &lt;opencv/highgui.h&gt;
 
 int main()
 {
@@ -94,8 +94,8 @@ void cvCvtColor(const IplImage* src,IplImage* dst,int code);
 <p>opencv_webcam.cpp</p>
 
 <pre>
-#include &quot;opencv/cv.h&quot;
-#include &quot;opencv/highgui.h&quot;
+#include &lt;opencv/cv.h&gt;
+#include &lt;opencv/highgui.h&gt;
 
 int main()
 {
@@ -139,7 +139,104 @@ int main()
 
 <p>运行后显示的就是灰度图了：</p>
 	
-<p><img src="2.jpg"></p>					
+<p><img src="2.jpg"></p>
+
+<p>==============阶段三：OpenCV+Zbar==============</p>
+
+<p>只差最后一步——把OpenCV和Zbar衔接在一起了。很简单，直接看代码吧：</p>
+
+<p>opencv_zbar.cpp</p>
+
+<pre>
+#include &lt;opencv/cv.h&gt;
+#include &lt;opencv/highgui.h&gt;
+#include &lt;zbar.h&gt;
+#include &lt;iostream&gt;
+
+using namespace std;
+using namespace zbar;
+
+int main()
+{
+    //打开0号摄像头，从摄像头中获取视频
+    CvCapture *capture=cvCreateCameraCapture(0);
+    //摄像头不存在
+    if(!capture)
+        return 1;
+    //创建窗口，名称为“debug”，自动调整大小
+    cvNamedWindow(&quot;debug&quot;,CV_WINDOW_AUTOSIZE);
+    //灰度图
+    IplImage* grayFrame=0;
+    //创建zbar图像扫描器
+    ImageScanner scanner;
+    //配置zbar图片扫描器
+    scanner.set_config(ZBAR_NONE,ZBAR_CFG_ENABLE,1);
+    while(1)
+    {
+        //从摄像头中抓取一帧
+        IplImage* frame=cvQueryFrame(capture);
+        //图像不为空
+        if(frame)
+        {
+            //如果灰度图没有创建，就创建一个和原图一样大小的灰度图（8位色深，单通道）
+            if(!grayFrame)
+                grayFrame=cvCreateImage(cvGetSize(frame),IPL_DEPTH_8U,1);
+            //原图转灰度图
+            cvCvtColor(frame,grayFrame,CV_BGR2GRAY);
+            //显示灰度图
+            cvShowImage(&quot;debug&quot;,grayFrame);
+            //创建zbar图像
+            Image image(frame-&gt;width,frame-&gt;height,&quot;Y800&quot;,<font color="red">grayFrame-&gt;imageData</font>,frame-&gt;width*frame-&gt;height);
+            //扫描图像，识别二维码，获取个数
+            int symbolCount=scanner.scan(image);
+            //获取第一个二维码
+            Image::SymbolIterator symbol=image.symbol_begin();
+            //遍历所有识别出来的二维码
+            while(symbolCount--)
+            {
+                //输出二维码内容
+                cout&lt;&lt;&quot;&#39;&quot;&lt;&lt;symbol-&gt;get_data()&lt;&lt;&quot;&#39;&quot;&lt;&lt;endl;
+                //获取定位点个数
+                int pointCount=symbol-&gt;get_location_size();
+                //遍历所有定位点
+                for(int i=0;i&lt;pointCount;i++)
+                    cout&lt;&lt;&#39;(&#39;&lt;&lt;symbol-&gt;get_location_x(i)&lt;&lt;&#39;,&#39;&lt;&lt;symbol-&gt;get_location_y(i)&lt;&lt;&quot;)&quot;&lt;&lt;endl;
+                //下一个二维码
+                ++symbol;
+            }
+        }
+        //延时50ms，如果按了ESC就退出
+        if(cvWaitKey(50)==27)
+            break;
+    }
+    //释放灰度图
+    cvReleaseImage(&amp;grayFrame);
+    //销毁窗口
+    cvDestroyWindow(&quot;debug&quot;);
+    //释放内存
+    cvReleaseCapture(&amp;capture);
+    return 0;
+}
+</pre>
+
+<p>没有什么深奥难懂的地方。唯一需要注意的是代码中用红色标记出来的地方。Zbar中，Image构造函数的第三个参数为“Y800”，表明是灰度图，那么第四个参数就是一个灰度矩阵。当然，这里说是矩阵，既可以是一个二维数组，也可以是一个一维数组，只要按照“一行一行”的顺序、每一个像素占用一字节就行了。而恰巧，OpenCV中灰度图也是这个顺序，而且当图片是灰度图时，imageData字段就是这么一个灰度数组。所以直接代入即可。</p>
+
+<p>使用如下命令编译：</p>
+
+<pre>
+g++ opencv_zbar.cpp -o opencv_zbar `pkg-config opencv --libs --cflags opencv` -lzbar
+</pre>
+
+<p>然后运行：</p>
+
+<pre>
+./opencv_zbar
+</pre>
+
+<p>程序运行后，如果在摄像头前摆放一个能够识别的二维码，那么就会不断输出二维码的内容和四个顶点的坐标：</p>
+
+<p><img src="3.jpg"></p>
+			
 			﻿				</div>
 						</article>
 					</div>

@@ -15,7 +15,7 @@
 							</header>
 							<div class="entry-content">
 
-<p>之前整个项目用的是Java，结果在树莓派上运行速度很慢。现在要用C/C++来改写。说是C/C++，其实我只要能够使用C的地方我都会用C，毕竟对我这样一个要深入内核的人来说，C是最好的语言了。Java平台上我是使用ZXing来识别二维码的，ZXing是一个纯Java实现，所以也就没法用在C语言中。于是我找到了Zbar，它的核心是用C写的。据说Zbar的性能是ZXing的两倍以上～</p>
+<p>之前整个项目用的是Java，结果在树莓派上运行速度很慢。现在要用C++来改写。Java平台上我是使用ZXing来识别二维码的，ZXing是一个纯Java实现，所以也就没法用在C++中。于是我找到了Zbar，它的核心是用C写的。据说Zbar的性能是ZXing的两倍以上～</p>
 
 <p>要使用Zbar，首先肯定是要安装Zbar库。当然也可以使用源码安装，虽然我没有成功......</p>
 
@@ -25,7 +25,7 @@ sudo apt install libzbar-dev
 
 <p>之后，就可以编写一个测试代码：</p>
 
-<p>scan_image.c</p>
+<p>scan_image.cpp</p>
 
 <pre>
 #include &lt;stdio.h&gt;
