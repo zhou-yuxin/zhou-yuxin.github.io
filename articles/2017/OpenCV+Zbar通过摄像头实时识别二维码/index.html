@@ -31,13 +31,13 @@
 
 int main()
 {
-    //创建窗口，名称为“debug”，自动调整大小
-    cvNamedWindow(&quot;debug&quot;,CV_WINDOW_AUTOSIZE);
     //打开0号摄像头，从摄像头中获取视频
     CvCapture *capture=cvCreateCameraCapture(0);
     //摄像头不存在
     if(!capture)
         return 1;
+    //创建窗口，名称为“debug”，自动调整大小
+    cvNamedWindow(&quot;debug&quot;,CV_WINDOW_AUTOSIZE);
     while(1)
     {
         //从摄像头中抓取一帧
@@ -49,10 +49,10 @@ int main()
         if(cvWaitKey(50)==27)
             break;
     }
-    //释放内存
-    cvReleaseCapture(&amp;capture);
     //销毁窗口
     cvDestroyWindow(&quot;debug&quot;);
+    //释放内存
+    cvReleaseCapture(&amp;capture);
     return 0;
 }
 </pre>
@@ -79,7 +79,67 @@ g++ opencv_webcam.cpp -o opencv_webcam `pkg-config opencv --libs --cflags opencv
 
 <p>非常稳定吧～点击关闭按钮是无法把窗口关掉的，直接按下Esc键就能退出。</p>
 
-								
+<p>==============阶段二：图像灰度化==============</p>
+
+<p><a href="../使用Zbar定位、识别二维码/index.html">《使用Zbar定位、识别二维码》</a>中提到，Zbar接受灰度矩阵作为输入数据。那么接下来就需要把图像灰度化，然后获得灰度矩阵。</p>
+
+<p>OpenCV中把图片转换为灰度图非常简单，只需要使用函数：</p>
+
+<pre>
+void cvCvtColor(const IplImage* src,IplImage* dst,int code);
+</pre>
+
+<p>比如上面那个例子中，如果要在界面上显示灰度图像，可以这样：</p>
+
+<p>opencv_webcam.cpp</p>
+
+<pre>
+#include &quot;opencv/cv.h&quot;
+#include &quot;opencv/highgui.h&quot;
+
+int main()
+{
+    //打开0号摄像头，从摄像头中获取视频
+    CvCapture *capture=cvCreateCameraCapture(0);
+    //摄像头不存在
+    if(!capture)
+        return 1;
+    //创建窗口，名称为“debug”，自动调整大小
+    cvNamedWindow(&quot;debug&quot;,CV_WINDOW_AUTOSIZE);
+    //灰度图
+    IplImage* grayFrame=0;
+    while(1)
+    {
+        //从摄像头中抓取一帧
+        IplImage* frame=cvQueryFrame(capture);
+        //图像不为空
+        if(frame)
+        {
+            //如果灰度图没有创建，就创建一个和原图一样大小的灰度图（8位色深，单通道）
+            if(!grayFrame)
+                grayFrame=cvCreateImage(cvGetSize(frame),IPL_DEPTH_8U,1);
+            //原图转灰度图
+            cvCvtColor(frame,grayFrame,CV_BGR2GRAY);
+            //显示灰度图
+            cvShowImage(&quot;debug&quot;,grayFrame);
+        }
+        //延时50ms，如果按了ESC就退出
+        if(cvWaitKey(50)==27)
+            break;
+    }
+    //释放灰度图
+    cvReleaseImage(&amp;grayFrame);
+    //销毁窗口
+    cvDestroyWindow(&quot;debug&quot;);
+    //释放内存
+    cvReleaseCapture(&amp;capture);
+    return 0;
+}
+</pre>
+
+<p>运行后显示的就是灰度图了：</p>
+	
+<p><img src="2.jpg"></p>					
 			﻿				</div>
 						</article>
 					</div>
