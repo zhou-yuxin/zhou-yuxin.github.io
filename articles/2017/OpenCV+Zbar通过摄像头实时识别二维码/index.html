@@ -1,0 +1,90 @@
+﻿<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>OpenCV+Zbar通过摄像头实时识别二维码</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">OpenCV+Zbar通过摄像头实时识别二维码</h1>
+							</header>
+							<div class="entry-content">
+								
+<p>在上一篇<a href="../使用Zbar定位、识别二维码/index.html">《使用Zbar定位、识别二维码》</a>中，我已经能够通过Zbar从一个灰度矩阵中识别出二维码（其实还包括条形码）。这一篇文章要更进一步，通过摄像头不停拍摄图片，然后交给Zbar来识别其中的二维码（如果存在的话）。</p>
+
+<p>在Linux上调用摄像头拍照，我本来想用的是V4L2。但是V4L2实在太复杂了，一时间搞不定，所以转而使用OpenCV。本来对于OpenCV还是有点抵触的，但是自从今天下午用OpenCV寥寥几行代码就实现了摄像头拍摄，我对OpenCV有了新的认识，一下子喜欢多了，大致学完驱动开发就学OpenCV！</p>
+
+<p>=============阶段一：OpenCV调用摄像头============</p>
+
+<p>先上一个OpenCV调用摄像头实时显示图像的程序，非常简单：</p>
+
+<p>opencv_webcam.cpp</p>
+
+<pre>
+#include &quot;opencv/cv.h&quot;
+#include &quot;opencv/highgui.h&quot;
+
+int main()
+{
+    //创建窗口，名称为“debug”，自动调整大小
+    cvNamedWindow(&quot;debug&quot;,CV_WINDOW_AUTOSIZE);
+    //打开摄像头，从摄像头中获取视频
+    CvCapture *capture=cvCreateCameraCapture(0);
+    while(1)
+    {
+        //从摄像头中抓取一帧
+        IplImage* frame=cvQueryFrame(capture);
+        //在窗口上显示
+        if(frame)
+            cvShowImage(&quot;debug&quot;,frame);
+        //延时50ms，如果按了ESC就退出
+        if(cvWaitKey(50)==27)
+            break;
+    }
+    //释放内存
+    cvReleaseCapture(&amp;capture);
+    //销毁窗口
+    cvDestroyWindow(&quot;debug&quot;);
+    return 0;
+}
+</pre>
+
+<p>要编译这段代码，需要首先安装OpenCV库。很简单：</p>
+
+<pre>
+sudo apt install libopencv-dev
+</pre>
+
+<p>然后就是调用g++编译即可：</p>
+
+<pre>
+g++ opencv_webcam.cpp -o opencv_webcam `pkg-config opencv --libs --cflags opencv`
+</pre>
+
+<p>见证奇迹的时刻到了！运行程序：</p>
+
+<pre>
+./opencv_webcam
+</pre>
+
+<p><img src="1.jpg"></p>
+
+<p>非常稳定吧～点击关闭按钮是无法把窗口关掉的，直接按下Esc键就能退出。</p>
+
+								
+			﻿				</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>
