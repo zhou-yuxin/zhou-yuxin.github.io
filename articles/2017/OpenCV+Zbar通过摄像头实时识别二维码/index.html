@@ -33,8 +33,11 @@ int main()
 {
     //创建窗口，名称为“debug”，自动调整大小
     cvNamedWindow(&quot;debug&quot;,CV_WINDOW_AUTOSIZE);
-    //打开摄像头，从摄像头中获取视频
+    //打开0号摄像头，从摄像头中获取视频
     CvCapture *capture=cvCreateCameraCapture(0);
+    //摄像头不存在
+    if(!capture)
+        return 1;
     while(1)
     {
         //从摄像头中抓取一帧
