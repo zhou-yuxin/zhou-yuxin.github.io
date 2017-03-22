@@ -1,7 +1,7 @@
 ﻿<html>
 	<head>
 		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>基于二维码的室内定位技术</title>
+		<title>基于二维码的室内定位技术（一）——原理</title>
 		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
 	</head>
 	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
@@ -11,7 +11,7 @@
 					<div id="content" role="main">		
 						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
 							<header class="entry-header">
-								<h1 class="entry-title">基于二维码的室内定位技术</h1>
+								<h1 class="entry-title">基于二维码的室内定位技术（一）——原理</h1>
 							</header>
 							<div class="entry-content">
 
@@ -92,6 +92,40 @@
 <p>而两条直线的交点的横坐标为</p>
 
 <p><img src="15.jpg"></p>
+
+<p>接下来看成像模型：</p>
+
+<p><img src="16.png"></p>
+
+<p>其中θ'是水平视角。在空间中，线段MP比上线段MN的比例为</p>
+
+<p><img src="17.jpg"></p>
+
+<p>而在拍摄的图片上，该比例应该为</p>
+
+<p><img src="18.jpg"></p>
+
+<p>所以有</p>
+
+<p><img src="19.jpg"></p>
+
+<p>解得</p>
+
+<p><img src="20.jpg"></p>
+
+<p>而水平视角的正切值和上下视角的正切值就是图像宽和高之比，即</p>
+
+<p><img src="21.jpg"></p>
+
+<p>代入上式，解得</p>
+
+<p><img src="22.jpg"></p>
+
+<p>至此，α、β和z<sub>0</sub>都已经直接确定了。那么在上述两个假设下的二维码位姿信息就唯一确定了。</p>
+
+<p><img src="23.png"></p>
+
+<p>如果已经得知二维码自身在世界坐标系中的坐标和朝向，那么就可以通过α、β和z<sub>0</sub>得知小车自身在世界坐标系中的坐标和朝向。</p>
 
 							</div>
 						</article>
