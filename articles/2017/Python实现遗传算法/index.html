@@ -1,0 +1,205 @@
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title>Python实现遗传算法</title>
+		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+	</head>
+	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+		<div id="page" class="hfeed">
+			<div id="main">
+				<div id="primary">
+					<div id="content" role="main">		
+						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+							<header class="entry-header">
+								<h1 class="entry-title">Python实现遗传算法</h1>
+							</header>
+							<div class="entry-content">
+
+<p>猜涨跌屡猜屡错，气死我了。原因其实还是因为缺少历史赔率数据，只根据价格来判断，虽然能够有85%的概率猜对，但是通常形势明朗时赔率很低。现在开始我把每天的赔率数据都记录下来，等数据足够多了再试试。目前我有个想法，能不能通过遗传算法，进化出一个机器人，能够自动炒股或者炒外汇，因为价格数据是可以获取的。</p>
+
+<p>过去我用Java实现过遗传算法，用了400多行，而现在用Python实现，只需要90行，哎，差距真的好大。遗传算法的原理可以参考<a href="https://pan.baidu.com/s/1nvsNL0l">《遗传算法——理论、应用与软件实现》</a>一书，讲的挺清楚的。对于每一个基因Gen，都有交配(mute)和变异(mutate)操作。mute操作需要两个长度相等的基因，然后随机选择一个交叉点，相互交叉形成两条新的基因。比如两条基因分别是A=00101110和B=10101100，交叉位置是3，那么则把A的前3位和B的后5位组成一个新的基因C=00101100，把B的前3位和A的后5位组成一个新的基因D=10101110。mutate操作则是对于某个基因，随机选择一个点位，然后取反。比如基因G=00101110，变异点位是5，则变成G'=00100110。</p>
+
+<p>所以基因封装类Gen的代码就很清楚了：</p>
+
+<pre>
+import random
+
+class Gen:
+
+    #构造，length是基因长度
+    def __init__(self,length,bins=None):
+        if not isinstance(length,int) or length&lt;=0:
+            raise TypeError(&#39;&lt;length&gt; should be a positive integer&#39;)
+        self.__len=length
+        if bins:
+            if not isinstance(bins,list) or len(bins)!=length:
+                raise TypeError(&#39;&lt;bins&gt; should be a %d-length list&#39; % length)
+            for b in bins:
+                if b not in [0,1]:
+                    raise ValueError(&#39;elements in &lt;bins&gt; should be 0 or 1&#39;)
+            self.__bins=bins
+        else:
+            self.__bins=[0 if random.random()&lt;0.5 else 1 for i in range(length)]
+
+    #与另一条基因交配，产生两条新的基因
+    def mate(self,gen):
+        if not isinstance(gen,Gen):
+            raise TypeError(&#39;&lt;gen&gt; should be an instance of Gen&#39;)
+        if gen.__len!=self.__len:
+            raise ValueError(&#39;&lt;gen&gt; has a different length&#39;)
+        pos=random.randint(1,self.__len-1)
+        bins_1=self.__bins[:pos]+gen.__bins[pos:]
+        bins_2=gen.__bins[:pos]+self.__bins[pos:]
+        return Gen(self.__len,bins_1),Gen(self.__len,bins_2)
+
+    #变异，产生一条新的基因
+    def mutate(self):
+        pos=random.randint(0,self.__len-1)
+        bins=self.__bins.copy()
+        bins[pos]=1-bins[pos]
+        return Gen(self.__len,bins)
+
+    #返回二进制编码，是一个一维数组，每一个元素是0或1
+    def bins(self):
+        return self.__bins
+
+    #把二进制编码中[start,end]的一段二进制映射到[x_min,x_max]上
+	def decode(self,x_min,x_max,start=0,end=None):
+		if not isinstance(x_min,(int,float)):
+			raise TypeError(&#39;&lt;x_min&gt; should be a number&#39;)
+		if not isinstance(x_max,(int,float)):
+			raise TypeError(&#39;&lt;x_max&gt; should be a number&#39;)
+		if not isinstance(start,int) or start&lt;0 or start&gt;=self.__len:
+			raise TypeError(&#39;&lt;start&gt; should be an integer between [0,%d)&#39; % self.__len)
+		if end==None:
+			end=self.__len-1
+		if not isinstance(end,int) or end&lt;start or end&gt;=self.__len:
+			raise TypeError(&#39;&lt;end&gt; should be an integer between [%d,%d)&#39; % (start,self.__len))
+		val=sum((self.__bins[start+i]&lt;&lt;i for i in range(end-start+1)))
+		val_max=(1&lt;&lt;(end-start+1))-1
+		return (x_max-x_min)*val/val_max+x_min
+
+    def __str__(self):
+        return &#39;&#39;.join([str(b) for b in self.__bins])
+</pre>
+
+<p>现在可以写一个测试用例来测试class Gen：</p>
+
+<pre>
+g1,g2=Gen(10),Gen(10)
+print(&#39;g1=&#39;+str(g1))
+print(&#39;g2=&#39;+str(g2))
+g3,g4=g1.mate(g2)
+print(&#39;g3=&#39;+str(g3))
+print(&#39;g4=&#39;+str(g4))
+g5=g4.mutate()
+print(&#39;g5=&#39;+str(g5))
+print(g5.decode(0,100))
+print(g5.decode(10,50,1,4))
+</pre>
+
+<p>可以看到输出结果为：</p>
+
+<p><img src='1.png'></p>
+
+<p>比较g1,g2和g3,g4，可以得知交叉位置为6。比较g4和g5，得知变异位置为6（好巧）。那么最后两个decode()操作是怎么回事呢？g5的编码是0101001010，由于是低位在前，所以其相当于二进制0101001010b，也就是330。而10位二进制最大表达0x3ff，也就是1023。所以对于映射到[0,100]的值就是330/1023*(100-0)+0=32.25806451612903。而第二个decode()则更加复杂一些，decode(10,50,1,4)意思是只看第1位到4位，映射到[10,50]。第1到4位为1010，也就是二进制的0101b，也就是5。四位二进制最大表达0xf，也就是15，所以最终的值是5/15*(50-10)+10=23.333333333。</p>
+
+<p>有了Gen以后去，就是GA算法本身了。GA算法有很多变种，最标准的在<a href="https://pan.baidu.com/s/1nvsNL0l">《遗传算法——理论、应用与软件实现》</a>一书中有所论述，即根据适应度来计算交配概率。不过我为了避免适应度->交配概率转换规则的不同带来的影响，我自己发明了一种变种如下：</p>
+
+<pre>
+设定种群大小为S，交配概率为p1，变异概率为p2；
+每次迭代，执行如下操作：
+    进行floor(S*p1/2)次杂交操作，每次操作步骤如下：
+        随机从[0,S-1]中选取两个整数i,j；
+        使第i条基因和第j条基因交配，产生两条新的基因，加入种群；
+    对原本就存在的S条基因，依次执行：
+        产生随机数a，如果a&lt;p2，则使该基因变异，产生新的基因，加入种群；
+    对所有的基因（理论个数为S(1+p1+p2)）计算适应度；
+    只保留适应度在前S个的基因；
+</pre>
+
+<p>其实这种方式很简单，就是每一代杀死最差的一小撮。由于只关注适应度的大小，而不关注具体的值，所以不需要担心适应度的尺度变换不当而带来的影响，较少了调参的因素。代码如下：</p>
+
+<pre>
+import random
+
+class GA:
+
+    #构造，gen_len为基因长度，size为种群大小，fit_func为适应度函数（接受一个Gen对象），mate_p和mutate_p分别是交配概率和变异概率
+    def __init__(self,gen_len,size,fit_func,mate_p=0.1,mutate_p=0.1):
+        if not isinstance(gen_len,int) or gen_len&lt;=0:
+            raise TypeError(&#39;&lt;gen_len&gt; should be a positive integer&#39;)
+        if not isinstance(size,int) or size&lt;=0:
+            raise TypeError(&#39;&lt;size&gt; should be a positive integer&#39;)
+        if not hasattr(fit_func,&#39;__call__&#39;):
+            raise TypeError(&#39;&lt;fit_func&gt; should be a function&#39;)
+        if not isinstance(mate_p,float) or mate_p&lt;0 or mate_p&gt;1:
+            raise TypeError(&#39;&lt;mate_p&gt; should be a float in [0,1]&#39;)
+        if not isinstance(mutate_p,float) or mutate_p&lt;0 or mutate_p&gt;1:
+            raise TypeError(&#39;&lt;mutate_p&gt; should be a float in [0,1]&#39;)
+        self.__gen_len=gen_len
+        self.__size=size
+        self.__fit_func=fit_func
+        self.__mate_p=mate_p
+        self.__mutate_p=mutate_p
+        self.__gens=[Gen(gen_len) for i in range(size)]
+        self.__best=None
+
+    #产生新的一代
+    def generate(self):
+        for i in range(int(self.__size*self.__mate_p/2)):
+            g1,g2=[self.__gens[random.randint(0,self.__size-1)] for i in range(2)]
+            g3,g4=g1.mate(g2)
+            self.__gens.append(g3)
+            self.__gens.append(g4)
+        for i in range(self.__size):
+            if random.random()&lt;self.__mutate_p:
+                self.__gens.append(self.__gens[i].mutate())
+        gen_fits=[(g,self.__fit_func(g)) for g in self.__gens]
+        gen_fits.sort(key=lambda entry:entry[1],reverse=True)
+        self.__best=gen_fits[0]
+        self.__gens=[gt[0] for gt in gen_fits[:self.__size]]
+
+    #获取当前最优解(基因,适应度)
+    def best(self):
+        return self.__best
+</pre>
+
+<p>编写测试用例如下：</p>
+
+<pre>
+import math
+
+def fitness(gen):
+    x=gen.decode(0,3,0,49)
+    y=gen.decode(0,3,50,99)
+    l=math.sqrt(x*x+y*y)
+    return x*y*math.sin(l)
+
+ga=GA(100,50,fitness,0.2,0.3)
+for i in range(100):
+    ga.generate()
+    g,f=ga.best()
+    print(f)
+x=g.decode(0,3,0,49)
+y=g.decode(0,3,50,99)
+print(x,y)
+</pre>
+
+<p>这个用例其实是用遗传算法计算f(x,y)=x*y*sin(sqrt(x*x+y*y)),其中x,y in [0,3]这个函数的最大值。每一代输出当代最大值，最后输出最优的x和y。结果如下：</p>
+
+<p><img src="2.png"></p>
+
+<p>可以看到结果不错~点击下载完整的<a href="GA.py">GA.py</a>~</p>
+
+			﻿							</div>
+						</article>
+					</div>
+				</div>
+			</div>
+			<footer id="colophon" role="contentinfo">
+				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+			</footer>
+		</div>
+	</body>
+</html>
