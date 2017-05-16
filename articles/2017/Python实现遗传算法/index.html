@@ -1,19 +1,19 @@
 <html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>Python实现遗传算法</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">Python实现遗传算法</h1>
-							</header>
-							<div class="entry-content">
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>Python实现遗传算法</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">Python实现遗传算法</h1>
+                            </header>
+                            <div class="entry-content">
 
 <p>猜涨跌屡猜屡错，气死我了。原因其实还是因为缺少历史赔率数据，只根据价格来判断，虽然能够有85%的概率猜对，但是通常形势明朗时赔率很低。现在开始我把每天的赔率数据都记录下来，等数据足够多了再试试。目前我有个想法，能不能通过遗传算法，进化出一个机器人，能够自动炒股或者炒外汇，因为价格数据是可以获取的。</p>
 
@@ -64,20 +64,20 @@ class Gen:
         return self.__bins
 
     #把二进制编码中[start,end]的一段二进制映射到[x_min,x_max]上
-	def decode(self,x_min,x_max,start=0,end=None):
-		if not isinstance(x_min,(int,float)):
-			raise TypeError(&#39;&lt;x_min&gt; should be a number&#39;)
-		if not isinstance(x_max,(int,float)):
-			raise TypeError(&#39;&lt;x_max&gt; should be a number&#39;)
-		if not isinstance(start,int) or start&lt;0 or start&gt;=self.__len:
-			raise TypeError(&#39;&lt;start&gt; should be an integer between [0,%d)&#39; % self.__len)
-		if end==None:
-			end=self.__len-1
-		if not isinstance(end,int) or end&lt;start or end&gt;=self.__len:
-			raise TypeError(&#39;&lt;end&gt; should be an integer between [%d,%d)&#39; % (start,self.__len))
-		val=sum((self.__bins[start+i]&lt;&lt;i for i in range(end-start+1)))
-		val_max=(1&lt;&lt;(end-start+1))-1
-		return (x_max-x_min)*val/val_max+x_min
+    def decode(self,x_min,x_max,start=0,end=None):
+        if not isinstance(x_min,(int,float)):
+            raise TypeError(&#39;&lt;x_min&gt; should be a number&#39;)
+        if not isinstance(x_max,(int,float)):
+            raise TypeError(&#39;&lt;x_max&gt; should be a number&#39;)
+        if not isinstance(start,int) or start&lt;0 or start&gt;=self.__len:
+            raise TypeError(&#39;&lt;start&gt; should be an integer between [0,%d)&#39; % self.__len)
+        if end==None:
+            end=self.__len-1
+        if not isinstance(end,int) or end&lt;start or end&gt;=self.__len:
+            raise TypeError(&#39;&lt;end&gt; should be an integer between [%d,%d)&#39; % (start,self.__len))
+        val=sum((self.__bins[start+i]&lt;&lt;i for i in range(end-start+1)))
+        val_max=(1&lt;&lt;(end-start+1))-1
+        return (x_max-x_min)*val/val_max+x_min
 
     def __str__(self):
         return &#39;&#39;.join([str(b) for b in self.__bins])
@@ -192,14 +192,14 @@ print(x,y)
 
 <p>可以看到结果不错~点击下载完整的<a href="GA.py">GA.py</a>~</p>
 
-			﻿							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
-			</footer>
-		</div>
-	</body>
+            ﻿                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
 </html>
