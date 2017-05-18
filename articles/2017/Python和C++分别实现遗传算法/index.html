@@ -1,7 +1,7 @@
 <html>
     <head>
         <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-        <title>Python实现遗传算法</title>
+        <title>Python和C++分别实现遗传算法</title>
         <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
     </head>
     <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
@@ -11,7 +11,7 @@
                     <div id="content" role="main">        
                         <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
                             <header class="entry-header">
-                                <h1 class="entry-title">Python实现遗传算法</h1>
+                                <h1 class="entry-title">Python和C++分别实现遗传算法</h1>
                             </header>
                             <div class="entry-content">
 
@@ -191,6 +191,236 @@ print(x,y)
 <p><img src="2.png"></p>
 
 <p>可以看到结果不错~点击下载完整的<a href="GA.py">GA.py</a>~</p>
+
+<p>文章本来写到这里就结束了。昨天使用遗传算法进化四层感知机，速度太慢了。虽然预测准确率在缓慢爬升，但是太慢了！Python版本的代码验证了可行性，但是需要做更加深入的实验，必须得用C/C++来实现。所以我今天又花了一个晚上实现了C++版本的遗传算法。逻辑与Python版本一模一样的，所以就不解释了，直接贴代码。</p>
+
+<p>GA.h</p>
+
+<pre>
+#ifndef GA_H
+#define GA_H
+
+#include &lt;stdint.h&gt;
+
+class Gen
+{
+
+public:
+    Gen(uint32_t len,bool random=true);
+    ~Gen();
+    Gen** mate(Gen* g);
+    Gen* mutate();
+    double decode(uint32_t start,uint32_t end,double min,double max) const;
+
+private:
+    uint32_t len;
+    uint8_t* bits;
+    Gen* childs[2];
+
+};
+
+class GA
+{
+
+public:
+    GA(uint32_t len,uint32_t size,double (*fit_func)(const Gen*),double mate_p,double mutate_p);
+    ~GA();
+    void generate();
+    double best_fitness();
+    const Gen* best_gen();
+
+public:
+    struct Gen_F
+    {
+        Gen* gen;
+        double fitness;
+    };
+
+private:
+    uint32_t len;
+    uint32_t size;
+    double (*fit_func)(const Gen*);
+    double mate_p;
+    double mutate_p;
+    Gen_F** gen_fs;
+    uint32_t gen_fs_len;
+    uint32_t best;
+
+};
+
+#endif
+</pre>
+
+<p>GA.cpp</p>
+
+<pre>
+#include &quot;GA.h&quot;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;algorithm&gt;
+
+Gen::Gen(uint32_t len,bool random)
+{
+    assert(len&gt;0);
+    this-&gt;len=len;
+    this-&gt;bits=new uint8_t[len];
+    if(random)
+        for(uint32_t i=0;i&lt;len;i++)
+            this-&gt;bits[i]=rand()%2;
+}
+
+Gen::~Gen()
+{
+    delete[] this-&gt;bits;
+}
+
+Gen** Gen::mate(Gen* g)
+{
+    assert(this-&gt;len==g-&gt;len);
+    Gen* gen_1=new Gen(this-&gt;len,false);
+    Gen* gen_2=new Gen(this-&gt;len,false);
+    uint32_t hcnt=rand()%(this-&gt;len-1)+1;
+    uint32_t tcnt=this-&gt;len-hcnt;
+    memcpy(gen_1-&gt;bits,this-&gt;bits,hcnt);
+    memcpy(gen_1-&gt;bits+hcnt,g-&gt;bits+hcnt,tcnt);
+    memcpy(gen_2-&gt;bits,g-&gt;bits,hcnt);
+    memcpy(gen_2-&gt;bits+hcnt,this-&gt;bits+hcnt,tcnt);
+    this-&gt;childs[0]=gen_1;
+    this-&gt;childs[1]=gen_2;
+    return this-&gt;childs;
+}
+
+Gen* Gen::mutate()
+{
+    Gen* gen=new Gen(this-&gt;len,false);
+    memcpy(gen-&gt;bits,this-&gt;bits,this-&gt;len);
+    uint32_t pos=rand()%this-&gt;len;
+    gen-&gt;bits[pos]=1-gen-&gt;bits[pos];
+    return gen;
+}
+
+double Gen::decode(uint32_t start,uint32_t end,double min,double max) const
+{
+    assert(start&lt;=end&amp;&amp;end&lt;this-&gt;len);
+    double percent=0,calibration=1;
+    for(uint32_t i=start;i&lt;=end;i++)
+    {
+        percent/=2;
+        if(this-&gt;bits[i]==1)
+            percent+=0.5;
+        calibration/=2;
+    }
+    percent/=1-calibration;
+    return (max-min)*percent+min;
+}
+
+GA::GA(uint32_t len,uint32_t size,double (*fit_func)(const Gen*),double mate_p,double mutate_p)
+{
+    assert(len&gt;0&amp;&amp;size&gt;0&amp;&amp;fit_func!=0&amp;&amp;0&lt;mate_p&amp;&amp;mate_p&lt;1&amp;&amp;0&lt;mutate_p&amp;&amp;mutate_p&lt;1);
+    this-&gt;len=len;
+    this-&gt;size=size;
+    this-&gt;fit_func=fit_func;
+    this-&gt;mate_p=mate_p;
+    this-&gt;mutate_p=mutate_p;
+    this-&gt;gen_fs_len=(int)(size*(1+mate_p+mutate_p));
+    this-&gt;gen_fs=new struct Gen_F*[this-&gt;gen_fs_len];
+    for(uint32_t i=0;i&lt;this-&gt;gen_fs_len;i++)
+        this-&gt;gen_fs[i]=new struct Gen_F;
+    for(uint32_t i=0;i&lt;size;i++)
+        this-&gt;gen_fs[i]-&gt;gen=new Gen(len);
+    this-&gt;best=size;
+}
+
+GA::~GA()
+{
+    for(uint32_t i=0;i&lt;this-&gt;size;i++)
+        delete this-&gt;gen_fs[i]-&gt;gen;
+    for(uint32_t i=0;i&lt;this-&gt;gen_fs_len;i++)
+        delete this-&gt;gen_fs[i];
+    delete[] this-&gt;gen_fs;
+}
+
+static bool __GA_comparator(const struct GA::Gen_F* gen_f_1,const struct GA::Gen_F* gen_f_2)
+{
+    return gen_f_1-&gt;fitness&gt;gen_f_2-&gt;fitness;
+}
+
+void GA::generate()
+{
+    uint32_t count=this-&gt;size;
+    for(uint32_t i=(uint32_t)(this-&gt;size*this-&gt;mate_p/2);i&gt;0;i--)
+    {
+        Gen* gen_1=this-&gt;gen_fs[rand()%this-&gt;size]-&gt;gen;
+        Gen* gen_2=this-&gt;gen_fs[rand()%this-&gt;size]-&gt;gen;
+        Gen** childs=gen_1-&gt;mate(gen_2);
+        this-&gt;gen_fs[count++]-&gt;gen=childs[0];
+        this-&gt;gen_fs[count++]-&gt;gen=childs[1];
+    }
+    for(uint32_t i=(uint32_t)(this-&gt;size*this-&gt;mutate_p);i&gt;0;i--)
+    {
+        Gen* gen=this-&gt;gen_fs[rand()%this-&gt;size]-&gt;gen;
+        this-&gt;gen_fs[count++]-&gt;gen=gen-&gt;mutate();
+    }
+    for(uint32_t i=0;i&lt;count;i++)
+    {
+        Gen_F* gen_f=this-&gt;gen_fs[i];
+        gen_f-&gt;fitness=fit_func(gen_f-&gt;gen);
+    }
+    std::sort(gen_fs,gen_fs+count,__GA_comparator);
+    for(int i=this-&gt;size;i&lt;count;i++)
+        delete this-&gt;gen_fs[i]-&gt;gen;
+    this-&gt;best=0;
+}
+
+double GA::best_fitness()
+{
+    assert(this-&gt;best&lt;this-&gt;size);
+    return this-&gt;gen_fs[this-&gt;best]-&gt;fitness;
+}
+
+const Gen* GA::best_gen()
+{
+    assert(this-&gt;best&lt;this-&gt;size);
+    return this-&gt;gen_fs[this-&gt;best]-&gt;gen;
+}
+</pre>
+
+<p>测试用例也是和Python版本的一样的逻辑：</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &quot;GA.h&quot;
+#include &lt;time.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;math.h&gt;
+
+double fitness(const Gen* g)
+{
+    double x=g-&gt;decode(0,49,0,3);
+    double y=g-&gt;decode(50,99,0,3);
+    double l=sqrt(x*x+y*y);
+    return x*y*sin(l);
+}
+
+int main()
+{
+    srand(time(0));
+    GA ga(100,50,fitness,0.2,0.3);
+    for(int i=0;i&lt;100;i++)
+    {
+        ga.generate();
+        printf(&quot;%lf\n&quot;,ga.best_fitness());
+    }
+    const Gen* g=ga.best_gen();
+    double x=g-&gt;decode(0,49,0,3);
+    double y=g-&gt;decode(50,99,0,3);
+    printf(&quot;%lf\t%lf\n&quot;,x,y);
+    return 0;
+}
+</pre>
+
+<p>然后我做了一个性能对比，把迭代次数改为1000之后，Python版本用了2.363秒，而C++版本用了0.175秒，相差13.5倍～</p>
 
             ﻿                            </div>
                         </article>
