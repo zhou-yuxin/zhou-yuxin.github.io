@@ -208,7 +208,7 @@ class Gen
 public:
     Gen(uint32_t len,bool random=true);
     ~Gen();
-    Gen** mate(Gen* g);
+    Gen** mate(const Gen* g);
     Gen* mutate();
     double decode(uint32_t start,uint32_t end,double min,double max) const;
 
@@ -275,7 +275,7 @@ Gen::~Gen()
     delete[] this-&gt;bits;
 }
 
-Gen** Gen::mate(Gen* g)
+Gen** Gen::mate(const Gen* g)
 {
     assert(this-&gt;len==g-&gt;len);
     Gen* gen_1=new Gen(this-&gt;len,false);
