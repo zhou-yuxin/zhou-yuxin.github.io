@@ -141,6 +141,14 @@ dlltool -l libopencl.a -d OpenCL.def -A -k
 
 <p>正如<a href="https://stackoverflow.com/questions/15185955/compile-opencl-on-mingw-nvidia-sdk">《Compile OpenCL on Mingw Nvidia SDK》</a>中说的，遇到函数xxx@xxx找不到了，就改一下OpenCL.def，然后重新使用dlltool产生libopencl.a就可以了。这个方法同样可以推广到其他的*.lib到*.a的转换。</p>
 
+<p>最后说一下，reimp和dlltool可以使用</p>
+
+<pre>
+mingw-get install mingw-utils
+</pre>
+
+<p>获得（<a href="https://stackoverflow.com/questions/15185955/compile-opencl-on-mingw-nvidia-sdk">《Compile OpenCL on Mingw Nvidia SDK》</a>中也提到了）。</p>
+
             ﻿                            </div>
                         </article>
                     </div>
