@@ -1,0 +1,40 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>Linux 获取TCP连接与pid的映射，及监测进程的TCP流量</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">Linux 获取TCP连接与pid的映射，及监测进程的TCP流量</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>最近项目需要监测多个进程的TCP流量。Linux有很多网络监测工具，不过大部分都是system level级别的，没法精确到进程级别的。后来查到有一个叫做nethogs的工具，能够实时监测各个进程的网络流量，于是对其工作原理很感兴趣，也就有了这篇博客。</p>
+
+<p>当时源码编译安装nethogs的时候，就说需要安装libpcap，我敏锐的意识到netbogs应该是通过网络抓包的方式来分析网络流量的。但是呢，抓到了数据包之后，如何得知该数据包归属于那个进程呢？学过TCP/IP肯定知道，这是通过连接四元组（源IP，源port，目的IP，目的port）区分的。那么就需要得知连接四元组与进程号（pid）的对应关系。</p>
+
+<p>虽然我很清楚kernel是知道这个映射的，但是貌似没有提供直接的接口。于是我通过strace分析了nethogs是如何得到这个映射关系的。</p>
+
+<pre>
+strace nethogs wlan0
+</pre>
+
+<p>可以看到，nethogs貌似在遍历所有的/proc/&lt;pid&gt;/fd/&lt;fd_no&gt;文件，对他们调用readlink()。这引起了我的注意</p>
+
+            ﻿                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
