@@ -110,8 +110,8 @@ import copy
 class Net:
 
     #params:
-    #	dev: the interface to be monitored, such as eth0
-    #	interval: the interval in seconds that refresh the map ( tcp connection=> pid )
+    #    dev: the interface to be monitored, such as eth0
+    #    interval: the interval in seconds that refresh the map ( tcp connection=> pid )
     def __init__(self,dev,interval):
         self.__dev=dev
         self.__interval=interval
@@ -127,8 +127,9 @@ class Net:
         self.__fd=open('/proc/net/dev')
 
     def __del__(self):
-        self.__thread_map.stop()
-        self.__thread_cap.stop()
+        #暂时没有发现强制结束线程的办法
+        #self.__thread_map.stop()
+        #self.__thread_cap.stop()
         self.__fd.close()
 
     def __refresh_map(self):
@@ -138,7 +139,10 @@ class Net:
         for d in dirs:
             if regex.match(d):
                 pid=int(d)
-                fds=os.listdir('/proc/%s/fd' % d)
+                try:
+                    fds=os.listdir('/proc/%s/fd' % d)
+                except:
+                    continue
                 for f in fds:
                     try:
                         link=os.readlink('/proc/%s/fd/%s' % (d,f))
@@ -201,16 +205,16 @@ class Net:
                         except:
                             continue
                     if not self.__proc_traffic.has_key(pid):
-                    	traffic=[0,0,0,0]
-                    	self.__proc_traffic[pid]=traffic
+                        traffic=[0,0,0,0]
+                        self.__proc_traffic[pid]=traffic
                     else:
-                    	traffic=self.__proc_traffic[pid]
+                        traffic=self.__proc_traffic[pid]
                     if direction=='send':
-                    	traffic[0]+=1
-                    	traffic[1]+=len(datagram.data)
+                        traffic[0]+=1
+                        traffic[1]+=len(datagram.data)
                     else:
-                    	traffic[2]+=1
-                    	traffic[3]+=len(datagram.data)
+                        traffic[2]+=1
+                        traffic[3]+=len(datagram.data)
 
     #network traffic of the network interface
     #   return (send packets, send bytes, recv packets, recv bytes)
@@ -227,14 +231,14 @@ class Net:
                 return send_packets,send_bytes,recv_packets,recv_bytes
 
     #network traffic of given process,
-    #	return (send packets, send bytes, recv packets, recv bytes)
+    #    return (send packets, send bytes, recv packets, recv bytes)
     def proc_traffic(self,pid):
-    	return self.__proc_traffic[pid] if self.__proc_traffic.has_key(pid) else (0,0,0,0)
+        return self.__proc_traffic[pid] if self.__proc_traffic.has_key(pid) else (0,0,0,0)
 
     #network traffic of all processes that have sent or received packets
-    #	return dict { pid = > (send packets, send bytes, recv packets, recv bytes) }
+    #    return dict { pid = > (send packets, send bytes, recv packets, recv bytes) }
     def proc_traffic_all(self):
-    	return copy.deepcopy(self.__proc_traffic)
+        return copy.deepcopy(self.__proc_traffic)
 </pre>
 
             ﻿                            </div>
