@@ -1,0 +1,245 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>Linux perf子系统的使用（一）——计数器</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">Linux perf子系统的使用（一）——计数器</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>刚刚入职的时候我就研究了perf_event_open()这个巨无霸级别的系统调用，还用Python封装了一层，非常便于获取计数器。然而之后由于工作上一直直接用perf命令来获取各种计数器的值，于是就有所淡忘。又后来自己的笔记本重装，代码也不见了。最近由于需要开发一款略有复杂性的工具，对性能要求很高，而且需要能够实时查询结果，所以必须使用C的接口自己开发，而不能再使用命令行。</p>
+
+<p>其实关于perf_event_open()这个系统调用的一切用法，在官方手册《<a href="http://www.man7.org/linux/man-pages/man2/perf_event_open.2.html">perf_event_open(2) - Linux manual page</a>》上都有所涉及，虽然未提及有些编程的细节。</p>
+
+<p>大致上讲，perf_event_open()有两个使用模式，一个叫做计数，一个叫做采样。所谓计数，就是测量一段时间内某个事件发生的次数，比如获取每1秒内运行的指令数。所谓采样，就是在某个时间点查看某个状态，比如我想每1秒记录下当前的IP寄存器的值。从编程的角度看，计数模式要容易理解地多，也容易实现地多。所以这篇博客先讲怎么使用perf的计数模式。</p>
+
+<p>最简单的计数模式就是只监测一个计数器。比如我每一秒获取刚刚过去的那一秒内的指令数(instructions)。复杂的计数模式就是同时监测多个计数器。比如我每一秒获取刚刚过去的那一秒内的指令数（instructions）、时钟周期数（cycles）、分支指令数(branch instructions)等等。接下来就先讲单一计数器模式，而后讲多计数器模式。</p>
+
+<p>=====================阶段一：单计数器=====================</p>
+
+<p>就以刚刚的例子作为需求，我们要每一秒输出刚刚一秒内运行的指令数。那么代码是这样的：</p>
+
+<p>single.c</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/syscall.h&gt;
+#include &lt;linux/perf_event.h&gt;
+
+//目前perf_event_open在glibc中没有封装，需要手工封装一下
+int perf_event_open(struct perf_event_attr *attr,pid_t pid,int cpu,int group_fd,unsigned long flags)
+{
+    return syscall(__NR_perf_event_open,attr,pid,cpu,group_fd,flags);
+}
+
+int main()
+{
+    struct perf_event_attr attr;
+    memset(&amp;attr,0,sizeof(struct perf_event_attr));
+    attr.size=sizeof(struct perf_event_attr);
+    //监测硬件
+    attr.type=PERF_TYPE_HARDWARE;
+    //监测指令数
+    attr.config=PERF_COUNT_HW_INSTRUCTIONS;
+    //初始状态为禁用
+    attr.disabled=1;
+    //创建perf文件描述符，其中pid=0,cpu=-1表示监测当前进程，不论运行在那个cpu上
+    int fd=perf_event_open(&amp;attr,0,-1,-1,0);
+    if(fd&lt;0)
+    {
+        perror(&quot;Cannot open perf fd!&quot;);
+        return 1;
+    }
+    //启用（开始计数）
+    ioctl(fd,PERF_EVENT_IOC_ENABLE,0);
+    while(1)
+    {
+        uint64_t instructions;
+        //读取最新的计数值
+        read(fd,&amp;instructions,sizeof(instructions));
+        printf(&quot;instructions=%ld\n&quot;,instructions);
+        sleep(1);
+    }
+}
+</pre>
+
+<p>不需要任何的编译选项，直接gcc，然后运行：</p>
+
+<pre>
+gcc single.c -o single
+sudo ./single
+</pre>
+
+<p><img src="1.jpg"></p>
+
+<p>可以看到指令数不断增加。其实这个增速非常缓慢，因为循环里面除了printf什么事都没干。这个指令数是perf始能之后的累积值。那么如果想要获取每一秒内的指令数呢？一种办法就是自己在应用层计算前后两次的差分，另一种办法是告诉kernel把计数器清零：</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/syscall.h&gt;
+#include &lt;linux/perf_event.h&gt;
+
+//目前perf_event_open在glibc中没有封装，需要手工封装一下
+int perf_event_open(struct perf_event_attr *attr,pid_t pid,int cpu,int group_fd,unsigned long flags)
+{
+    return syscall(__NR_perf_event_open,attr,pid,cpu,group_fd,flags);
+}
+
+int main()
+{
+    struct perf_event_attr attr;
+    memset(&amp;attr,0,sizeof(struct perf_event_attr));
+    attr.size=sizeof(struct perf_event_attr);
+    //监测硬件
+    attr.type=PERF_TYPE_HARDWARE;
+    //监测指令数
+    attr.config=PERF_COUNT_HW_INSTRUCTIONS;
+    //初始状态为禁用
+    attr.disabled=1;
+    //创建perf文件描述符，其中pid=0,cpu=-1表示监测当前进程，不论运行在那个cpu上
+    int fd=perf_event_open(&amp;attr,0,-1,-1,0);
+    if(fd&lt;0)
+    {
+        perror(&quot;Cannot open perf fd!&quot;);
+        return 1;
+    }
+    //启用（开始计数）
+    ioctl(fd,PERF_EVENT_IOC_ENABLE,0);
+    while(1)
+    {
+        uint64_t instructions;
+        //读取最新的计数值
+        read(fd,&amp;instructions,sizeof(instructions));
+        //读取后清零
+	<font color="red">ioctl(fd,PERF_EVENT_IOC_RESET,0);</font>
+        printf(&quot;instructions=%ld\n&quot;,instructions);
+        sleep(1);
+    }
+}
+</pre>
+
+<p>每个计数器本身是有很多选项的，比如可以指定监测的进程号（pid）、cpu号，也可以设置只监测用户态的事件，或只监测内核态的事件等等，具体可以查看手册。另外，计数器可以监测的事件也有很多，有硬件的，有软件的。这里截取了手册上一些常用的：</p>
+
+<p><img src="2.jpg"></p>
+
+<p><img src="3.jpg"></p>
+
+<p>=======================阶段二：多计数器====================</p>
+
+<p>如果你说多个计数器简单，创建多个perf文件描述符，然后每个都用read去读嘛。额，确实可以！但是呢，当监测的事件很多，而且读取频率很高时，那么read()调用的开销就不可再忽略了。那么如果能够把多个计数器的值通过一次read()调用获取，性能上能够提高不少。perf提供了“组”的概念，这也是多计数器perf的核心内容。</p>
+
+<p>读读手册的这一段：</p>
+
+<p><img src="4.jpg"></p>
+
+<p>所以呢，第一个perf fd还是和本来一样的方法创建（除了要多设置一个read_format），而后面的perf_event_open()中的参数group_fd就传入第一个perf fd。这样他们就成为了一个组，并且用第一个perf fd代表整个组。</p>
+
+<p>下面代码演示了如何同时监测指令数和时钟周期数。</p>
+
+<p>multi.c</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/syscall.h&gt;
+#include &lt;linux/perf_event.h&gt;
+
+//目前perf_event_open在glibc中没有封装，需要手工封装一下
+int perf_event_open(struct perf_event_attr *attr,pid_t pid,int cpu,int group_fd,unsigned long flags)
+{
+    return syscall(__NR_perf_event_open,attr,pid,cpu,group_fd,flags);
+}
+
+<font color="red">//每次read()得到的结构体
+struct read_format
+{
+    //计数器数量（为2）
+    uint64_t nr;
+    //两个计数器的值
+    uint64_t values[2];
+};</font>
+
+int main()
+{
+    struct perf_event_attr attr;
+    memset(&amp;attr,0,sizeof(struct perf_event_attr));
+    attr.size=sizeof(struct perf_event_attr);
+    //监测硬件
+    attr.type=PERF_TYPE_HARDWARE;
+    //监测指令数
+    attr.config=PERF_COUNT_HW_INSTRUCTIONS;
+    //初始状态为禁用
+    attr.disabled=1;
+    <font color="red">//每次读取一个组
+    attr.read_format=PERF_FORMAT_GROUP;</font>
+    //创建perf文件描述符，其中pid=0,cpu=-1表示监测当前进程，不论运行在那个cpu上
+    int fd=perf_event_open(&amp;attr,0,-1,-1,0);
+    if(fd&lt;0)
+    {
+        perror(&quot;Cannot open perf fd!&quot;);
+        return 1;
+    }
+    //接下来创建第二个计数器
+    memset(&amp;attr,0,sizeof(struct perf_event_attr));
+    attr.size=sizeof(struct perf_event_attr);
+    //监测
+    attr.type=PERF_TYPE_HARDWARE;
+    //监测时钟周期数
+    attr.config=PERF_COUNT_HW_CPU_CYCLES;
+    //初始状态为禁用
+    attr.disabled=1;
+    //创建perf文件描述符
+    int fd2=perf_event_open(&amp;attr,0,-1,fd,0);
+    if(fd2&lt;0)
+    {
+        perror(&quot;Cannot open perf fd2!&quot;);
+        return 1;
+    }
+    <font color="red">//启用（开始计数），注意PERF_IOC_FLAG_GROUP标志
+    ioctl(fd,PERF_EVENT_IOC_ENABLE,PERF_IOC_FLAG_GROUP);</font>
+    while(1)
+    {
+        <font color="red">struct read_format aread;
+        //读取最新的计数值，每次读取一个结构体
+        read(fd,&amp;aread,sizeof(struct read_format));</font>
+        printf(&quot;instructions=%ld,cycles=%ld\n&quot;,aread.values[0],aread.values[1]);
+        sleep(1);
+    }
+}
+</pre>
+
+<p>可以注意到，最大的变化就是数据的读取。当使用了“组”的形式之后，那么每次read()就是读取一个特定的结构体。这个结构体struct read_format不是固定的，会根据组内计数器数量和struct perf_event_attr的read_format字段的设置而变化。上面的代码用了最简单的方法，把struct perf_event_attr的read_format设置为PERF_FORMAT_GROUP，那么每次读取的结构体其实就是1+nr个64位整数，其中第一个整数nr就是计数器数量，后面nr个整数就是每一个计数器的值，顺序和加入组的顺序相同。</p>
+
+<p>第二大变化就是ioctl()的第三个参数由0变为了PERF_IOC_FLAG_GROUP。这个标志表明操作是对组进行的，可以理解为kernel帮我们把ioctl依次作用在了组的每一个计数器上。所以呢，如果每次读取后，要把组内所有计数器都清空，需要使用：</p>
+
+<pre>
+ioctl(fd,PERF_EVENT_IOC_RESET,PERF_IOC_FLAG_GROUP);
+</pre>
+
+         ﻿                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>

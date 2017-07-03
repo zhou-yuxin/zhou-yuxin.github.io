@@ -5,7 +5,6 @@
 	</head>
 	<body>
 		<ul style="display:none">
-			<li>2017年07月02日 Linux perf子系统的使用（一）——计数器</li>
 			<li>2017年06月23日 Linux 获取TCP连接与pid的映射，及监测进程的TCP流量</li>
 			<li>2017年06月19日 MinGW GCC使用VC++的静态链接库</li>
 			<li>2017年05月25日 任意字节对齐的动态内存分配函数</li>
