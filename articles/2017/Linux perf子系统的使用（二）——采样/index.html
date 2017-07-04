@@ -21,6 +21,8 @@
 
 <p>直接上代码吧，对照着官方手册看，学习效率最高：</p>
 
+<p>perf.c</p>
+
 <pre>
 //如果不加，则F_SETSIG未定义
 #define _GNU_SOURCE 1
@@ -170,6 +172,25 @@ struct perf_my_sample
 <p><img src="3.jpg"></p>   
 
 <p>这样相当于和kernel做一个同步操作，效率务必下降。而且由于SIGIO这个信号是不可靠信号，所以如果某次采样完成的通知没有被截获，那么就可能产生死锁。</p>
+
+<pre>
+gcc perf.c -o perf
+sudo ./perf
+</pre>
+
+<p>运行上面的代码，产生如下输出：</p>
+
+<p><img src="4.jpg"></p>
+
+<p>为了验证采集到的IP值是否正确，可以反汇编一下：</p>
+
+<pre>
+objdump -d ./perf
+</pre>
+
+<p><img src="5.jpg"></p>
+
+<p>可以看到采集到的IP值全部落在workload这个函数的地址范围内。</p>
 
 <p>要采多个值的话，也很方便：</p>
 
