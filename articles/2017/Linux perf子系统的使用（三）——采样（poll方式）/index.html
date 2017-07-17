@@ -1,0 +1,155 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>Linux perf子系统的使用（三）——采样（poll方式）</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">Linux perf子系统的使用（三）——采样（poll方式）</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>在上一篇<a href="../Linux perf子系统的使用（二）——采样（signal方式）/index.html">《Linux perf子系统的使用（二）——采样（signal方式）》</a>中，我使用了信号来接收采样完成通知，并在回调函数中读取最新的采样值。虽说回调方式有很多优点，但是并不是太通用。更加糟糕的是，信号会打断几乎所有的系统调用，使得本来的程序逻辑被破坏。另一个很糟糕的点是，如果一个进程中需要开多个采样器，那么就要共享同一个事件回调函数，破坏了封装性。</p>
+
+<p>因此，最好有一个阻塞式轮询的办法。嗯，这就是今天要讲的东西——通过poll()函数等待采样完成。</p>
+
+<p>其实poll()轮询的实现比信号的方式简单，只要把perf_event_open()返回的文件描述符当做普通的文件描述符传入poll()就可以了。在创建perf文件描述附时，唯一需要注意的就是需要手动设置wakeup_events的值。wakeup_events决定了多少次采样以后进行一次通知（poll模式下就是让poll返回），一般设置为1。</p>
+
+<p>直接上代码吧，和<a href="../Linux perf子系统的使用（二）——采样（signal方式）/index.html">《Linux perf子系统的使用（二）——采样（signal方式）》</a>中的代码比较一下就一目了然了。</p>
+
+<p>perf_poll.cpp</p>
+
+<pre>
+#include &lt;poll.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;signal.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;signal.h&gt;
+#include &lt;sys/mman.h&gt;
+#include &lt;sys/ioctl.h&gt;
+#include &lt;sys/syscall.h&gt;
+#include &lt;linux/perf_event.h&gt;
+
+// the number of pages to hold ring buffer
+#define RING_BUFFER_PAGES 8
+
+// a wrapper for perf_event_open()
+static int perf_event_open(struct perf_event_attr *attr,
+    pid_t pid,int cpu,int group_fd,unsigned long flags)
+{
+    return syscall(__NR_perf_event_open,attr,pid,cpu,group_fd,flags);
+}
+
+static bool sg_running=true;
+
+// to receive SIGINT to stop sampling and exit
+static void on_closing(int signum)
+{
+    sg_running=false;
+}
+
+int main()
+{
+    // 这里我强行指定了一个值
+    pid_t pid=6268;
+    // create a perf fd
+    struct perf_event_attr attr;
+    memset(&amp;attr,0,sizeof(struct perf_event_attr));
+    attr.size=sizeof(struct perf_event_attr);
+    // disable at init time
+    attr.disabled=1;
+    // set what is the event
+    attr.type=PERF_TYPE_SOFTWARE;
+    attr.config=PERF_COUNT_SW_CPU_CLOCK;
+    // how many clocks to trigger sampling
+    attr.sample_period=1000000;
+    // what to sample is IP
+    attr.sample_type=PERF_SAMPLE_IP;
+    // notify every 1 overflow
+    <font color="red">attr.wakeup_events=1;</font>
+    // open perf fd
+    int perf_fd=perf_event_open(&amp;attr,pid,-1,-1,0);
+    if(perf_fd&lt;0)
+    {
+        perror(&quot;perf_event_open() failed!&quot;);
+        return errno;
+    }
+    // create a shared memory to read samples from kernel
+    void* shared_mem=mmap(0,(1+RING_BUFFER_PAGES)*4096,PROT_READ,MAP_SHARED,perf_fd,0);
+    if(shared_mem==0)
+    {
+        perror(&quot;mmap() failed!&quot;);
+        return errno;
+    }
+    // reset and enable
+    ioctl(perf_fd,PERF_EVENT_IOC_RESET,0);
+    ioctl(perf_fd,PERF_EVENT_IOC_ENABLE,0);
+    // the offset from the head of ring-buffer where the next sample is
+    uint64_t next_offset=0;
+    // poll perf_fd
+    <font color="red">struct pollfd perf_poll;
+    perf_poll.fd=perf_fd;
+    perf_poll.events=POLLIN;</font>
+    signal(SIGINT,on_closing);
+    while(sg_running)
+    {
+        <font color="red">if(poll(&amp;perf_poll,1,-1)&lt;0)</font>
+        {
+            perror(&quot;poll() failed!&quot;);
+            break;
+        }
+        // the pointer to the completed sample
+        struct sample
+        {
+            struct perf_event_header header;
+            uint64_t ip;
+        }*
+        sample=(struct sample*)((uint8_t*)shared_mem+4096+next_offset);
+        // the pointer to the info structure of ring-buffer
+        struct perf_event_mmap_page* info=(struct perf_event_mmap_page*)shared_mem;
+        // update the offset, wrap the offset
+        next_offset=info-&gt;data_head%(RING_BUFFER_PAGES*4096);
+        // allow only the PERF_RECORD_SAMPLE
+        if(sample-&gt;header.type!=PERF_RECORD_SAMPLE)
+            continue;
+        printf(&quot;%lx\n&quot;,sample-&gt;ip);
+    }
+    printf(&quot;clean up\n&quot;);
+    // disable
+    ioctl(perf_fd,PERF_EVENT_IOC_DISABLE,0);
+    // unmap shared memory
+    munmap(shared_mem,(1+RING_BUFFER_PAGES)*4096);
+    // close perf fd
+    close(perf_fd);
+    return 0;
+}
+</pre>
+
+<p>可以看到除了获取通知的部分由signal改为poll()以外，几乎没有改动。</p>
+
+<pre>
+g++ perf_poll.cpp -o perf_poll
+sudo ./perf_poll
+</pre>
+
+      ﻿                        </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
