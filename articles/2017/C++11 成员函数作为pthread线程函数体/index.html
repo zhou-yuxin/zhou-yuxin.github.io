@@ -1,0 +1,416 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>C++11 成员函数作为pthread线程函数体</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">C++11 成员函数作为pthread线程函数体</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>我自己也觉得这个标题讲得云里雾里的。事情是这样的：很多时候，我们希望一个class的某个成员函数能够作为一个线程来执行，就像Python中的threading库，只要把Thread()方法的target参数指向一个成员方法，比如self.__run，那么self.__run方法就会成为一个线程执行代码段。而pthread_create的原型是这样的：</p>
+
+<pre>
+int pthread_create(pthread_t *thread,pthread_attr_t *attr,void *(*routine)(void *),void *arg);
+</pre>
+
+<p>注意第三个参数routine是一个普通函数，而不能是一个成员函数。这不是废话嘛，不是普通函数怎么传进去。虽然很清晰，但是有时会破坏面向对象的思想。比如说Python中这么一段逻辑：</p>
+
+<pre>
+import threading
+import time
+
+class A:
+
+    def __init__(self,name):
+        self.__name=name
+        self.__count=0
+        self.__running=True
+        self.__thread=threading.Thread(target=self.__run)
+        self.__thread.start()
+
+    def count(self):
+        return self.__count
+
+    def stop(self):
+        self.__running=False
+        self.__thread.join()
+
+    def __run(self):
+        while self.__running:
+            print(self.__name)
+            self.__count+=1
+            time.sleep(1)
+
+a=A(&#39;zjs&#39;)
+time.sleep(10)
+a.stop()
+print(a.count())
+</pre>
+
+<p>很显然，因为成员方法可以作为线程体来执行，所以获得了如下好处：</p>
+
+<ul>
+<li>线程的变量传递非常方便，直接读写成员变量即可；</li>
+<li>线程体作为对象的一部分，可以访问对象的私有变量和方法。</li>
+</ul>
+
+<p>在C++11之前，如果要实现类似逻辑，一种写法是这样的：</p>
+
+<p>A.h</p>
+
+<pre>
+#ifndef A_H
+#define A_H
+
+#include &lt;pthread.h&gt;
+
+class A
+{
+
+public:
+    A(const char* name);
+    int count();
+    void stop();
+
+<font color="red">//不得不暴露
+public:
+    const char* m_name;
+    int m_count;
+    bool m_running;</font>
+
+private:
+    pthread_t m_thread;
+
+};
+
+#endif
+</pre>
+
+<p>A.cpp</p>
+
+<pre>
+#include &quot;A.h&quot;
+
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+
+static void* __run(void* arg)
+{
+    A* a=(A*)arg;
+    while(a-&gt;m_running)
+    {
+        printf(&quot;%s\n&quot;,a-&gt;m_name);
+        a-&gt;m_count++;
+        sleep(1);
+    }
+}
+
+A::A(const char* name)
+{
+    m_name=name;
+    m_count=0;
+    m_running=true;
+    pthread_create(&amp;m_thread,0,__run,this);
+}
+
+int A::count()
+{
+    return m_count;
+}
+
+void A::stop()
+{
+    m_running=false;
+    pthread_join(m_thread,0);
+}
+</pre>
+
+<p>testA.cpp</p>
+
+<pre>
+#include &quot;A.h&quot;
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+
+int main()
+{
+    A a(&quot;zjs&quot;);
+    sleep(10);
+    a.stop();
+    printf(&quot;%d\n&quot;,a.count());
+    return 0;
+}
+</pre>
+
+<p>注意到之所以需要把A的三个成员变量设为public，是为了能够让__run()能够访问到。但这就破坏了封装，使得这三个变量对外暴露。为了提高封装性，另一种好一些的办法是这样的：</p>
+
+<p>A.h</p>
+
+<pre>
+#ifndef A_H
+#define A_H
+
+#include &lt;pthread.h&gt;
+
+class A
+{
+
+public:
+    A(const char* name);
+    int count();
+    void stop();
+    <font color="red">//授权__A_run()能够访问私有变量
+    friend void* __A_run(void* arg);</font>
+
+private:
+    const char* m_name;
+    int m_count;
+    bool m_running;
+    pthread_t m_thread;
+
+};
+
+#endif
+</pre>
+
+<p>A.cpp</p>
+
+<pre>
+#include &quot;A.h&quot;
+
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+
+void* __A_run(void* arg)
+{
+    A* a=(A*)arg;
+    while(a-&gt;m_running)
+    {
+        printf(&quot;%s\n&quot;,a-&gt;m_name);
+        a-&gt;m_count++;
+        sleep(1);
+    }
+}
+
+A::A(const char* name)
+{
+    m_name=name;
+    m_count=0;
+    m_running=true;
+    pthread_create(&amp;m_thread,0,__A_run,this);
+}
+
+int A::count()
+{
+    return m_count;
+}
+
+void A::stop()
+{
+    m_running=false;
+    pthread_join(m_thread,0);
+}
+</pre>
+
+<p>testA.cpp</p>
+
+<pre>
+#include &quot;A.h&quot;
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+
+int main()
+{
+    A a(&quot;zjs&quot;);
+    sleep(10);
+    a.stop();
+    <font color="red">// 然而__A_run()本身对外暴露了
+    //__A_run(&amp;a);</font>
+    printf(&quot;%d\n&quot;,a.count());
+    return 0;
+}
+</pre>
+
+<p>可以看到，通过友元函数，可以使得线程体能够访问私有成员了。但是呢，友元函数本身是extern的，使得__A_run()本身对外暴露了，这使得外界可以手动调用__A_run，有一定的风险。不过函数暴露总归比变量暴露好得多。在C++11之前，封装性最好的办法，可能也就只能是这样了：在A.cpp中定义一个结构体，该结构体拥有和A一样的内存布局，并且A中成员变量连续分布，然后把A中第一个成员变量的地址传给线程体。比如这样：</p>
+
+<p>A.h</p>
+<pre>
+#ifndef A_H
+#define A_H
+
+#include &lt;pthread.h&gt;
+
+class A
+{
+
+public:
+    A(const char* name);
+    int count();
+    void stop();
+
+private:
+    const char* m_name;
+    int m_count;
+    bool m_running;
+    pthread_t m_thread;
+
+};
+
+#endif
+</pre>
+
+<p>A.cpp</p>
+
+<pre>
+#include &quot;A.h&quot;
+
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+
+<font color="red">//内存布局和A一样
+struct A_vars
+{
+    const char* m_name;
+    int m_count;
+    bool m_running;
+};</font>
+
+static void* __run(void* arg)
+{
+    struct A_vars* a=(struct A_vars*)arg;
+    while(a-&gt;m_running)
+    {
+        printf(&quot;%s\n&quot;,a-&gt;m_name);
+        a-&gt;m_count++;
+        sleep(1);
+    }
+}
+
+A::A(const char* name)
+{
+    m_name=name;
+    m_count=0;
+    m_running=true;
+    <font color="red">//第一个变量的地址传过去
+    pthread_create(&amp;m_thread,0,__run,&amp;m_name);
+    //pthread_create(&amp;m_thread,0,__run,this);</font>
+}
+
+int A::count()
+{
+    return m_count;
+}
+
+void A::stop()
+{
+    m_running=false;
+    pthread_join(m_thread,0);
+}
+</pre>
+
+<p>这样做，对外接口确实完美了，但是！太依赖底层的细节了，如果编译器对内存分布进行了优化，或者A有虚表，这种方法很可能就爆炸了！换句话说，通过牺牲稳定性、可移植性来换取封装性，貌似不太可取。</p>
+
+<p><strong>好在C++ 11中出现了匿名函数，使得函数能够嵌套定义。</strong></p>
+
+<p>A.h</p>
+
+<pre>
+#ifndef A_H
+#define A_H
+
+#include &lt;pthread.h&gt;
+
+class A
+{
+
+public:
+    A(const char* name);
+    int count();
+    void stop();
+
+private:
+    void run();
+
+private:
+    const char* m_name;
+    int m_count;
+    bool m_running;
+    pthread_t m_thread;
+
+};
+
+#endif
+</pre>
+
+<p>A.cpp</p>
+
+<pre>
+#include &quot;A.h&quot;
+
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+
+A::A(const char* name)
+{
+    m_name=name;
+    m_count=0;
+    m_running=true;
+    pthread_create(&amp;m_thread,0,
+        <font color="red">[](void* arg)
+        {
+            A* a=(A*)arg;
+            a-&gt;run();
+            return (void*)0;
+        }</font>
+    ,this);
+}
+
+int A::count()
+{
+    return m_count;
+}
+
+void A::stop()
+{
+    m_running=false;
+    pthread_join(m_thread,0);
+}
+
+void A::run()
+{
+    while(m_running)
+    {
+        printf(&quot;%s\n&quot;,m_name);
+        m_count++;
+        sleep(1);
+    }
+}
+</pre>
+
+<p>代码一下子完美啦~~</p>
+
+<p>编译A.cpp的时候，要这样：</p>
+
+<pre>
+g++ -std=gnu++11 -c A.cpp -o A.o
+</pre>
+
+      ﻿                        </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
