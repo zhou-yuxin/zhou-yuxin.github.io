@@ -1,0 +1,80 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>demangle g++编译后的函数名</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">demangle g++编译后的函数名</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>如果给你一个函数名：</p>
+
+<pre>
+_ZN5blink7DecimalC2ENS0_4SignEim
+</pre>
+
+<p>是不是一脸懵逼。。。嗯，这个就是</p>
+
+<pre>
+blink::Decimal::Decimal(blink::Decimal::Sign, int, unsigned long)
+</pre>
+
+<p>这个函数经过g++编译之后的函数名。由于C++支持函数重载、命名空间、面向对象等等高级特性，所以不能够像C那样只保留一个简单的函数名，所以编译后的函数名中增加了很多额外的信息，以便链接时使用。在function-level profiling的时候，往往会遇到这种函数名，那么如何把它转化成人类可读的形式，就想源码中的那样的格式呢？这个转换过程就叫做demangle。</p>
+
+<p>在命令行级别上有一个工具叫做c++filt，用法很简单，把函数名通过参数传入即可：</p>
+
+<pre>
+c++filt _ZN5blink7DecimalC2ENS0_4SignEim
+</pre>
+
+<p>该工具就会输出对应的函数名。</p>
+
+<p>如果要在代码中使用demangle功能，那么可以使用以下函数：</p>
+
+<pre>
+#include &lt;cxxabi.h&gt;
+
+char * abi::__cxa_demangle (const char *mangled_name, char *output_buffer, size_t *length, int *status);
+</pre>
+
+<p>具体的介绍可以看<a href="https://gcc.gnu.org/onlinedocs/libstdc++/libstdc++-html-USERS-4.3/a01696.html">abi Namespace Reference</a>和<a href="https://gcc.gnu.org/onlinedocs/libstdc++/manual/ext_demangling.html">Chapter 29. Demangling</a>。</p>
+
+<p>附上一个最最简单的使用示例：</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;cxxabi.h&gt;
+
+int main()
+{
+    const char *mangled_name=&quot;_ZN5blink7DecimalC2ENS0_4SignEim&quot;;
+    char* signature=abi::__cxa_demangle(mangled_name,0,0,0);
+    if(signature)
+    {
+        printf(&quot;%s\n&quot;,signature);
+        free(signature);
+    }
+    return 0;
+}
+</pre>
+
+      ﻿                        </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
