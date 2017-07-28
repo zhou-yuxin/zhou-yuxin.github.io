@@ -15,6 +15,10 @@
                             </header>
                             <div class="entry-content">
 
+<p>2017年7月28日有新的补充，见补充分割线之后！</p>
+
+<p>========================================================</p>
+
 <p>在上一篇<a href="../Linux perf子系统的使用（二）——采样（signal方式）/index.html">《Linux perf子系统的使用（二）——采样（signal方式）》</a>中，我使用了信号来接收采样完成通知，并在回调函数中读取最新的采样值。虽说回调方式有很多优点，但是并不是太通用。更加糟糕的是，信号会打断几乎所有的系统调用，使得本来的程序逻辑被破坏。另一个很糟糕的点是，如果一个进程中需要开多个采样器，那么就要共享同一个事件回调函数，破坏了封装性。</p>
 
 <p>因此，最好有一个阻塞式轮询的办法。嗯，这就是今天要讲的东西——通过poll()函数等待采样完成。</p>
@@ -141,6 +145,226 @@ int main()
 g++ perf_poll.cpp -o perf_poll
 sudo ./perf_poll
 </pre>
+
+<p>====================2017年7月28日补充==================</p>
+
+<p>首先，为了方便以后的使用，我把perf采样callchain的功能封装成了一个C++的类，它能够针对一个特定的pid进行采样，支持带有超时的轮询。接口声明如下：</p>
+
+<p>CallChainSampler.h</p>
+
+<pre>
+#ifndef CALLCHAINSAMPLER_H
+#define CALLCHAINSAMPLER_H
+
+#include &lt;stdint.h&gt;
+#include &lt;unistd.h&gt;
+
+// a class to sample the callchain of a process
+class CallChainSampler
+{
+
+public:
+
+    // the structure of a sampled callchain
+    struct callchain
+    {
+        // the timestamp when sampling
+        uint64_t time;
+        // the pid and tid
+        uint32_t pid,tid;
+        // the depth of callchain, or called the length
+        uint64_t depth;
+        // &lt;depth&gt;-array, each items is an IP register value
+        const uint64_t* ips;
+    };
+
+    // constructor
+    //  pid: the process&#39;s id
+    //  period: how many clocks to trigger a sample
+    //  pages: how many pages (4K) allocated for the ring-buffer to hold samples
+    CallChainSampler(pid_t pid,uint64_t period,uint32_t pages);
+
+    // destructor
+    ~CallChainSampler();
+
+    // start sampling
+    void start();
+
+    // stop sampling
+    void stop();
+
+    // wait and get the next sample
+    //  timeout: the max milliseconds that will block
+    //  max_depth: the max depth of the call chain
+    //  callchain: the sampled callchain to be outputed
+    //  return: if get before timeout, return 0,
+    //          if timeout, return -1
+    //          if an error occurs, return errno
+    //  ATTENTION: the field [ips] in callchain should be used immediately, 
+    //             don&#39;t hold it for too long time
+    int sample(int32_t timeout,uint64_t max_depth,struct callchain* callchain);
+
+private:
+
+    // the perf file descriptor
+    int fd;
+    // the mmap area
+    void* mem;
+    // how many pages to hold the ring-buffer
+    uint32_t pages;
+    // the offset in the ring-buffer where the next sample is
+    uint64_t offset;
+
+};
+
+#endif
+</pre>
+
+<p>实现基本就是把上面的C代码封装一下：</p>
+
+<p>CallChainSampler.cpp</p>
+
+<pre>
+#include &quot;CallChainSampler.h&quot;
+
+#include &lt;poll.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdexcept&gt;
+#include &lt;sys/time.h&gt;
+#include &lt;sys/mman.h&gt;
+#include &lt;sys/ioctl.h&gt;
+#include &lt;sys/syscall.h&gt;
+#include &lt;linux/perf_event.h&gt;
+
+// a wrapper for perf_event_open()
+static int perf_event_open(struct perf_event_attr *attr,
+    pid_t pid,int cpu,int group_fd,unsigned long flags)
+{
+    return syscall(__NR_perf_event_open,attr,pid,cpu,group_fd,flags);
+}
+
+// a tool function to get the time in ms
+static uint64_t get_milliseconds()
+{
+    struct timeval now;
+    assert(gettimeofday(&amp;now,0)==0);
+    return now.tv_sec*1000+now.tv_usec/1000;
+}
+
+#define min(a,b) ((a)&lt;(b)?(a):(b))
+
+CallChainSampler::CallChainSampler(pid_t pid,uint64_t period,uint32_t pages)
+{
+    // create a perf fd
+    struct perf_event_attr attr;
+    memset(&amp;attr,0,sizeof(struct perf_event_attr));
+    attr.size=sizeof(struct perf_event_attr);
+    // disable at init time
+    attr.disabled=1;
+    // set what is the event
+    attr.type=PERF_TYPE_SOFTWARE;
+    attr.config=PERF_COUNT_SW_CPU_CLOCK;
+    // how many clocks to trigger sampling
+    attr.sample_period=period;
+    // what to sample is IP
+    attr.sample_type=PERF_SAMPLE_TIME|PERF_SAMPLE_TID|PERF_SAMPLE_CALLCHAIN;
+    // notify every 1 overflow
+    attr.wakeup_events=1;
+    // open perf fd
+    fd=perf_event_open(&amp;attr,pid,-1,-1,0);
+    if(fd&lt;0)
+        throw std::runtime_error(&quot;perf_event_open() failed!&quot;);
+    // create a shared memory to read samples from kernel
+    mem=mmap(0,(1+pages)*4096,PROT_READ,MAP_SHARED,fd,0);
+    if(mem==0)
+        throw std::runtime_error(&quot;mmap() failed!&quot;);
+    this-&gt;pages=pages;
+    // the offset of next sample
+    offset=0;
+}
+
+CallChainSampler::~CallChainSampler()
+{
+    stop();
+    // unmap shared memory
+    munmap(mem,(1+pages)*4096);
+    // close perf fd
+    close(fd);
+}
+
+void CallChainSampler::start()
+{
+    // enable
+    ioctl(fd,PERF_EVENT_IOC_ENABLE,0);
+}
+
+void CallChainSampler::stop()
+{
+    // disable
+    ioctl(fd,PERF_EVENT_IOC_DISABLE,0);
+}
+
+int CallChainSampler::sample(int32_t timeout,uint64_t max_depth,struct callchain* callchain)
+{
+    if(callchain==0)
+        throw std::runtime_error(&quot;arg &lt;callchain&gt; is NULL!&quot;);
+    // the poll sturct
+    struct pollfd pfd;
+    pfd.fd=fd;
+    pfd.events=POLLIN;
+    // the time when start
+    uint64_t start=get_milliseconds();
+    while(1)
+    {
+        // the current time
+        uint64_t now=get_milliseconds();
+        // the milliseconds to wait
+        int32_t to_wait;
+        if(timeout&lt;0)
+            to_wait=-1;
+        else
+        {
+            to_wait=timeout-(int32_t)(now-start);
+            if(to_wait&lt;0)
+                return -1;
+        }
+        // wait next sample
+        int ret=poll(&amp;pfd,1,to_wait);
+        if(ret==0)
+            return -1;
+        else if(ret==-1)
+            return errno;
+        // the pointer to the completed sample
+        struct sample
+        {
+            struct perf_event_header header;
+            uint32_t pid,tid;
+            uint64_t time;
+            uint64_t nr;
+            uint64_t ips[0];
+        }*
+        sample=(struct sample*)((uint8_t*)mem+4096+offset);
+        // the pointer to the info structure of ring-buffer
+        struct perf_event_mmap_page* info=(struct perf_event_mmap_page*)mem;
+        // update the offset, wrap the offset
+        offset=info-&gt;data_head%(pages*4096);
+        // allow only the PERF_RECORD_SAMPLE
+        if(sample-&gt;header.type!=PERF_RECORD_SAMPLE)
+            continue;
+        // fill the result
+        callchain-&gt;time=sample-&gt;time;
+        callchain-&gt;pid=sample-&gt;pid;
+        callchain-&gt;tid=sample-&gt;tid;
+        callchain-&gt;depth=min(max_depth,sample-&gt;nr);
+        callchain-&gt;ips=sample-&gt;ips;
+        return 0;
+    }
+}
+</pre>
+
+<p>最后要补充一个我最新的发现！<font color='red'><strong>perf_event_open()里面传入的pid，本质上是一个线程id，也就是tid。它只能监控一个线程，而无法监控一个进程中的所有线程。</strong></font>所以要用到实际项目中，肯定得配合使用epoll来监控所有的线程。</p>
 
       ﻿                        </div>
                         </article>
