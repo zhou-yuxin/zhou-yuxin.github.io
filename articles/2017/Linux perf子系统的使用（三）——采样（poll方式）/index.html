@@ -366,6 +366,52 @@ int CallChainSampler::sample(int32_t timeout,uint64_t max_depth,struct callchain
 
 <p>最后要补充一个我最新的发现！<font color='red'><strong>perf_event_open()里面传入的pid，本质上是一个线程id，也就是tid。它只能监控一个线程，而无法监控一个进程中的所有线程。</strong></font>所以要用到实际项目中，肯定得配合使用epoll来监控所有的线程。</p>
 
+<p>测试代码如下：</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;signal.h&gt;
+#include &lt;stdlib.h&gt;
+
+#include &quot;CallChainSampler.h&quot;
+
+CallChainSampler* sampler;
+
+// to receive SIGINT to stop sampling and exit
+static void on_closing(int signum)
+{
+    delete sampler;
+    exit(0);
+}
+
+int main()
+{
+    // create a sampler, pid=5281, 10000 clocks trigger a sample
+    // and allocate 128 pages to hold the ring-buffer
+    sampler=new CallChainSampler(5281,10000,128);
+    signal(SIGINT,on_closing);
+    sampler-&gt;start();
+    for(int i=0;i&lt;10000;i++)
+    {
+        CallChainSampler::callchain callchain;
+        // sample, max depth of callchain is 256
+        int ret=sampler-&gt;sample(-1,256,&amp;callchain);
+        printf(&quot;%d\n&quot;,ret);
+        if(ret==0)
+        {
+            // successful sample, print it out
+            printf(&quot;time=%lu\n&quot;,callchain.time);
+            printf(&quot;pid,tid=%d,%d\n&quot;,callchain.pid,callchain.tid);
+            printf(&quot;stack:\n&quot;);
+            for(int j=0;j&lt;callchain.depth;j++)
+                printf(&quot;[%d]   %lx\n&quot;,j,callchain.ips[j]);
+        }
+    }
+    return 0;
+}
+</pre>
+
+<p><img src="1.png"></p>
       ﻿                        </div>
                         </article>
                     </div>
