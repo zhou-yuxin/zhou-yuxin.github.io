@@ -5,6 +5,7 @@
 	</head>
 	<body>
 		<ul style="display:none">
+			<li>2017年08月23日 SendMessage(hwnd,WM_GETTEXT,...)在pywin32中的用法</li>
 			<li>2017年07月28日 Python建立A股日K线数据库（爬取新浪财经网页）</li>
 			<li>2017年07月21日 demangle g++编译后的函数名</li>
 			<li>2017年07月20日 C++11 成员函数作为pthread线程</li>
@@ -144,7 +145,9 @@
 				$("#title").html(title);
 				$("#date").html(date);
 				var year=date.substring(0,4);
-				$("#title").attr("href","./articles/"+year+"/"+title.replace(/\//g,"-")+"/index.html");
+				var directory=title.replace(/\//g,"-").replace(/\./g,"_");
+				var href="./articles/"+year+"/"+directory+"/index.html";
+				$("#title").attr("href",href);
 				var row=$("#rowExample").clone();
 				row.show();
 				$("#articles").append(row);
