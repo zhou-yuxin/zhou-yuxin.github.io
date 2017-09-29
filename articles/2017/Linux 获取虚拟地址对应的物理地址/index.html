@@ -72,6 +72,8 @@ size_t virtual_to_physical(size_t addr)
 }
 </pre>
 
+<p>最后需要说明的是，只有root权限的进程能够访问/proc/&lt;pid&gt;/pagemap这个文件，否则读出来的都是0。</p>
+
       ﻿                        </div>
                         </article>
                     </div>
