@@ -59,7 +59,7 @@ size_t virtual_to_physical(size_t addr)
         close(fd);
         return 0;
     }
-    if(info &amp; (((uint64_t)1) &lt;&lt; 63) == 0)
+    if((info &amp; (((uint64_t)1) &lt;&lt; 63)) == 0)
     {
         printf(&quot;page is not present!\n&quot;);
         close(fd);
