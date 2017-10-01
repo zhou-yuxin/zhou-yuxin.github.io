@@ -1,0 +1,205 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>fork()后copy on write的一些特性</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">fork()后copy on write的一些特性</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>Linux上，通过fork()创建一个子进程之后，kernel并不会急于为子进程分配新的内存空间（比如建立页表，拷贝父进程内存空间等）。这是因为，很多时候，子进程会立即调用exec()加载一个新的可执行文件。如果kernel在fork()之后就为子进程复制内存空间，那么子进程调用exec()之后所有的空间又要重新建立，之前的操作全部作废。所以Linux的fork()机制引入了copy on write技术。简单的说就是，fork()之后的子进程和父进程共享同一个地址空间。当父进程或子进程对内存进行修改时，kernel才复制一份内存空间。</p>
+
+<p>所以copy on write技术的初衷是为了加速fork()调用，事实上效果也非常显著！但是，redis算是把copy on write技术用到极致了吧。redis在某些条件下会触发dump，也就是把某个瞬间的内存快照保存到磁盘上。那么，一边在写内存（处理请求），一边把内存中的内容写到磁盘上，会有一致性问题。此时，redis就利用了copy on write技术——它fork()一个子进程，在子进程中把内存写到一个磁盘镜像中。这是因为，fork()之后的子进程所能访问到的内存，就是fork()之前的那个瞬间的内存快照。如果fork()之后父进程（也就是redis的主进程）对内存进行了修改，kernel会为复制一份，所以修改对子进程是不可见的。我算是开眼界了！</p>
+
+<p>至于实现原理，是这样的：fork()之后，kernel把父进程中所有的内存页的权限都设为read-only，然后子进程的地址空间指向父进程。当父子进程都只读内存时，相安无事。当其中某个进程写内存时，CPU硬件检测到内存页是read-only的，于是触发页异常中断（page-fault），陷入kernel的一个中断例程。中断例程中，kernel就会把触发的异常的页复制一份，于是父子进程各自持有独立的一份。</p>
+
+<p>大致理解了copy on write的原理，我还是有一些疑问的。</p>
+
+<p>
+<ol>
+    <li>是父进程持有原品、子进程持有复制品，还是反之？</li>
+    <li>kernel进行复制的单位是一个内存页吗？</li>
+    <li>触发一次copy要消耗多少时间？</li>
+</ol>
+</p>
+
+<p>===================问题一：复制品归属==================</p>
+
+<p>要判断复制品归属，就需要能够根据虚拟地址获取实际的物理地址，所以我才机智地先写了<a href="../Linux 获取虚拟地址对应的物理地址/index.html">《Linux 获取虚拟地址对应的物理地址》</a>。接下来做这么一个实验就一目了然了：</p>
+
+<pre>
+#include &lt;fcntl.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+
+// 参见《Linux 获取虚拟地址对应的物理地址》
+size_t virtual_to_physical(size_t addr)
+{
+    int fd = open(&quot;/proc/self/pagemap&quot;, O_RDONLY);
+    if(fd &lt; 0)
+    {
+        printf(&quot;open &#39;/proc/self/pagemap&#39; failed!\n&quot;);
+        return 0;
+    }
+    size_t pagesize = getpagesize();
+    size_t offset = (addr / pagesize) * sizeof(uint64_t);
+    if(lseek(fd, offset, SEEK_SET) &lt; 0)
+    {
+        printf(&quot;lseek() failed!\n&quot;);
+        close(fd);
+        return 0;
+    }
+    uint64_t info;
+    if(read(fd, &amp;info, sizeof(uint64_t)) != sizeof(uint64_t))
+    {
+        printf(&quot;read() failed!\n&quot;);
+        close(fd);
+        return 0;
+    }
+    if((info &amp; (((uint64_t)1) &lt;&lt; 63)) == 0)
+    {
+        printf(&quot;page is not present!\n&quot;);
+        close(fd);
+        return 0;
+    }
+    size_t frame = info &amp; ((((uint64_t)1) &lt;&lt; 55) - 1);
+    size_t phy = frame * pagesize + addr % pagesize;
+    close(fd);
+    return phy;
+}
+
+int main()
+{
+    char* str = malloc(128);
+    strcpy(str,&quot;hello,world!&quot;);
+    printf(&quot;original, vir = %p, phy = %p, val = &#39;%s&#39;\n&quot;,
+        str, (void*)virtual_to_physical((size_t)str), str);
+    pid_t pid = fork();
+    if(pid &lt; 0)
+    {
+        printf(&quot;fork() failed!\n&quot;);
+        return 1;
+    }
+    else if(pid &gt; 0) 
+    {
+        printf(&quot;father,   vir = %p, phy = %p, val = &#39;%s&#39;\n&quot;,
+            str, (void*)virtual_to_physical((size_t)str), str);
+        wait(0);
+    }
+    else
+    {
+        printf(&quot;child,    vir = %p, phy = %p, val = &#39;%s&#39;\n&quot;,
+            str, (void*)virtual_to_physical((size_t)str), str);
+    }
+    return 0;
+}
+</pre>
+
+<p>代码逻辑其实很简单，就是开辟一段内存str，然后查看其虚拟地址、物理地址和内容。接着，fork()，在父子进程中分别查看其虚拟地址、物理地址和内容。</p>
+
+<p>以root权限执行代码，可以看到如下输出：</p>
+
+<p><img src="1.jpg"></p>
+
+<p>当然，每次允许可能地址有所不同。不过可以肯定的是，当str没有被修改时，其虚拟地址、物理地址、内容都是一样的，说明确实是父子进程共享内存。</p>
+
+<p>接下来稍微修改一下main()，让父进程修改一下str：</p>
+
+<pre>
+int main()
+{
+    char* str = malloc(128);
+    strcpy(str,&quot;hello,world!&quot;);
+    printf(&quot;original, vir = %p, phy = %p, val = &#39;%s&#39;\n&quot;,
+        str, (void*)virtual_to_physical((size_t)str), str);
+    pid_t pid = fork();
+    if(pid &lt; 0)
+    {
+        printf(&quot;fork() failed!\n&quot;);
+        return 1;
+    }
+    else if(pid &gt; 0)
+    {
+        <font color="red">str[0] = &#39;H&#39;;</font>
+        printf(&quot;father,   vir = %p, phy = %p, val = &#39;%s&#39;\n&quot;,
+            str, (void*)virtual_to_physical((size_t)str), str);
+        wait(0);
+    }
+    else
+    {
+        sleep(1);
+        printf(&quot;child,    vir = %p, phy = %p, val = &#39;%s&#39;\n&quot;,
+            str, (void*)virtual_to_physical((size_t)str), str);
+    }
+    return 0;
+}
+</pre>
+
+<p>以root权限执行代码，可以看到如下输出：</p>
+
+<p><img src="2.jpg"></p>
+
+<p>父进程中物理地址变了，而子进程则继承了本来的物理地址！</p>
+
+<p>再接下来稍微修改一下main()，让子进程修改一下str：</p>
+
+<pre>
+int main()
+{
+    char* str = malloc(128);
+    strcpy(str,&quot;hello,world!&quot;);
+    printf(&quot;original, vir = %p, phy = %p, val = &#39;%s&#39;\n&quot;,
+        str, (void*)virtual_to_physical((size_t)str), str);
+    pid_t pid = fork();
+    if(pid &lt; 0)
+    {
+        printf(&quot;fork() failed!\n&quot;);
+        return 1;
+    }
+    else if(pid &gt; 0)
+    {
+        sleep(1);
+        printf(&quot;father,   vir = %p, phy = %p, val = &#39;%s&#39;\n&quot;,
+            str, (void*)virtual_to_physical((size_t)str), str);
+        wait(0);
+    }
+    else
+    {
+        <font color="red">str[0] = &#39;H&#39;;</font>
+        printf(&quot;child,    vir = %p, phy = %p, val = &#39;%s&#39;\n&quot;,
+            str, (void*)virtual_to_physical((size_t)str), str);
+    }
+    return 0;
+}
+</pre>
+
+<p>以root权限执行代码，可以看到如下输出：</p>
+
+<p><img src="3.jpg"></p>
+
+<p>子进程中物理地址变了，而父进程则沿用了本来的物理地址！</p>
+
+<p>所以，第一个问题的答案是：<font color="red"><strong>谁修改内存，谁就持有复制品！</strong></font></p>
+
+                              </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
