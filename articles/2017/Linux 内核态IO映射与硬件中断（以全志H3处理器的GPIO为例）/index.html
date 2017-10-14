@@ -410,6 +410,63 @@ request_irq(PG_EINT_IRQ_NO, on_pin_irq, IRQF_SHARED, DEV_NAME, &base);
 
 <p>至此，所有的原理都讲完了吧~</p>
 
+<p>那么来看看实验现象吧！使用如下Makefile编译：</p>
+
+<pre>
+obj-m := h3_gpio.o
+KERNEL_DIR := /lib/modules/$(shell uname -r)/build
+PWD := $(shell pwd)
+all:
+	make -C $(KERNEL_DIR) SUBDIRS=$(PWD) modules
+clean:
+	rm *.o *.ko *.mod.c
+.PHONY:clean
+</pre>
+
+<p>然后：</p>
+
+<pre>
+make
+insmod h3_gpio.ko
+mknod /dev/gpio c 224 0
+</pre>
+
+<p>注意，由于代码中很多“用时才声明变量”，为了不警告，可以把内核/lib/modules/$(shell uname -r)/build/Makefile中</p>
+
+<pre>
+-Wdeclaration-after-statement
+</pre>
+
+<p>去掉。</p>
+
+<p>首先试试set命令：</p>
+
+<pre>
+echo "set A17=1" > /dev/gpio
+</pre>
+
+<p>发现Orange Pi上自带的红色LED亮了。</p>
+
+<p><img src="7.jpg"></p>
+
+<p>然后试试wait命令。我搭建了这么一个电路：</p>
+
+<p><img src="8.png"></p>
+
+<p>PA10引脚就是上图中，上面两排排针中，内侧的一排中最左边的那个。</p>
+
+<pre>
+echo "wait A10=1" > /dev/gpio
+</pre>
+
+<p>这条命令立刻返回，因为A10已经是高电平了。</p>
+
+<pre>
+echo "wait A10=0" > /dev/gpio
+</pre>
+
+<p>这条命令则阻塞……这时，按一下按钮，这条命令就返回了！因为按下时，PA10的电平被下拉了！</p>
+
       ﻿                        </div>
                         </article>
                     </div>
