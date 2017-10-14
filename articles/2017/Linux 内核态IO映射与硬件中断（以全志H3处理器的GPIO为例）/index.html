@@ -259,7 +259,7 @@ module_exit(dev_destructor);
 
 <p><img src="1.jpg"></p>
 
-<p>所以，第一步记就是在初始化驱动程序时，进行IO映射：</p>
+<p>所以，第一步就是在初始化驱动程序时，进行IO映射：</p>
 
 <pre>
 base = ioremap(GPIO_PHY_BASE, GPIO_PHY_LEN);
@@ -307,6 +307,108 @@ static int set_pin_val(char port, unsigned pin, unsigned value)
 </pre>
 
 <p>那么读取电平的函数也是一样的，唯一的区别仅仅是Pn_CFGx中对应的4位设置为0000，然后读取Pn_DAT，那就不再贴一遍了~</p>
+
+<p>接下来重点是使能GPIO中断，三步走：将引脚配置为中断模式，设置中断触发方式，设置使能寄存器以允许中断。引脚模式的配置依旧在Pn_CFGx寄存器中，从上上图中可以看到中断模式是把对应的4位设置为0110。注意了，只有PA和PG可以中断！在<a href="http://pan.baidu.com/s/1o7Ege5G">Allwinner_H3_Datasheet_V1.2.pdf</a>的340页末尾有PA_INT_CFGx寄存器的介绍：</p>
+
+<p><img src="4.jpg"></p>
+
+<p>再结合下面几个寄存器，就可以知道，其形式和Pn_CFGx很像，用4位管理一个引脚的中断触发模式。最后就是允许中断：</p>
+
+<p><img src="5.jpg"></p>
+
+<p>所以开启某个引脚上的中断的代码就出来了：</p>
+
+<pre>
+// 开启指定端口的指定引脚的GPIO中断，当其值跳变至value时触发
+static int enable_pin_irq(char port, unsigned pin, unsigned value)
+{
+    uint8_t* port_base;
+    if(port == &#39;A&#39;)
+        port_base = base + 0x200;
+    else if(port == &#39;G&#39;)
+        port_base = base + 0x220;
+    else
+        return -EINVAL;
+    if(pin &gt;= 32 || value &gt; 1)
+        return -EINVAL;
+    // Pn_INT_CFGx寄存器
+    uint32_t* eint_cfg_reg = (uint32_t*)(port_base + (pin / 8) * 4);
+    // Pn_INT_CFGx寄存器中的偏移量
+    unsigned eint_cfg_shift = (pin % 8) * 4;
+    // Pn_INT_CTL寄存器
+    uint32_t* eint_en_reg = (uint32_t*)(port_base + 0x10);
+    port_base = base + (port - &#39;A&#39;) * 0x24;
+    // Pn_CFGx寄存器
+    uint32_t* cfg_reg = (uint32_t*)(port_base + (pin / 8) * 4);
+    // Pn_CFGx寄存器中的偏移量
+    unsigned cfg_shift = (pin % 8) * 4;
+    // 设置为中断模式
+    (*cfg_reg) &amp;= ~((uint32_t)0xf &lt;&lt; cfg_shift);
+    (*cfg_reg) |= (uint32_t)0x6 &lt;&lt; cfg_shift;
+    // 设置中断触发方式（上升沿还是下降沿）
+    (*eint_cfg_reg) &amp;= ~((uint32_t)0xf &lt;&lt; eint_cfg_shift);
+    if(!value)
+        (*eint_cfg_reg) |= (uint32_t)0x1 &lt;&lt; eint_cfg_shift;
+    // 使能该引脚的中断
+    (*eint_en_reg) |= (uint32_t)0x1 &lt;&lt; pin;
+    return 0;
+}
+</pre>
+
+<p>那么Linux中如何注册中断响应例程呢？这是通过request_irq()函数实现的，原型如下：</p>
+
+<pre>
+int request_irq(unsigned int irq,
+                irq_handler_t handler,
+                unsigned long flags,
+                const char *devname,
+                void *dev_id);
+</pre>
+
+<p>第一个参数irq是中断号。一般而言，中断号是一个确定的常数，取决于硬件。irq_handler_t是一个函数指针，要求函数有这样的原型：</p>
+
+<pre>
+irqreturn_t irq_handler(int irq, void* dev_id);
+</pre>
+
+<p>当中断触发时，该函数就被kernel调用，传入的irq就是中断号，dev_id就是request_irq()的最后一个参数，用作用户自定义数据。该函数的返回值要么是IRQ_NONE，要么是IRQ_HANDLED。IRQ_NONE表示该中断并不是此中断例程关注的，而IRQ_HANDLED则表示该中断确实是此中断例程关注的，且已被处理。第三个参数flags最重要的取值是IRQF_SHARED，表示与其他例程共享中断号，如果不设置，则表示独占中断号（但可能已被占用）。第四个参数devname就是一个名称，会在/proc/interrupts下显示出来。</p>
+
+<p>最后一个参数dev_id要重点说。一方面，它可以作为用户自定义数据。但对于kernel来说，它最重要的作用是在释放中断例程时唯一确定需要释放哪一个例程。对于flag为IRQF_SHARED的共享中断，多个中断响应例程会以链表的形式相连，中断触发时依次被调用。释放函数如下：</p>
+
+<pre>
+void free_irq(unsigned int irq, void *dev_id);
+</pre>
+
+<p>对于共享中断，只有irq和dev_id共同才能确定该释放的是哪一个例程。所以dev_id得唯一。</p>
+
+<p>本例中，通过</p>
+
+<pre>
+request_irq(PA_EINT_IRQ_NO, on_pin_irq, IRQF_SHARED, DEV_NAME, &base);
+request_irq(PG_EINT_IRQ_NO, on_pin_irq, IRQF_SHARED, DEV_NAME, &base);
+</pre>
+
+<p>让PA和PG的中断都由on_pin_irq来响应。这里补充说明：大多数芯片上，一个GPIO端口的所有引脚共享一条中断线。那么怎么知道PA和PG的中断号是多少呢？这个在<a href="http://pan.baidu.com/s/1o7Ege5G">Allwinner_H3_Datasheet_V1.2.pdf</a>的206页上开始的Interrupt Source表：</p>
+
+<p><img src="6.jpg"></p>
+
+<p>可见PA和PG的中断号分别是43和49。</p>
+
+<p>至此，中断也能注册，也能随时使能了，那么就是用户命令如何与中断关联了。我的逻辑是这样的：</p>
+
+<p>
+	<ol>
+		<li>用户写入“wait &lt;port&gt;&lt;pin&gt;=&lt;value&gt;”；</li>
+		<li>读取&lt;port&gt;&lt;pin&gt;的电平，如果是&lt;value&gt;，则成功返回；</li>
+		<li>使能&lt;port&gt;&lt;pin&gt;上的中断，如果&lt;value&gt;=0则下降沿触发，否则上升沿触发；</li>
+		<li>等待完成量，阻塞；</li>
+		<li>跳至步骤2。</li>
+	</ol>
+</p>
+
+<p>而中断中，则关闭所有GPIO中断，然后触发完成量。</p>
+
+<p>至此，所有的原理都讲完了吧~</p>
 
       ﻿                        </div>
                         </article>
