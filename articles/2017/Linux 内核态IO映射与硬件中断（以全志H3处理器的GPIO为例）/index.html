@@ -1,0 +1,259 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>Linux 内核态IO映射与硬件中断（以全志H3处理器的GPIO为例）</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">Linux 内核态IO映射与硬件中断（以全志H3处理器的GPIO为例）</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>驱动程序的开发最终需要落实到硬件上。现代硬件的操作基本都是读写寄存器。而读写寄存器的方法基本都是IO映射，尤其是ARM平台。最近在Orange Pi上试验成功了驱动中GPIO的操作，尤其是，第一次在Linux响应了硬件中断，感觉大爽！</p>
+
+<p>先直接上代码，然后再来解释。</p>
+
+<p>h3_gpio.c</p>
+
+<pre>
+#include &lt;linux/io.h&gt;
+#include &lt;linux/fs.h&gt;
+#include &lt;linux/init.h&gt;
+#include &lt;linux/types.h&gt;
+#include &lt;linux/errno.h&gt;
+#include &lt;linux/sched.h&gt;
+#include &lt;asm/uaccess.h&gt;
+#include &lt;linux/module.h&gt;
+#include &lt;linux/interrupt.h&gt;
+#include &lt;linux/completion.h&gt;
+
+MODULE_LICENSE(&quot;Dual BSD/GPL&quot;);
+
+#define DEV_MAJOR     224
+#define DEV_NAME      &quot;h3_gpio&quot;
+
+// GPIO相关的寄存器的起始物理地址
+#define GPIO_PHY_BASE   0x01C20800
+// GPIO端口数目
+#define GPIO_PORT_COUNT 7
+// 要映射的长度
+#define GPIO_PHY_LEN    0x300
+
+// PA端口的中断号
+#define PA_EINT_IRQ_NO 43
+// PG端口的中断号
+#define PG_EINT_IRQ_NO 49
+
+// GPIO_PHY_BASE映射的虚拟地址
+static uint8_t* base;
+// 中断响应与write()之间通信用的完成量
+static struct completion comp;
+
+// 把指定端口的指定引脚设置为指定电平
+//    port: 端口， 'A'到'G'
+//    pin: 引脚， 0~31
+//    value: 0或1
+// 成功返回0, 参数错误返回-EINVAL
+static int set_pin_val(char port, unsigned pin, unsigned value)
+{
+    if(!(&#39;A&#39; &lt;= port &amp;&amp; port &lt; &#39;A&#39; + GPIO_PORT_COUNT) || pin &gt;= 32 || value &gt; 1)
+        return -EINVAL;
+    uint8_t* port_base = base + (port - &#39;A&#39;) * 0x24;
+    uint32_t* cfg_reg = (uint32_t*)(port_base + (pin / 8) * 4);
+    unsigned cfg_shift = (pin % 8) * 4;
+    uint32_t* dat_reg = (uint32_t*)(port_base + 0x10);
+    // 设置为输出模式
+    (*cfg_reg) &amp;= ~((uint32_t)0xf &lt;&lt; cfg_shift);
+    (*cfg_reg) |= (uint32_t)0x1 &lt;&lt; cfg_shift;
+    // 写入指定电平
+    if(value)
+        (*dat_reg) |= (uint32_t)0x1 &lt;&lt; pin;
+    else
+        (*dat_reg) &amp;= ~((uint32_t)0x1 &lt;&lt; pin);
+    return 0;
+}
+
+// 获取指定端口的指定引脚的电平
+//    port: 端口， 'A'到'G'
+//    pin: 引脚， 0~31
+//    value: 存放电平的值的指针
+// 成功返回0, 参数错误返回-EINVAL
+static int get_pin_val(char port, unsigned pin, unsigned* value)
+{
+    if(!(&#39;A&#39; &lt;= port &amp;&amp; port &lt; &#39;A&#39; + GPIO_PORT_COUNT) || pin &gt;= 32 || value == 0)
+        return -EINVAL;
+    uint8_t* port_base = base + (port - &#39;A&#39;) * 0x24;
+    uint32_t* cfg_reg = (uint32_t*)(port_base + (pin / 8) * 4);
+    unsigned cfg_shift = (pin % 8) * 4;
+    uint32_t* dat_reg = (uint32_t*)(port_base + 0x10);
+    // 设置为输入模式
+    (*cfg_reg) &amp;= ~((uint32_t)0xf &lt;&lt; cfg_shift);
+    // 读取电平
+    (*value) = ((*dat_reg) &gt;&gt; pin) &amp; (uint32_t)0x1;
+    return 0;
+}
+
+// 关闭所有GPIO中断
+static void disable_pin_irq(void)
+{
+    // PA的中断使能寄存器
+    uint32_t* eint_en_reg = (uint32_t*)(base + 0x200 + 0x10);
+    (*eint_en_reg) = 0;
+    // PG的中断使能寄存器
+    eint_en_reg = (uint32_t*)(base + 0x220 + 0x10);
+    (*eint_en_reg) = 0;
+}
+
+// 开启指定端口的指定引脚的GPIO中断，当其值跳变至value时触发
+static int enable_pin_irq(char port, unsigned pin, unsigned value)
+{
+    uint8_t* port_base;
+    if(port == &#39;A&#39;)
+        port_base = base + 0x200;
+    else if(port == &#39;G&#39;)
+        port_base = base + 0x220;
+    else
+        return -EINVAL;
+    if(pin &gt;= 32 || value &gt; 1)
+        return -EINVAL;
+    uint32_t* eint_cfg_reg = (uint32_t*)(port_base + (pin / 8) * 4);
+    unsigned eint_cfg_shift = (pin % 8) * 4;
+    uint32_t* eint_en_reg = (uint32_t*)(port_base + 0x10);
+    port_base = base + (port - &#39;A&#39;) * 0x24;
+    uint32_t* cfg_reg = (uint32_t*)(port_base + (pin / 8) * 4);
+    unsigned cfg_shift = (pin % 8) * 4;
+    // 设置为中断模式
+    (*cfg_reg) &amp;= ~((uint32_t)0xf &lt;&lt; cfg_shift);
+    (*cfg_reg) |= (uint32_t)0x6 &lt;&lt; cfg_shift;
+    // 设置中断触发方式（上升沿还是下降沿）
+    (*eint_cfg_reg) &amp;= ~((uint32_t)0xf &lt;&lt; eint_cfg_shift);
+    if(!value)
+        (*eint_cfg_reg) |= (uint32_t)0x1 &lt;&lt; eint_cfg_shift;
+    // 使能该引脚的中断
+    (*eint_en_reg) |= (uint32_t)0x1 &lt;&lt; pin;
+    return 0;
+}
+
+// 中断例程
+static irqreturn_t on_pin_irq(int irq, void* dev_id)
+{
+    // 关闭中断
+    disable_pin_irq();
+    // 唤醒完成量
+    complete_all(&amp;comp);
+    return IRQ_NONE;
+}
+
+static ssize_t write(struct file* file, const char* buf, size_t len, loff_t* offset)
+{
+    if(len &gt; 64)
+        return -EINVAL;
+    char kbuf[len];
+    copy_from_user(kbuf, buf, len);
+    // 如果写入形如“set A7=1”这样的命令，则设置相应引脚的电位
+    if(strncmp(kbuf, &quot;set &quot;, 4) == 0)
+    {
+        char port;
+        unsigned pin, value;
+        if(sscanf(kbuf + 4, &quot;%c%u=%u&quot;, &amp;port, &amp;pin, &amp;value) != 3)
+            return -EINVAL;
+        int ret = set_pin_val(port, pin, value);
+        return ret == 0 ? len : ret;
+    }
+    // 如果写入形如“wait A10=1”这样的命令，那么阻塞，直至相应的引脚的电位变为指定值
+    else if(strncmp(buf, &quot;wait &quot;, 5) == 0)
+    {
+        char port;
+        unsigned pin, value;
+        if(sscanf(kbuf + 5, &quot;%c%u=%u&quot;, &amp;port, &amp;pin, &amp;value) != 3)
+            return -EINVAL;
+        while(1)
+        {
+            unsigned val;
+            int ret;
+            // 获取电位
+            if((ret = get_pin_val(port, pin, &amp;val)) != 0)
+                return ret;
+            // 如果变为预期值，则成功返回
+            if(val == value)
+                return len;
+            // 如果不是，那么开启中断，进行监听
+            if((ret = enable_pin_irq(port, pin, value)) != 0)
+                return ret;
+            // 等到被中断唤醒（如果被打断，则返回）
+            if(wait_for_completion_interruptible(&amp;comp))
+                return len;
+        }
+    }
+    return -EINVAL;
+}
+
+static struct file_operations fops=
+{
+    .owner = THIS_MODULE,
+    .write = write,
+};
+
+static int dev_constructor(void)
+{
+    int ret = register_chrdev(DEV_MAJOR, DEV_NAME, &amp;fops);
+    if(ret &lt; 0)
+    {
+        printk(&quot;&lt;%s&gt; fail to register, errno = %d\n&quot;, DEV_NAME, ret);
+        return ret;
+    }
+    // IO映射
+    base = ioremap(GPIO_PHY_BASE, GPIO_PHY_LEN);
+    if(base == 0)
+    {
+        printk(&quot;&lt;%s&gt; fail to ioremap()&quot;, DEV_NAME);
+        return -EIO;
+    }
+    // 申请PA中断，共享中断，由on_pin_irq()响应
+    ret = request_irq(PA_EINT_IRQ_NO, on_pin_irq, IRQF_SHARED, DEV_NAME, &amp;base);
+    if(ret &lt; 0)
+    {
+        printk(&quot;&lt;%s&gt; fail to request_irq(PA_EINT_IRQ_NO = %u), errno = %d\n&quot;, DEV_NAME, PA_EINT_IRQ_NO, ret);
+        return ret;
+    }
+    // 申请PG中断，共享中断，由on_pin_irq()响应
+    ret = request_irq(PG_EINT_IRQ_NO, on_pin_irq, IRQF_SHARED, DEV_NAME, &amp;base);
+    if(ret &lt; 0)
+    {
+        printk(&quot;&lt;%s&gt; fail to request_irq(PA_EINT_IRQ_NO = %u), errno = %d\n&quot;, DEV_NAME, PG_EINT_IRQ_NO, ret);
+        return ret;
+    }
+    // 初始化完成量
+    init_completion(&amp;comp);
+    return 0;
+}
+
+static void dev_destructor(void)
+{
+    unregister_chrdev(DEV_MAJOR, DEV_NAME);
+    iounmap(base);
+    free_irq(PA_EINT_IRQ_NO, &amp;base);
+    free_irq(PG_EINT_IRQ_NO, &amp;base);
+}
+
+module_init(dev_constructor);
+module_exit(dev_destructor);
+</pre>
+
+      ﻿                        </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>

@@ -111,7 +111,8 @@ void spin_unlock_bh(spinlock_t *lock);
 <p>使用如下函数等待完成量：</p>
 
 <pre>void wait_for_completion(struct completion *c);
-void wait_for_completion_interruptible(struct completion *c);
+int wait_for_completion_interruptible(struct completion *c);
+// 被唤醒返回0，被中断返回1
 </pre>
 
 <p>触发完成量则使用：</p>
