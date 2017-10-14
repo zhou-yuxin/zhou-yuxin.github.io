@@ -246,6 +246,68 @@ module_init(dev_constructor);
 module_exit(dev_destructor);
 </pre>
 
+<p>首先讲一下这个驱动程序要做什么吧。其实就是两方面的功能：</p>
+
+<p>
+	<ol>
+		<li>向设备写入“set &lt;port&gt;&lt;pin&gt;=&lt;value&gt;”，则把指定引脚设为指定电平输出（比如写入“set A10=1”，那么PA10引脚就会输出高电平）；</li>
+		<li>向设备写入“wait &lt;port&gt;&lt;pin&gt;=&lt;value&gt;”，则进程会阻塞，直到指定引脚的电平输入变成指定值（比如写入“wait A7=0”，那么当且仅当PA7读到0时才返回）。</li>
+	</ol>
+</p>
+
+<p>那么首先肯定要实现对指定的引脚进行读写的功能。看一下<a href="http://pan.baidu.com/s/1o7Ege5G">Allwinner_H3_Datasheet_V1.2.pdf</a>的316页开始就是介绍GPIO寄存器了：</p>
+
+<p><img src="1.jpg"></p>
+
+<p>所以，第一步记就是在初始化驱动程序时，进行IO映射：</p>
+
+<pre>
+base = ioremap(GPIO_PHY_BASE, GPIO_PHY_LEN);
+</pre>
+
+<p>这样base就指向了物理地址GPIO_PHY_BASE，也就是0x01C20800。接下来，就是要看引脚具体要如何操作。每个端口有4个CFG寄存器，以PA为例，其PA_CFG0寄存器描述如下：</p>
+
+<p><img src="2.jpg"></p>
+
+<p>也就是说，Pn的Pin0~Pin7归Pn_CFG0管理，Pin8~Pin15归Pn_CFG1管理，Pin16~Pin23归Pn_CFG2管理，Pin24~Pin31归Pn_CFG4管理。每一个Pin占用4位，表示其工作模式。所以要把某个引脚设置为输出模式，就要先找到其所在的Pn_CFGx寄存器，以及在寄存器中的哪4位，然后把这4位改为0001。设为输出模式后，输出的值是通过Pn_DAT设置的，还是以PA_DAT为例，其描述如下：</p>
+
+<p><img src="3.jpg"></p>
+
+<p>也就是说，第i位就是PAi的值。那么设置引脚输出电平的函数就呼之欲出了：</p>
+
+<pre>
+// 把指定端口的指定引脚设置为指定电平
+//    port: 端口， 'A'到'G'
+//    pin: 引脚， 0~31
+//    value: 0或1
+// 成功返回0, 参数错误返回-EINVAL
+static int set_pin_val(char port, unsigned pin, unsigned value)
+{
+    // 检验参数合法性
+    if(!(&#39;A&#39; &lt;= port &amp;&amp; port &lt; &#39;A&#39; + GPIO_PORT_COUNT) || pin &gt;= 32 || value &gt; 1)
+        return -EINVAL;
+    // Pn寄存器组的基地址
+    uint8_t* port_base = base + (port - &#39;A&#39;) * 0x24;
+    // Pn_CFGx寄存器
+    uint32_t* cfg_reg = (uint32_t*)(port_base + (pin / 8) * 4);
+    // 在Pn_CFGx寄存器中的偏移量
+    unsigned cfg_shift = (pin % 8) * 4;
+    // Pn_DAT寄存器
+    uint32_t* dat_reg = (uint32_t*)(port_base + 0x10);
+    // 设置为输出模式，即把对应的4位设置为0001
+    (*cfg_reg) &amp;= ~((uint32_t)0xf &lt;&lt; cfg_shift);
+    (*cfg_reg) |= (uint32_t)0x1 &lt;&lt; cfg_shift;
+    // 写入指定电平
+    if(value)
+        (*dat_reg) |= (uint32_t)0x1 &lt;&lt; pin;
+    else
+        (*dat_reg) &amp;= ~((uint32_t)0x1 &lt;&lt; pin);
+    return 0;
+}
+</pre>
+
+<p>那么读取电平的函数也是一样的，唯一的区别仅仅是Pn_CFGx中对应的4位设置为0000，然后读取Pn_DAT，那就不再贴一遍了~</p>
+
       ﻿                        </div>
                         </article>
                     </div>
