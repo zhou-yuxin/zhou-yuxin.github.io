@@ -227,7 +227,7 @@ int main_routine(int eth_fd, int uart_fd, int max_buf)
             {
                 to_send[to_send_len++] = frame[i];
                 if(frame[i] == 255)
-                to_send[to_send_len++] = 255;
+                    to_send[to_send_len++] = 255;
             }
             // 结尾有END指令，表达为 255,1
             to_send[to_send_len++] = 255;
@@ -326,6 +326,54 @@ int main()
 </pre>
 
 <p>其实代码还是很简单的，只需要注意select/poll机制的合理使用即可。</p>
+
+<p>接下来就是见证奇迹的时刻了！首先需要有两台Linux机器，命名为A和B，具体硬件平台无关。两台机器各自插上一个USB-TTL，两个USB-TTL之间使用三条线连接，即</p>
+
+<ul>
+    <li>A.GND----B.GND</li>
+    <li>A.RX----B.TX</li>
+    <li>A.TX----B.RX</li>
+</ul>
+
+<p><img src="1.jpg"></p>
+
+<p>并确保在两台机器上，各自的USB-TTL都被识别为/dev/ttyUSB0。</p>
+
+
+<p>按照<a href="../Linux串口网卡（一）——通用虚拟网卡的实现/index.html">《Linux串口网卡（一）——通用虚拟网卡的实现》</a>最后说的，编译加载模块，使得能通过ifconfig -a看到网卡。然后使能网卡，并配置IP地址。A机器上：</p>
+
+<pre>
+ifconfig eth_uart up
+ifconfig eth_uart 192.168.4.1
+</pre>
+
+<p>B机器上：</p>
+
+<pre>
+ifconfig eth_uart up
+ifconfig eth_uart 192.168.4.2
+</pre>
+
+<p>注意在很多Ubuntu机器上，可能存在一些自动管理网络接口的工具，记得关闭，或者让工具不要管理eth_uart这个网口。</p>
+
+<p>接着编译、运行上面的代码（两台机器上都需要执行）：</p>
+
+<pre>
+gcc -std=gnu99 eth_uart.c -o eth_uart
+./eth_uart
+</pre>
+
+<p>此时，在A机器上：</p>
+
+<pre>
+ping 192.168.4.2
+</pre>
+
+<p>
+可以看到能ping通，而且两个USB-TTL都在闪烁：
+</p>
+
+<p><img src="2.png"></p>
 
                             </div>
                         </article>
