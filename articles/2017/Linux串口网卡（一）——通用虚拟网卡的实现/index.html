@@ -178,8 +178,10 @@ static int eth_uart_init(void)
     }
     // 该网络设备的操作集
     sg_dev-&gt;netdev_ops = &amp;sg_ops;
-    <font color="red">// 产生6字节的随机序列，作为MAC地址
-    get_random_bytes(sg_dev-&gt;dev_addr, 6);</font>
+    <font color="red">// MAC地址前3字节固定为EC-A8-6B
+    memcpy(sg_dev->dev_addr, "\xEC\xA8\x6B", 3);
+    // MAC地址后3字节随机产生
+    get_random_bytes((char*)sg_dev-&gt;dev_addr + 3, 3);</font>
     // 注册网络设备
     ret = register_netdev(sg_dev);
     if(ret != 0)
@@ -288,7 +290,11 @@ struct sk_buff* dev_alloc_skb(size_t);
 void get_random_bytes(void *buf, int nbytes);
 </pre>
 
-<p>以产生指定长度的随即字节序列。这里我刚好用来产生6字节的MAC地址^_^。</p>
+<p>以产生指定长度的随机字节序列。MAC地址前3字节是厂商编号，这个最好不要随机。我固定为EC-A8-6B，这个厂商的信息如下：</p>
+
+<p><img src="3.png"></p>
+
+<p>后三字节则随机产生，这样基本避免了MAC地址冲突。</p>
 
 <p>那么这个代码怎么用呢？首先是千年不变的Makefile：</p>
 
@@ -319,11 +325,11 @@ insmod eth_uart.ko
 
 <p>就能看到一张叫做eth_uart的以太网卡了：</p>
 
-<p><img src="3.jpg"/></p>
+<p><img src="4.png"/></p>
 
 <p>同时，也多出来一个/proc/eth_uart/uio的虚拟文件：</p>
 
-<p><img src="4.jpg"/></p>
+<p><img src="5.jpg"/></p>
 
 <p>至于用户态转发程序，就在接下来的博客中讲解了~</p>
 
