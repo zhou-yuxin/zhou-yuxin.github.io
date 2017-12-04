@@ -369,11 +369,15 @@ gcc -std=gnu99 eth_uart.c -o eth_uart
 ping 192.168.4.2
 </pre>
 
-<p>
-可以看到能ping通，而且两个USB-TTL都在闪烁：
-</p>
+<p>可以看到能ping通，而且两个USB-TTL都在闪烁：</p>
 
 <p><img src="2.png"></p>
+
+<p>接着试试ssh。从A机器上发起登陆（先确保B机器开了ssh服务）：</p>
+
+<p><img src="3.png"></p>
+
+<p>成功登陆！而且可以正常的操作！操作的时候，两个串口都闪得很厉害，说明在进行通信~~~</p>
 
                             </div>
                         </article>

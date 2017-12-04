@@ -170,6 +170,9 @@ static int eth_uart_init(void)
     int ret = 0;
     // 创建一个网络设备，名为“eth_uart&quot;
     sg_dev = alloc_netdev(0, &quot;eth_uart&quot;, ether_setup);
+    // kernel 4+上需要四个参数如下
+    // sg_dev=alloc_netdev(0,"eth_uart", NET_NAME_UNKNOWN, ether_setup);
+    // 该网络设备的操作集
     if(sg_dev == 0)
     {
         printk(&quot;&lt;eth_uart.ko&gt; alloc_netdev() failed!\n&quot;);
