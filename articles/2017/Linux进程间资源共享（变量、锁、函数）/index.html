@@ -1,0 +1,277 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>Linux进程间资源共享（变量、锁、函数）</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">Linux进程间资源共享（变量、锁、函数）</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>过去觉得多线程编程就绰绰有余了，现在发现很多情况下需要更加灵活的架构。多线程必须隶属于同一个进程，这就对于线程的生命周期作出了限制。比如我有某个共享资源，我希望每一个进程都能够访问，而且是如同访问本地变量一样可以通过地址简单地访问，而不是通过类似管道啊socket啊这些重工具访问。同一个进程的各个线程之间天生就有上述的特性，那么如何让进程之间也有上述的特性呢？</p>
+
+<p>学pthread多线程编程时，我就得知Linux内核中是不存在线程的概念的，一切可执行单元都是进程。所谓多线程，其实是一组可以共享内存的进程，即“轻量级进程”。所以应该只要实现内存共享，就能让进程之间互相访问。</p>
+
+<p>===================实验一：变量共享==================</p>
+
+<p>共享变量想想就很容易，只要把变量方法共享内存上就行了。</p>
+
+<p>master.c</p>
+
+<pre>
+#include &lt;time.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;sys/shm.h&gt;
+#include &lt;sys/ipc.h&gt;
+
+int main()
+{
+    // 创建（获取）共享内存
+    int shmid = shmget(1228, sizeof(int), IPC_CREAT);
+    assert(shmid != -1);
+    // 共享内存映射到进程地址空间
+    void* shmptr = shmat(shmid, 0, 0);
+    assert(shmptr != (void*)(-1));
+    // 设置一个随机数
+    int* num = shmptr;
+    srand(time(0));
+    int val = rand();
+    (*num) = val;
+    printf("set %d\n", val);
+    return 0;
+}
+</pre>
+
+<p>slave.c</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;sys/shm.h&gt;
+#include &lt;sys/ipc.h&gt;
+
+int main()
+{
+    // 创建（获取）共享内存
+    int shmid = shmget(1228, sizeof(int), IPC_CREAT);
+    assert(shmid != -1);
+    // 共享内存映射到进程地址空间
+    void* shmptr = shmat(shmid, 0, 0);
+    assert(shmptr != (void*)(-1));
+    // 获取随机数
+    int* num = shmptr;
+    int val = (*num);
+    printf("get %d\n", val);
+    return 0;
+}
+</pre>
+
+<pre>
+gcc master.c -o master
+gcc slave.c -o slave
+sudo ./master
+sudo ./slave
+</pre>
+
+<p>可以多次运行master和slave，可以发现slave总是可以得到master设置的值。</p>
+
+<p>=====================实验二：锁共享=====================</p>
+
+<p>并发访问不仅需要能够相互访问数据，而且往往需要同步、互斥操作。这些东西在多线程情况下基本都可以使用pthread库搞定。那么多进程之间是否也可以？通过搜索，我得知pthread库的各种锁，都有相关的flag可以设置是否进程间共享。以信号量为例，semaphore的初始化函数原型如下：</p>
+
+<pre>
+int sem_init(sem_t *sem, int pshared, unsigned int value);
+</pre>
+
+<p>其第二个参数pshared就是用来控制是否能跨进程使用的。而比如pthread的自旋锁，其初始化函数如下：</p>
+
+<pre>
+int pthread_spin_init(pthread_spinlock_t *lock, int pshared);
+</pre>
+
+<p>第二个参数也是pshared。</p>
+
+<p>当然，锁设置为可以跨进程共享还不够，前提是锁本身能被各个进程访问到，所以自然而然地想到把锁放在共享内存中。</p>
+
+<p>master.c</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;sys/shm.h&gt;
+#include &lt;sys/ipc.h&gt;
+#include &lt;semaphore.h&gt;
+
+int main()
+{
+    // 创建（获取）共享内存
+    int shmid = shmget(1229, sizeof(sem_t), IPC_CREAT);
+    assert(shmid != -1);
+    // 共享内存映射到进程地址空间
+    void* shmptr = shmat(shmid, 0, 0);
+    assert(shmptr != (void*)(-1));
+    sem_t* sem = shmptr;
+    // 初始化信号量，设置为跨进程同步
+    int ret = sem_init(sem, 1, 0);
+    assert(ret == 0);
+    while(1)
+    {
+        ret = sem_post(sem);
+        assert(ret == 0);
+        sleep(1);
+    }
+    return 0;
+}
+</pre>
+
+<p>slave.c</p>
+
+<pre>
+#include &lt;time.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;sys/shm.h&gt;
+#include &lt;sys/ipc.h&gt;
+#include &lt;semaphore.h&gt;
+
+int main()
+{
+    // 创建（获取）共享内存
+    int shmid = shmget(1229, sizeof(sem_t), IPC_CREAT);
+    assert(shmid != -1);
+    // 共享内存映射到进程地址空间
+    void* shmptr = shmat(shmid, 0, 0);
+    assert(shmptr != (void*)(-1));
+    sem_t* sem = shmptr;
+    while(1)
+    {
+        int ret = sem_wait(sem);
+        assert(ret == 0);
+        printf("%lu\n", time(0));
+    }
+    return 0;
+}
+</pre>
+
+<pre>
+gcc master.c -o master -lpthread
+gcc slave.c -o slave -lpthread
+</pre>
+
+<p>在一个终端中运行master:</p>
+
+<pre>
+sudo ./master
+</pre>
+
+<p>在另一个终端中运行slave:</p>
+
+<pre>
+sudo ./slave
+</pre>
+
+<p>可以发现slave每一秒输出一次。如果再开一个终端也运行slave，那么这两个终端很可能交替地输出。</p>
+
+<p>至此呢，一般的应用场景就已经可以搞定了。和线程间通信唯一的区别就是指针不能直接使用，因为地址空间不同了。所以需要自己管理好偏移量。</p>
+
+<p>======================实验三：函数共享===================</p>
+
+<p>本来就已经结束了，忽然想玩点有趣的。我想到，函数本质上就是一串连续的机器码，也可以看作是一段数据。那么我如果把某个函数的所有机器码复制到共享内存上，那么另一个进程应该就能调用该函数。</p>
+
+<p>master.c</p>
+
+<pre>
+#include &lt;assert.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/shm.h&gt;
+#include &lt;sys/ipc.h&gt;
+
+#define MEM_SIZE 4096
+
+int add(int a, int b)
+{
+    return a + b;
+}
+
+int main()
+{
+    // 创建（获取）共享内存
+    int shmid = shmget(1230, MEM_SIZE, IPC_CREAT);
+    assert(shmid != -1);
+    // 共享内存映射到进程地址空间
+    void* shmptr = shmat(shmid, 0, 0);
+    assert(shmptr != (void*)(-1));
+    // 确保函数addr在函数main之前
+    assert((void*)add &lt; (void*)main);
+    // len的长度肯定大于等于add函数的长度
+    size_t len = (void*)main - (void*)add;
+    // 确保共享内存放得下add的机器码
+    assert(len &lt;= MEM_SIZE);
+    // 把add拷贝到共享内存上去
+    memcpy(shmptr, add, len);
+    return 0;
+}
+</pre>
+
+<p>slave.c</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;sys/shm.h&gt;
+#include &lt;sys/ipc.h&gt;
+#include &lt;sys/mman.h&gt;
+
+#define MEM_SIZE 4096
+
+int main()
+{
+    // 创建（获取）共享内存
+    int shmid = shmget(1230, MEM_SIZE, IPC_CREAT);
+    assert(shmid != -1);
+    // 共享内存映射到进程地址空间
+    void* shmptr = shmat(shmid, 0, 0);
+    assert(shmptr != (void*)(-1));
+    <font color="red">// 修改共享内存权限为可读可写可执行
+    int ret = mprotect(shmptr, MEM_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC);
+    assert(ret == 0);</font>
+    // 得到函数指针
+    int (*f)(int, int)= shmptr;
+    // 执行函数
+    printf("%d\n", f(1, 2));
+    // 执行函数
+    printf("%d\n", f(7, 8));
+    return 0;
+}
+</pre>
+
+<pre>
+gcc master.c -o master
+gcc slave.c -o slave
+sudo ./master
+sudo ./slave
+</pre>
+
+<p>惊奇地发现，slave输出了3和15，居然成功执行了master中的add函数！</p>
+
+      ﻿                        </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
