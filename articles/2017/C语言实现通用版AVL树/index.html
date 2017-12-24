@@ -80,10 +80,10 @@ size_t avl_node_count(struct avl_node* root);
 
 /* RR(Y rotates to the right):
         k2                 k1
-       /  \              /  \
-      k1   Z     ==&gt;    X   k2
-     / \                      /  \
-    X   Y                   Y   Z
+       / \                / \
+      k1  Z     ==&gt;   X  k2
+     / \                    / \
+    X   Y                  Y   Z
 */
 /*
  Return which the root pointer(at a higher level) should point to
@@ -102,10 +102,10 @@ static struct avl_node* rr_rotate(struct avl_node* k2)
 
 /* LL(Y rotates to the left):
         k2                     k1
-       /  \                  /  \
-      X k1       ==&gt;   k2   Z
-          /  \              /  \
-         Y  Z             X Y
+       / \                    / \
+      X  k1       ==&gt;     k2  Z
+        / \                 / \
+        Y  Z               X   Y
  */
 static struct avl_node* ll_rotate(struct avl_node* k2)
 {
@@ -120,13 +120,13 @@ static struct avl_node* ll_rotate(struct avl_node* k2)
 }
 
 /* LR(B rotates to the left, then C rotates to the right):
-      k3                         k3                    k2
-     /  \                      /  \                  /  \
-    k1   D                   k2   D                k1   k3
-   /  \      ==&gt;        /  \     ==&gt;        / \   / \
-  A k2                  k1   C                 A  B  C   D
-      /  \                /  \
-     B  C               A   B
+      k3                       k3                    k2
+     / \                      / \                   / \
+    k1  D                    k2  D                k1   k3
+   / \      ==&gt;          / \     ==&gt;        / \  / \
+  A   k2                   k1  C                 A  B C   D
+      / \                 / \
+     B  C                A   B
 */
 /*
  Return which the root pointer should point to
@@ -140,13 +140,13 @@ static struct avl_node* lr_rotate(struct avl_node* k3)
 }
 
 /* RL(D rotates to the right, then C rotates to the left):
-       k3                        k3                       k2
-      /  \                     /  \                     /  \
-     A  k1                  A   k2                   k3   k1 
-         /  \      ==&gt;            /  \        ==&gt;    /  \  / \
-        k2   B                   C  k1              A   C D   B
-       /  \                         /  \
-      C D                         D B 
+       k3                      k3                       k2
+      / \                     / \                      / \
+     A  k1                   A   k2                   k3  k1 
+        / \      ==&gt;          / \        ==&gt;    / \ / \
+       k2  B                    C   k1               A  C D  B
+       / \                         / \
+      C   D                       D   B 
  */
 static struct avl_node* rl_rotate(struct avl_node* k3)
 {
