@@ -424,8 +424,8 @@ int buddy_free(struct buddy* buddy, size_t addr, size_t size);
 static size_t to_power(size_t n)
 {
     size_t power;
-    for(power = 0; n&gt;&gt;(power + 1); power++);
-    if((1&lt;&lt;power) != n)
+    for(power = 0; n &gt;&gt; (power + 1); power++);
+    if((1 &lt;&lt; power) != n)
         return (size_t)(-1);
     return power;
 }
@@ -445,16 +445,16 @@ int buddy_init(struct buddy* buddy, size_t capacity, size_t min_item_sz, size_t 
     assert(buddy);
     size_t power = to_power(max_item_sz / min_item_sz);
     if(power == (size_t)(-1) || (1 &lt;&lt; power) * min_item_sz != max_item_sz)
-        ERROR(0, 0, "param &lt;max_item_sz = %lu&gt; / param &lt;min_item_sz = %lu&gt; is not a power of 2!", max_item_sz, min_item_sz);
+        ERROR(0, 0, &quot;param &lt;max_item_sz = %lu&gt; / param &lt;min_item_sz = %lu&gt; is not a power of 2!&quot;, max_item_sz, min_item_sz);
     buddy-&gt;layer_count = power + 1;
     buddy-&gt;root_count = capacity / max_item_sz;
     if(buddy-&gt;root_count == 0)
-        ERROR(0, 0, "param &lt;capacity = %lu&gt; is not big enough!", capacity);
+        ERROR(0, 0, &quot;param &lt;capacity = %lu&gt; is not big enough!&quot;, capacity);
     buddy-&gt;min_item_sz = min_item_sz;
     size_t array_sz = sizeof(struct avl_node*) * buddy-&gt;layer_count;
     buddy-&gt;layers = malloc(array_sz);
     if(!buddy-&gt;layers)
-        ERROR(0, 1, "malloc(%lu) failed, ", array_sz);
+        ERROR(0, 1, &quot;malloc(%lu) failed, &quot;, array_sz);
     memset(buddy-&gt;layers, 0, array_sz);
     struct avl_node** top_layer = buddy-&gt;layers + (buddy-&gt;layer_count - 1);
     for(size_t i = 0; i &lt; buddy-&gt;root_count; i++)
@@ -467,30 +467,35 @@ int buddy_init(struct buddy* buddy, size_t capacity, size_t min_item_sz, size_t 
     {                                                                                                                                                   \
         size_t power = to_power((size) / (buddy)-&gt;min_item_sz);                                                                                         \
         if(power == (size_t)(-1) || (1 &lt;&lt; power) * (buddy)-&gt;min_item_sz != (size))                                                                      \
-            ERROR((fail_ret), 0, "param &lt;%s = %lu&gt; / &lt;(%s)-&gt;min_item_sz = %lu&gt; is not a power of 2!", #size, (size), #buddy, (buddy)-&gt;min_item_sz);     \
+            ERROR((fail_ret), 0, &quot;param &lt;%s = %lu&gt; / &lt;(%s)-&gt;min_item_sz = %lu&gt; is not a power of 2!&quot;, #size, (size), #buddy, (buddy)-&gt;min_item_sz);     \
         (layer_index) = power;                                                                                                                          \
         if((layer_index) &gt;= (buddy)-&gt;layer_count)                                                                                                       \
-            ERROR((fail_ret), 0, "param &lt;%s = %lu&gt; is too big!", #size, size);                                                                          \
+            ERROR((fail_ret), 0, &quot;param &lt;%s = %lu&gt; is too big!&quot;, #size, size);                                                                          \
     }                                                                                                                                                   \
     while(0)
 
-// 向上层申请分裂
-static size_t split_from_upper_layers(struct buddy* buddy, size_t layer_index)
+// 从指定层取出一个节点。若没有，则向上层申请分裂，从上层分裂出来的两个节点中，一个会被加入当前层，一个会被返回
+//    layer_index: 当前层号
+// 返回一个整数，表示从上层的一个节点分裂出来的两个该层节点中，取出来的那个节点编号
+// 失败返回(size_t)(-1)
+static size_t get_a_item_from_layer(struct buddy* buddy, size_t layer_index)
 {
-    if(layer_index &gt;= buddy-&gt;layer_count - 1)
-        return 0;
-    struct avl_node** upper_layer = buddy-&gt;layers + (layer_index + 1);
-    if(!(*upper_layer) &amp;&amp; !split_from_upper_layers(buddy, layer_index + 1))
-        return 0;
-    assert((*upper_layer));
-    size_t upper_item_index = (size_t)(*upper_layer)-&gt;val;
-    int found = 0;
-    (*upper_layer) = avl_delete((*upper_layer), (void*)upper_item_index, plain_comparator, &amp;found);
-    assert(found);
+    if(layer_index &gt;= buddy-&gt;layer_count)
+        return (size_t)(-1);
     struct avl_node** layer = buddy-&gt;layers + layer_index;
+    if((*layer))
+    {
+        size_t item_index = (size_t)(*layer)-&gt;val;
+        int found = 0;
+        (*layer) = avl_delete((*layer), (void*)item_index, plain_comparator, &amp;found);
+        assert(found);
+        return item_index;
+    }
+    size_t upper_item_index = get_a_item_from_layer(buddy, layer_index + 1);
+    if(upper_item_index == (size_t)(-1))
+        return (size_t)(-1);
     (*layer) = avl_insert((*layer), (void*)(upper_item_index * 2), plain_comparator);
-    (*layer) = avl_insert((*layer), (void*)(upper_item_index * 2 + 1), plain_comparator);
-    return 1;
+    return upper_item_index * 2 + 1;
 }
 
 size_t buddy_allocate(struct buddy* buddy, size_t size)
@@ -498,14 +503,9 @@ size_t buddy_allocate(struct buddy* buddy, size_t size)
     assert(buddy);
     size_t layer_index;
     SIZE_TO_LAYER_INDEX(buddy, size, layer_index, BUDDY_ALLOCATE_FAILED);
-    struct avl_node** layer = buddy-&gt;layers + layer_index;
-    if(!(*layer) &amp;&amp; !split_from_upper_layers(buddy, layer_index))
-        ERROR(BUDDY_ALLOCATE_FAILED, 0, "no more space available for size = %lu!", size);
-    assert((*layer));
-    size_t item_index = (size_t)(*layer)-&gt;val;
-    int found = 0;
-    (*layer) = avl_delete((*layer), (void*)item_index, plain_comparator, &amp;found);
-    assert(found);
+    size_t item_index = get_a_item_from_layer(buddy, layer_index);
+    if(item_index == (size_t)(-1))
+        ERROR(BUDDY_ALLOCATE_FAILED, 0, &quot;no more space available for size = %lu!&quot;, size);
     return item_index * size;
 }
 
@@ -514,29 +514,28 @@ size_t buddy_allocate(struct buddy* buddy, size_t size)
     {                                                                                                                       \
         (item_index) = (addr) / (size);                                                                                     \
         if((item_index) * (size) != (addr))                                                                                 \
-            ERROR((fail_ret), 0, "param &lt;%s = %lu&gt; is not aligned by param &lt;%s = %lu&gt;!", #addr, (addr), #size, (size));     \
+            ERROR((fail_ret), 0, &quot;param &lt;%s = %lu&gt; is not aligned by param &lt;%s = %lu&gt;!&quot;, #addr, (addr), #size, (size));     \
     }                                                                                                                       \
     while(0)
 
-// 向上层申请分裂
-static int split_at_from_upper_layers(struct buddy* buddy, size_t layer_index, size_t item_index)
+#define BUDDY_INDEX(item_index) ((item_index) % 2 ? (item_index) - 1 : (item_index) + 1)
+
+// 从指定层取出指定节点，若无则向上层申请分裂，上层分裂得到当前层指定节点和其伙伴，把伙伴放入该层
+//    layer_index: 当前层号
+//    item_index: 想要的节点编号
+// 成功返回1，失败返回0
+static int get_the_item_from_layer(struct buddy* buddy, size_t layer_index, size_t item_index)
 {
-    if(layer_index &gt;= buddy-&gt;layer_count - 1)
+    if(layer_index &gt;= buddy-&gt;layer_count)
         return 0;
-    struct avl_node** upper_layer = buddy-&gt;layers + (layer_index + 1);
-    size_t upper_item_index = item_index / 2;
-    int found = 0;
-    (*upper_layer) = avl_delete((*upper_layer), (void*)upper_item_index, plain_comparator, &amp;found);
-    if(!found)
-    {
-        if(!split_at_from_upper_layers(buddy, layer_index + 1, upper_item_index))
-            return 0;
-        (*upper_layer) = avl_delete((*upper_layer), (void*)upper_item_index, plain_comparator, &amp;found);
-    }
-    assert(found);
     struct avl_node** layer = buddy-&gt;layers + layer_index;
-    (*layer) = avl_insert((*layer), (void*)(upper_item_index * 2), plain_comparator);
-    (*layer) = avl_insert((*layer), (void*)(upper_item_index * 2 + 1), plain_comparator);
+    int found = 0;
+    (*layer) = avl_delete((*layer), (void*)item_index, plain_comparator, &amp;found);
+    if(found)
+        return 1;
+    if(!get_the_item_from_layer(buddy, layer_index + 1, item_index / 2))
+        return 0;
+    (*layer) = avl_insert((*layer), (void*)BUDDY_INDEX(item_index), plain_comparator);
     return 1;
 }
 
@@ -546,16 +545,8 @@ size_t buddy_allocate_at(struct buddy* buddy, size_t addr, size_t size)
     size_t layer_index, item_index;
     SIZE_TO_LAYER_INDEX(buddy, size, layer_index, BUDDY_ALLOCATE_FAILED);
     ADDR_AND_SIZE_TO_ITEM_INDEX(addr, size, item_index, BUDDY_ALLOCATE_FAILED);
-    struct avl_node** layer = buddy-&gt;layers + layer_index;
-    int found = 0;
-    (*layer) = avl_delete((*layer), (void*)item_index, plain_comparator, &amp;found);
-    if(!found)
-    {
-        if(!split_at_from_upper_layers(buddy, layer_index, item_index))
-            ERROR(BUDDY_ALLOCATE_FAILED, 0, "the given item (addr = %lu, size = %lu) is not available!", addr, size);
-        (*layer) = avl_delete((*layer), (void*)item_index, plain_comparator, &amp;found);
-    }
-    assert(found);
+    if(!get_the_item_from_layer(buddy, layer_index, item_index))
+        ERROR(BUDDY_ALLOCATE_FAILED, 0, &quot;the given item (addr = %lu, size = %lu) is not available!&quot;, addr, size);
     return addr;
 }
 
@@ -565,18 +556,17 @@ static void free_to_layer(struct buddy* buddy, size_t layer_index, size_t item_i
     assert(layer_index &lt; buddy-&gt;layer_count);
     struct avl_node** layer = buddy-&gt;layers + layer_index;
     assert(!avl_search((*layer), (void*)item_index, plain_comparator));
-    if(layer_index == buddy-&gt;layer_count - 1)
+    if(layer_index &lt; buddy-&gt;layer_count - 1)
     {
-        (*layer) = avl_insert((*layer), (void*)item_index, plain_comparator);
-        return;
+        int found = 0;
+        (*layer) = avl_delete((*layer), (void*)BUDDY_INDEX(item_index), plain_comparator, &amp;found);
+        if(found)
+        {
+            free_to_layer(buddy, layer_index + 1, item_index / 2);
+            return;
+        }
     }
-    size_t buddy_index = item_index % 2 ? item_index -1 : item_index + 1;
-    int found = 0;
-    (*layer) = avl_delete((*layer), (void*)buddy_index, plain_comparator, &amp;found);
-    if(found)
-        free_to_layer(buddy, layer_index + 1, item_index / 2);
-    else
-        (*layer) = avl_insert((*layer), (void*)item_index, plain_comparator);
+    (*layer) = avl_insert((*layer), (void*)item_index, plain_comparator);
 }
 
 int buddy_free(struct buddy* buddy, size_t addr, size_t size)
@@ -656,12 +646,12 @@ time ./test_buddy
 	<tr><td>free</td><td>70ns</td></tr>
 </table>
 
-<p>在Intel(R) Xeon(R) Platinum 8180M CPU @ 2.50GHz的服务器上，用时0.402s。单独测试结果如下：</p>
+<p>关闭assert，在Intel(R) Xeon(R) Platinum 8180M CPU @ 2.50GHz的服务器上，用时0.276s。单独测试结果如下：</p>
 
 <table>
-    <tr><td>malloc_at</td><td>126ns</td></tr>
-    <tr><td>malloc</td><td>114ns</td></tr>
-    <tr><td>free</td><td>78ns</td></tr>
+    <tr><td>malloc_at</td><td>81ns</td></tr>
+    <tr><td>malloc</td><td>67ns</td></tr>
+    <tr><td>free</td><td>61ns</td></tr>
 </table>
 
       ﻿                        </div>
