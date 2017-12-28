@@ -271,7 +271,7 @@
 
 <pre>uint16 create_beacon_frame(uint8* p_buffer,struct ap* p_ap)
 {
-    memcpy(p_buffer,"x80x00x00x00xFFxFFxFFxFFxFFxFF",10);
+    memcpy(p_buffer,"\x80\x00\x00\x00\xFF\xFF\xFF\xFF\xFF\xFF",10);
     memcpy(p_buffer+10,p_ap-&gt;bssid,6);
     memcpy(p_buffer+16,p_ap-&gt;bssid,6);
     p_buffer[22]=(uint8)(p_ap-&gt;seq_id&amp;0xFF);
@@ -283,7 +283,7 @@
     uint8 t_i;
     for(t_i=0;t_i&lt;8;t_i++)
          p_buffer[24+t_i]=(uint8)((t_timestamp&gt;&gt;(t_i&lt;&lt;3))&amp;0xFF);
-    memcpy(p_buffer+32,"x64x00x01x00",4);
+    memcpy(p_buffer+32,"\x64\x00\x01\x00",4);
     p_buffer[36]=0;
     p_buffer[37]=p_ap-&gt;essid_len;
     memcpy(p_buffer+38,p_ap-&gt;essid,p_ap-&gt;essid_len);
@@ -293,7 +293,7 @@
 <p>至于使用方法嘛，如下：</p>
 
 <pre>struct ap t_ap;
-init_ap(&amp;t_ap,(uint8*)"xECx17x2Fx2DxB6xB8","zjs");
+init_ap(&amp;t_ap,(uint8*)"\xEC\x17\x2F\x2D\xB6\xB8","zjs");
 uint8 t_buffer[256];
 uint16 t_len=create_beacon_frame(t_buffer,&amp;t_ap);
 </pre>
@@ -365,7 +365,7 @@ ifconfig wlan0 up
 <pre>int32 send_80211_frame(int32 p_socket,uint8* p_buffer,uint32 p_size)
 {
     uint8 t_buffer[4096];
-    uint8* t_radiotap=(uint8*)"x00x00x0dx00x04x80x02x00x02x00x00x00x00";
+    uint8* t_radiotap=(uint8*)"\x00\x00\x0d\x00\x04\x80\x02\x00\x02\x00\x00\x00\x00";
     memcpy(t_buffer,t_radiotap,13);
     memcpy(t_buffer+13,p_buffer,p_size);
     p_size+=13;
@@ -427,7 +427,7 @@ void init_ap(struct ap* p_ap,uint8* p_bssid,char* p_essid)
 
 uint16 create_beacon_frame(uint8* p_buffer,struct ap* p_ap)
 {
-    memcpy(p_buffer,"x80x00x00x00xFFxFFxFFxFFxFFxFF",10);
+    memcpy(p_buffer,"\x80\x00\x00\x00\xFF\xFF\xFF\xFF\xFF\xFF",10);
     memcpy(p_buffer+10,p_ap-&gt;bssid,6);
     memcpy(p_buffer+16,p_ap-&gt;bssid,6);
     p_buffer[22]=(uint8)(p_ap-&gt;seq_id&amp;0xFF);
@@ -439,7 +439,7 @@ uint16 create_beacon_frame(uint8* p_buffer,struct ap* p_ap)
     uint8 t_i;
     for(t_i=0;t_i&lt;8;t_i++)
          p_buffer[24+t_i]=(uint8)((t_timestamp&gt;&gt;(t_i&lt;&lt;3))&amp;0xFF);
-    memcpy(p_buffer+32,"x64x00x01x00",4);
+    memcpy(p_buffer+32,"\x64\x00\x01\x00",4);
     p_buffer[36]=0;
     p_buffer[37]=p_ap-&gt;essid_len;
     memcpy(p_buffer+38,p_ap-&gt;essid,p_ap-&gt;essid_len);
@@ -491,7 +491,7 @@ int32 create_raw_socket(char* p_iface)
 int32 send_80211_frame(int32 p_socket,uint8* p_buffer,uint32 p_size)
 {
     uint8 t_buffer[4096];
-    uint8* t_radiotap=(uint8*)"x00x00x0dx00x04x80x02x00x02x00x00x00x00";
+    uint8* t_radiotap=(uint8*)"\x00\x00\x0d\x00\x04\x80\x02\x00\x02\x00\x00\x00\x00";
     memcpy(t_buffer,t_radiotap,13);
     memcpy(t_buffer+13,p_buffer,p_size);
     p_size+=13;
@@ -507,8 +507,8 @@ int32 send_80211_frame(int32 p_socket,uint8* p_buffer,uint32 p_size)
 int32 main()
 {
     struct ap t_ap1,t_ap2;
-    init_ap(&amp;t_ap1,(uint8*)"xECx17x2Fx2DxB6xB8","zjs ap 1");
-    init_ap(&amp;t_ap2,(uint8*)"xECx17x2Fx2DxB6xB9","zjs ap 2");
+    init_ap(&amp;t_ap1,(uint8*)"\xEC\x17\x2F\x2D\xB6\xB8","zjs ap 1");
+    init_ap(&amp;t_ap2,(uint8*)"\xEC\x17\x2F\x2D\xB6\xB9","zjs ap 2");
     uint8 t_buffer[1024];
     int32 t_socket=create_raw_socket("wlan0");
     while(1)
@@ -595,7 +595,7 @@ void init_ap(struct ap* p_ap,uint8* p_bssid,char* p_essid)
 }
 uint16 create_beacon_frame(uint8* p_buffer,struct ap* p_ap)
 {
-    memcpy(p_buffer,"x80x00x00x00xFFxFFxFFxFFxFFxFF",10);
+    memcpy(p_buffer,"\x80\x00\x00\x00\xFF\xFF\xFF\xFF\xFF\xFF",10);
     memcpy(p_buffer+10,p_ap-&gt;bssid,6);
     memcpy(p_buffer+16,p_ap-&gt;bssid,6);
     p_buffer[22]=(uint8)(p_ap-&gt;seq_id&amp;0xFF);
@@ -607,7 +607,7 @@ uint16 create_beacon_frame(uint8* p_buffer,struct ap* p_ap)
     uint8 t_i;
     for(t_i=0;t_i&lt;8;t_i++)
          p_buffer[24+t_i]=(uint8)((t_timestamp&gt;&gt;(t_i&lt;&lt;3))&amp;0xFF);
-    memcpy(p_buffer+32,"x64x00x01x00",4);
+    memcpy(p_buffer+32,"\x64\x00\x01\x00",4);
     p_buffer[36]=0;
     p_buffer[37]=p_ap-&gt;essid_len;
     memcpy(p_buffer+38,p_ap-&gt;essid,p_ap-&gt;essid_len);
@@ -659,7 +659,7 @@ int32 create_raw_socket(char* p_iface)
 int32 send_80211_frame(int32 p_socket,uint8* p_buffer,uint32 p_size)
 {
     uint8 t_buffer[4096];
-    uint8* t_radiotap=(uint8*)"x00x00x0dx00x04x80x02x00x02x00x00x00x00";
+    uint8* t_radiotap=(uint8*)"\x00\x00\x0d\x00\x04\x80\x02\x00\x02\x00\x00\x00\x00";
     memcpy(t_buffer,t_radiotap,13);
     memcpy(t_buffer+13,p_buffer,p_size);
     p_size+=13;
@@ -680,7 +680,7 @@ int32 main()
     {
         uint8 t_mac[6];
         char t_essid[32];
-        memcpy(t_mac,"xECx17x2Fx2DxB6xB0",6);
+        memcpy(t_mac,"\xEC\x17\x2F\x2D\xB6\xB0",6);
         memcpy(t_essid,"zjs ap 0",9);
         t_mac[5]+=t_i;
         t_essid[7]+=t_i;
