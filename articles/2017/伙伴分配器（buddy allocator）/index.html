@@ -363,6 +363,7 @@ size_t avl_node_count(struct avl_node* root)
 #ifndef BUDDY_H
 #define BUDDY_H
 
+#include &lt;avl.h&gt;
 #include &lt;stdlib.h&gt;
 
 // 一个伙伴分配器实例
@@ -415,7 +416,6 @@ int buddy_free(struct buddy* buddy, size_t addr, size_t size);
 <p>buddy.c</p>
 
 <pre>
-#include &lt;avl.h&gt;
 #include &lt;buddy.h&gt;
 #include &lt;common.h&gt;
 #include &lt;string.h&gt;
@@ -494,8 +494,8 @@ static size_t get_a_item_from_layer(struct buddy* buddy, size_t layer_index)
     size_t upper_item_index = get_a_item_from_layer(buddy, layer_index + 1);
     if(upper_item_index == (size_t)(-1))
         return (size_t)(-1);
-    (*layer) = avl_insert((*layer), (void*)(upper_item_index * 2), plain_comparator);
-    return upper_item_index * 2 + 1;
+    (*layer) = avl_insert((*layer), (void*)(upper_item_index * 2 + 1), plain_comparator);
+    return upper_item_index * 2;
 }
 
 size_t buddy_allocate(struct buddy* buddy, size_t size)
