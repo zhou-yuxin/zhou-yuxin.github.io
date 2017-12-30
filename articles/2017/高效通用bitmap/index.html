@@ -214,6 +214,79 @@ size_t bmp64_search(struct bmp64* bmp64, int value)
 
 <p>其中用到的common.h与《<a href="../伙伴分配器（buddy allocator）/index.html">伙伴分配器（buddy allocator）</a>》中的一样。</p>
 
+<p>=================阶段二：嵌套的bitmap=================</p>
+
+<p>有了bmp64，那么最大64位长度的bitmap就完成了。可是很多时候64位不够啊，怎么办？能否基于bmp64构造任意长度的bitmap？</p>
+
+<p>我初步想到了一个方案：使用n（0 &lt; n &lt;= 64）个bmp64，来表示最大长度64*n的bitmap。并且在上层，再用两个bitmap，来表示下层的第i个bitmap中是否有0或有1。拓扑结构如下：</p>
+
+<p><img src="1.png"></p>
+
+<p>这是一个双层结构，上面是两个bmp64，分别名为bmp64_has_0和bmp64_has_1。下层是64个bmp64，取名为sub[0], sub[1] ... sub[63]。bmp64_has_0的第i位如果为1，则表明sub[i]中存在0，否则不存在0。同理，bmp64_has_1的第i位如果为1，则表明sub[i]中存在1，否则不存在1。</p>
+
+<p>因为sub[0]是0xffffffffffffffff，只有1没有0，所以bmp64_has_0的第0位是0,而bmp64_has_1的第0位是1。因为sub[1]是0x0123456789ABCDEF，既有0又有1，所以bmp64_has_0的第0位是1,而bmp64_has_1的第0位也是1。因为sub[63]是0x0000000000000000，只有0没有1，所以bmp64_has_0的第0位是1,而bmp64_has_1的第0位是0。</p>
+
+<p>要访问逻辑上的第i位，其实就是对sub[i / 64]的第 i % 64位进行访问。接下来就是搜索问题。比如要搜索一个0，那么就在bmp64_has_0中搜索到一个1，比如返回编号是1，表明sub[1]中存在0。那么接着就在sub[1]中搜索0，比如返回编号是4，那么就得知，逻辑上的第1 * 64 + 4 = 68位是一个0。</p>
+
+<p>对于其进行set操作，就需要修改bmp64_has_0和bmp64_has_1以保持一致性。当把第i位设置为0的时候，那么bmp64_has_0的第i / 64位直接设为1即可。而对于bmp64_has_1的第i / 64位，则为bmp64_exist(sub[i / 64], 1)的返回结果。对于设置1也是类似的。</p>
+
+<p>当然，也可以叠加三层，四层，这样bitmap的长度就可以任意长。</p>
+
+<p>Talk is cheap, show you my code!</p>
+
+<p>bitmap.h</p>
+
+<pre>
+#ifndef BITMAP_H
+#define BITMAP_H
+
+#include &lt;stdlib.h&gt;
+
+// 一个bitmap
+struct bitmap
+{
+    // 长度
+    size_t len;
+    // 一个数组，每个元素是一个struct bitmap或者struct bmp64
+    void* what;
+};
+
+#define BITMAP_NOT_FOUND ((size_t)(-1))
+
+// 初始化bitmap
+//    len: 长度，任意长
+//    value_all: 把所有bit初始化为0或1
+// 成功返回1，失败返回0
+int bitmap_init(struct bitmap* bitmap, size_t len, int value_all);
+
+// 查询指定位的值
+//   bitmap: 一个bitmap的指针
+//   index: 位的编号
+// 失败返回-1,成功返回1或0
+int bitmap_get(struct bitmap* bitmap, size_t index);
+
+// 设置指定位的值
+//   bitmap: 一个bitmap的指针
+//   index: 位的编号
+//   value: 位的值
+// 成功返回1, 失败返回0
+int bitmap_set(struct bitmap* bitmap, size_t index, int value);
+
+// 判断bitmap中，是否存在1或0
+//   bitmap: 一个bitmap的指针
+//   value: 位的值
+// 存在返回1,不存在返回0
+int bitmap_exist(struct bitmap* bitmap, int value);
+
+// 在bitmap中，搜索一个值为value的位
+//   bitmap: 一个bitmap的指针
+//   value: 位的值
+// 存在则返回找到的位的编号，不存在则返回BITMAP_NOT_FOUND
+size_t bitmap_search(struct bitmap* bitmap, int value);
+
+#endif
+</pre>
+
                                         </div>
                         </article>
                     </div>
