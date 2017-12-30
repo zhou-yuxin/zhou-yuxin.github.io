@@ -36,25 +36,183 @@
 <p>我用一个uint64_t来表示它：</p>
 
 <pre>
-size_t len = 64;
 uint64_t bitmap = 0x0280900f00000000;
 </pre>
+
+<p>首先判断bitmap != 0，那么就知道这64个bit中肯定有1。</p>
 
 <p>二分搜索嘛，肯定少不了两个索引left和right，来表示搜索区域。虽然习惯上left &lt; right，但是这里不同，规定left &gt; right。这是因为，习惯上，我们表示一串二进制时，会把高位写在左边，把低位写在右边，就像上面的那串。起始时：</p>
 
 <pre>
-size_t left = len -1;
+size_t left = 63;
 size_t right = 0;
 </pre>
 
 <p>表示left和right中的所有bit，包括left和right所在位置的bit，是搜索区域。接下来就开始正式搜索了。</p>
 
 <pre>
-size_t mid = (left + right) / 2;
-uint64_t mask = ((uint64_t)1 &lt;&lt; (mid + 1)) - ((uint64_t)1 &lt;&lt; right);
+size_t mid = (left + right) / 2; // mid = 31
+uint64_t mask = ((uint64_t)1 &lt;&lt; (mid + 1)) - ((uint64_t)1 &lt;&lt; right); // mask = 0xffffffff
 </pre>
 
-<p>这个mask是怎么回事呢？</p>
+<p>这个mask是怎么回事呢？我们已经得知(64: 0]这64bit中一定有1，那么我们分成(64: 32]和(32: 0]两段，并且考察低位的(32 :0]这段里有没有1。考察(a: b]这么一段，就需要把其他的位都屏蔽掉，那么mask的第0~(b-1)位是0，第b~a位是1,第(a+1)~63位是0。</p>
+
+<pre>
+((uint64_t)1 << (a + 1)) - 1
+</pre>
+
+<p>能够产生低a位都是1、其余位都是0的掩码。</p>
+
+<pre>
+((uint64_t)1 << b) - 1
+</pre>
+        
+<p>能够产生低(b-1)位都是1、其余位都是0的掩码。那么两者相减，就能产生所要的掩码。这就是上面mask的公式的原理。</p>
+
+<pre>
+if(bitmap &amp; mask)
+    left = mid;
+else
+    right = mid + 1;
+</pre>
+
+<p>上面代码中，我们先考察[mid: right]这一段是否有1，如果有，那么就让left = mid，也就是接下来在低位的半段搜索了，否则就在高位的半段搜索。为啥是right = mid + 1呢？因为既然[mid: right]中没有1，那么第mid位也肯定没有1,所以有1的肯定从mid + 1开始。于是，二分迭代就建立起来了！</p>
+
+<p>bmp64.h</p>
+
+<pre>
+#ifndef BMP64_H
+#define BMP64_H
+
+#include &lt;stdint.h&gt;
+#include &lt;stdlib.h&gt;
+
+// 一个最长64位的bitmap
+struct bmp64
+{
+    // 长度
+    size_t len;
+    // 最多64个位
+    uint64_t bits;
+};
+
+#define BMP64_NOT_FOUND ((size_t)(-1))
+
+// 初始化一个bmp64
+//   len: 长度，1~64
+//   value_all: 把所有位初始化为0还是1
+// 成功返回1, 失败返回0
+int bmp64_init(struct bmp64* bmp64, size_t len, int value_all);
+
+// 查询指定位的值
+//   bmp64: 一个bmp64的指针
+//   index: 位的编号
+// 失败返回-1,成功返回1或0
+int bmp64_get(struct bmp64* bmp64, size_t index);
+
+// 设置指定位的值
+//   bmp64: 一个bmp64的指针
+//   index: 位的编号
+//   value: 位的值
+// 成功返回1, 失败返回0
+int bmp64_set(struct bmp64* bmp64, size_t index, int value);
+
+// 判断bmp64中，是否存在1或0
+//   bmp64: 一个bmp64的指针
+//   value: 位的值
+// 存在返回1,不存在返回0
+int bmp64_exist(struct bmp64* bmp64, int value);
+
+// 在bmp64中，搜索一个值为value的位
+//   bmp64: 一个bmp64的指针
+//   value: 位的值
+// 存在则返回找到的位的编号，不存在则返回BMP64_NOT_FOUND
+size_t bmp64_search(struct bmp64* bmp64, int value);
+
+#endif
+</pre>
+
+<p>bmp64.c</p>
+
+<pre>
+#include &lt;bmp64.h&gt;
+#include &lt;common.h&gt;
+
+int bmp64_init(struct bmp64* bmp64, size_t len, int value_all)
+{
+    assert(bmp64);
+    if(len == 0 || len &gt; 64)
+        ERROR(0, 0, "param &lt;len = %lu&gt; is invalid!", len);
+    bmp64-&gt;len = len;
+    bmp64-&gt;bits = value_all ? (~((uint64_t)0)) : 0;
+    return 1;
+}
+
+int bmp64_get(struct bmp64* bmp64, size_t index)
+{
+    assert(bmp64);
+    if(index &gt;= bmp64-&gt;len)
+        ERROR(-1 , 0, "param &lt;index = %lu&gt; is bigger than &lt;bmp64-&gt;len = %lu&gt;!", index, bmp64-&gt;len);
+    assert(index &lt; 64);
+    return (bmp64-&gt;bits &gt;&gt; index) &amp; (uint64_t)1;
+}
+
+int bmp64_set(struct bmp64* bmp64, size_t index, int value)
+{
+    assert(bmp64);
+    if(index &gt;= bmp64-&gt;len)
+        ERROR(-1 , 0, "param &lt;index = %lu&gt; is bigger than &lt;bmp64-&gt;len = %lu&gt;!", index, bmp64-&gt;len);
+    assert(index &lt; 64);
+    if(value)
+        bmp64-&gt;bits |= ((uint64_t)1 &lt;&lt; index);
+    else
+        bmp64-&gt;bits &amp;= ~((uint64_t)1 &lt;&lt; index);
+    return 1;
+}
+
+int bmp64_exist(struct bmp64* bmp64, int value)
+{
+    assert(bmp64);
+    assert(bmp64-&gt;len &lt;= 64);
+    uint64_t mask = bmp64-&gt;len == 64 ? (uint64_t)(-1) : ((uint64_t)1 &lt;&lt; bmp64-&gt;len) - 1;
+    if(value)
+        return (bmp64-&gt;bits &amp; mask) != 0;
+    else
+        return (bmp64-&gt;bits | ~mask) != (uint64_t)(-1);
+}
+
+size_t bmp64_search(struct bmp64* bmp64, int value)
+{
+    assert(bmp64);
+    if(!bmp64_exist(bmp64, value))
+        return BMP64_NOT_FOUND;
+    if(value)
+    {
+        size_t left = bmp64-&gt;len - 1, right = 0;
+        while(left &gt; right)
+        {
+            size_t mid = (left + right) / 2;
+            assert(mid &lt; 63);
+            uint64_t mask = ((uint64_t)1 &lt;&lt; (mid + 1)) - ((uint64_t)1 &lt;&lt; right);
+            if(bmp64-&gt;bits &amp; mask)
+                left = mid;
+            else
+                right = mid + 1;
+        }
+        size_t index = left;
+        return (bmp64-&gt;bits &gt;&gt; index) &amp; (uint64_t)1 ? index : BMP64_NOT_FOUND;
+    }
+    else
+    {
+        struct bmp64 reverse;
+        reverse.len = bmp64-&gt;len;
+        reverse.bits = ~(bmp64-&gt;bits);
+        return bmp64_search(&amp;reverse, 1);
+    }
+}
+</pre>
+
+<p>其中用到的common.h与《<a href="../伙伴分配器（buddy allocator）/index.html">伙伴分配器（buddy allocator）</a>》中的一样。</p>
 
                                         </div>
                         </article>
