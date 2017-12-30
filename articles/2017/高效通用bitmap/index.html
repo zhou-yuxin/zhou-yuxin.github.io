@@ -1,0 +1,69 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>高效通用bitmap</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">高效通用bitmap</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>真是无语了。。。昨天写了一半了，结果不知啥原因，就变成乱码了，只好重写。</p>
+
+<p>Bitmap是一个非常通用的基础设施，通常用来表示资源的可用状态。Bitmap可以使用一个字节数组来简单实现，逻辑上的第i个bit对应字节数组中第i/8个字节的第i%8个位。这种实现方式呢，随机访问（查询或者设置某个bit的状态）非常高效，可以在O(1)的时间复杂度内完成。但是搜索（比如查找一个值为1的位）的效率很差，因为顺序遍历需要O(n)的时间复杂度。但是，bitmap最最常用的功能就是搜索了，比如需要分配一个空闲的资源。我的很多项目都因为上述的这种简单bitmap而性能低下。所以我迫切需要一个高性能（至少对搜索操作高性能）的bitmap实现。</p>
+
+<p>按照经验，把一个O(n)的遍历搜索加速的办法通常是使用二分搜索，变成O(logn)。那么问题是，一个很长的字节数组，折半之后，搜索不是依然需要顺序遍历吗？而且n/2 + n/4 + n/8 + ... + 1 趋近与n，根本不可能节省时间。因此，肯定不能使用字节数组这么简单的数据结构。</p>
+
+<p>================阶段一：巧妙的bmp64=============</p>
+
+<p>既然通用的bitmap没有头绪，那么我就退而求其次呗~我先考虑一个长度为64的bitmap。</p>
+    
+<p>我想到了一个好办法，利用了这么一个原理：<font color="red">在64位机器上，判断一个uint64_t是否为0的时间开销是固定的。如果我用一个uint64_t表示一个长度为64的bitmap，那么判断这64bit中是否有1，只需要判断这个uint64_t是否为0。类似的，比如我要判断第4位到第7位中是否有1，只需要把这个bitmap“与”0xf0，再判断是否是0即可。这样，搜索区域先从64bit变成32bit，再变成16bit，每次折半后，搜索的开销都是固定的指令数量，而不需要挨个遍历各个位。</font></p>
+
+<p>举个例子，比如我有一个长度为64的bitmap</p>
+
+<pre>
+0000 0010 1000 0000 1100 0000 0000 1111 0000 0000 0000 0000 0000 0000 0000 0000
+</pre>
+
+<p>我用一个uint64_t来表示它：</p>
+
+<pre>
+size_t len = 64;
+uint64_t bitmap = 0x0280900f00000000;
+</pre>
+
+<p>二分搜索嘛，肯定少不了两个索引left和right，来表示搜索区域。虽然习惯上left &lt; right，但是这里不同，规定left &gt; right。这是因为，习惯上，我们表示一串二进制时，会把高位写在左边，把低位写在右边，就像上面的那串。起始时：</p>
+
+<pre>
+size_t left = len -1;
+size_t right = 0;
+</pre>
+
+<p>表示left和right中的所有bit，包括left和right所在位置的bit，是搜索区域。接下来就开始正式搜索了。</p>
+
+<pre>
+size_t mid = (left + right) / 2;
+uint64_t mask = ((uint64_t)1 &lt;&lt; (mid + 1)) - ((uint64_t)1 &lt;&lt; right);
+</pre>
+
+<p>这个mask是怎么回事呢？</p>
+
+                                        </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
