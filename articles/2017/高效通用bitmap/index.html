@@ -571,6 +571,15 @@ gcc -std=gnu99 bmp64.c bitmap.c test_bitmap.c -o test_bitmap -I.
 
 <p>可以看到，从0开始，唯独没有3500，而且最后一次输出“NOT FOUND!”，与预期一致！</p>
 
+<p>然后来测测性能~关闭assert，使用gcc -O3优化，在Intel(R) Xeon(R) Platinum 8180M CPU @ 2.50GHz的服务器上，各个长度级别的操作耗时如下：</p>
+
+<table>
+    <tr><th>位数</th><th>bitmap_get</th><th>bitmap_set</th><th>bitmap_search</th></tr>
+    <tr><td>64</td><td>3n</td><td>4ns</td><td>13ns</td></tr>
+    <tr><td>4096</td><td>15ns</td><td>23ns</td><td>29ns</td></tr>
+    <tr><td>262144</td><td>27ns</td><td>44ns</td><td>47ns</td></tr>
+</table>
+
                             </div>
                         </article>
                     </div>
