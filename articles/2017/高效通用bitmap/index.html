@@ -287,7 +287,291 @@ size_t bitmap_search(struct bitmap* bitmap, int value);
 #endif
 </pre>
 
-                                        </div>
+<p>这里有个奇迹淫巧需要解释一下，就是这个struct bitmap结构。从上面那种图片中可以看到，最底层是若干个struct bmp64。所以应该是：</p>
+
+<pre>
+// 两层结构
+struct bitmap
+{
+    size_t len;
+    struct bmp64 bmp64_has_0;
+    struct bmp64 bmp64_has_1;
+    struct bmp64* subs;
+};
+</pre>
+
+<p>但是，如果位数超过4096呢？那么就需要三层结构，那么第二层也是struct bitmap，而不是struct bmp64，也就是这样：</p>
+
+<pre>
+// 多层(三层及以上)结构
+struct bitmap
+{
+    size_t len;
+    struct bmp64 bmp64_has_0;
+    struct bmp64 bmp64_has_1;
+    struct bitmap* sub;
+};
+</pre>
+
+<p>从而让struct bitmap层层嵌套。而如果位数在64位以内，那么struct bitmap就应该退化为struct bmp64，也就是</p>
+
+<pre>
+// 单层结构，退化为bmp64
+struct bitmap // struct bmp64
+{
+    size_t len;
+    uint64_t bits;
+};
+</pre>
+
+<p>可见，除了len字段以外，其他字段都应该可以伸缩。所以我设计了这么一个结构：</p>
+
+<pre>
+struct bitmap
+{
+    // 长度
+    size_t len;
+    // 一个数组，每个元素是一个struct bitmap或者struct bmp64
+    void* what;
+};
+</pre>
+
+<p>确保sizeof(struct bitmap) == sizeof(struct bmp64)。同时bitmap中的len的偏移量和bmp64中的偏移量相同。对于what字段的解释根据len的不同而不同：</p>
+
+<ol>
+<li>当0 &lt; len &lt;= 64时，void* what解释为uint64_t bits，即把bitmap看作bmp64；</li>
+<li>当64 &lt; len时，void* what解释为struct bitmap* what；其中，what[0]就是bmp64_has_0，what[1]就是bmp64_has_1。what[2 + i]就是sub[i]。</li>
+</ol>
+
+<p>确保sizeof(struct bitmap) == sizeof(struct bmp64)就是为了能够让struct bitmap直接退化为struct bmp64而不浪费空间，并且使得这两个结构能混合放入同一个数组中。这个技巧在bitmap.c的实现中可以看到。</p>
+
+<p>bitmap.c</p>
+
+<pre>
+#include &lt;bmp64.h&gt;
+#include &lt;bitmap.h&gt;
+#include &lt;common.h&gt;
+
+// 当len &gt; 64时，获取下一层的单元长度，
+// 当64 &lt; len &lt;= 64 * 64时，sub_maxlen = 64 （双层结构）
+// 当64 * 64 &lt; len &lt;= 64 * 64 * 64时，sub_maxlen = 64 * 64 （三层结构）
+// 以此类推
+#define GET_SUB_MAXLEN(len, sub_maxlen) for((sub_maxlen) = 64; (sub_maxlen) * 64 &lt; (len); (sub_maxlen) *= 64)
+
+// 当len &gt; 64时，对于void* what字段解释
+#define BMP64_HAS_0(bitmap) (((struct bmp64*)(bitmap)-&gt;what) + 0)
+#define BMP64_HAS_1(bitmap) (((struct bmp64*)(bitmap)-&gt;what) + 1)
+#define SUB_BITMAP(bitmap, index) (((struct bitmap*)(bitmap)-&gt;what) + (2 + index))
+
+int bitmap_init(struct bitmap* bitmap, size_t len, int value_all)
+{
+    assert(bitmap);
+    // 这两句断言确保struct bitmap可以“无痛”退化到struct bmp64
+    assert(sizeof(struct bmp64) == sizeof(struct bitmap));
+    assert(&amp;(((struct bmp64*)0)-&gt;len) == &amp;(((struct bmp64*)0)-&gt;len));
+    if(len == 0)
+        ERROR(0, 0, "param &lt;len = %lu&gt; is invalid!", len);
+    // 当len &lt;= 64时，直接退化为bmp64
+    if(len &lt;= 64)
+    {
+        int ret = bmp64_init((struct bmp64*)bitmap, len, value_all);
+        assert(ret);
+        return 1;
+    }
+    // 下一层最大长度。比如len = 1000，那么sub_maxlen就是64；比如len = 10000，那么sub_maxlen就是4096
+    size_t sub_maxlen;
+    GET_SUB_MAXLEN(len, sub_maxlen);
+    // 下一层有多少个单元。比如len = 1000，那么下一层的最大长度是64，需要16个单元（前15个单元的长度都是64，最后一个长度是40）
+    size_t sub_count = (len - 1) / sub_maxlen + 1;
+    assert(2 &lt;= sub_count &amp;&amp; sub_count &lt;= 64);
+    bitmap-&gt;len = len;
+    bitmap-&gt;what = malloc(sizeof(struct bitmap) * (2 + sub_count));
+    if(!bitmap-&gt;what)
+        ERROR(0, 1, "malloc(sizeof(struct bitmap) * (2 + %lu)) failed!", sub_count);
+    // 如果都设置为1,那么bmp64_has_0就都是0, 否则都是1
+    int ret = bmp64_init(BMP64_HAS_0(bitmap), sub_count, value_all ? 0 : 1);
+    assert(ret);
+    // 如果都设置为1,那么bmp64_has_1就都是1, 否则都是0
+    ret = bmp64_init(BMP64_HAS_1(bitmap), sub_count, value_all ? 1 : 0);
+    assert(ret);
+    for(size_t i = 0; i &lt; sub_count; i++)
+    {
+        // 下一层中，前sub_count - 1个单元的长度就是最大长度sub_maxlen，最后一个可能不足
+        size_t sub_len = i &lt; sub_count - 1 ? sub_maxlen : len - sub_maxlen * (sub_count - 1);
+        // 递归结构！
+        int ret = bitmap_init(SUB_BITMAP(bitmap, i), sub_len, value_all);
+        assert(ret);
+    }
+    return 1;
+}
+
+// 把逻辑上的index分解为下一层单元的index和单元内的index
+#define PARSE_INDEX(bitmap, index, sub_index, index_in_sub)     \
+    do                                                          \
+    {                                                           \
+        size_t sub_maxlen;                                      \
+        GET_SUB_MAXLEN((bitmap)-&gt;len, sub_maxlen);              \
+        (sub_index) = (index) / sub_maxlen;                     \
+        (index_in_sub) = (index) &amp; (sub_maxlen - 1);            \
+        assert((index_in_sub) == ((index) % sub_maxlen));       \
+    }                                                           \
+    while(0)
+
+int bitmap_get(struct bitmap* bitmap, size_t index)
+{
+    assert(bitmap);
+    if(index &gt;= bitmap-&gt;len)
+        ERROR(-1 , 0, "param &lt;index = %lu&gt; is bigger than &lt;bitmap-&gt;len = %lu&gt;!", index, bitmap-&gt;len);
+    // 当len &lt;= 64时，直接退化为bmp64
+    if(bitmap-&gt;len &lt;= 64)
+    {
+        int ret = bmp64_get((struct bmp64*)bitmap, index);
+        assert(ret != -1);
+        return ret;
+    }
+    size_t sub_index, index_in_sub;
+    PARSE_INDEX(bitmap, index, sub_index, index_in_sub);
+    // 递归结构！
+    int ret = bitmap_get(SUB_BITMAP(bitmap, sub_index), index_in_sub);
+    assert(ret != -1);
+    return ret;
+}
+
+int bitmap_set(struct bitmap* bitmap, size_t index, int value)
+{
+    assert(bitmap);
+    if(index &gt;= bitmap-&gt;len)
+        ERROR(0 , 0, "param &lt;index = %lu&gt; is bigger than &lt;bitmap-&gt;len = %lu&gt;!", index, bitmap-&gt;len);
+    // 当len &lt;= 64时，直接退化为bmp64
+    if(bitmap-&gt;len &lt;= 64)
+    {
+        int ret = bmp64_set((struct bmp64*)bitmap, index, value);
+        assert(ret);
+        return ret;
+    }
+    size_t sub_index, index_in_sub;
+    PARSE_INDEX(bitmap, index, sub_index, index_in_sub);
+    struct bitmap* sub_bitmap = SUB_BITMAP(bitmap, sub_index);
+    // 递归结构！
+    int ret = bitmap_set(sub_bitmap, index_in_sub, value);
+    assert(ret);
+    // 修改bmp64_has_0和bmp64_has_1以维护一致性
+    // 如果把第i位设置为了1，
+    if(value)
+    {
+        // 那么BMP64_HAS_1的第sub_index位直接设为1，因为sub_bitmap中肯定有1
+        bmp64_set(BMP64_HAS_1(bitmap), sub_index, 1);
+        // 而0的数量可能会减少，所以需要重新判断
+        bmp64_set(BMP64_HAS_0(bitmap), sub_index, bitmap_exist(sub_bitmap, 0));
+    }
+    // 反之亦然
+    else
+    {
+        bmp64_set(BMP64_HAS_0(bitmap), sub_index, 1);
+        bmp64_set(BMP64_HAS_1(bitmap), sub_index, bitmap_exist(sub_bitmap, 1));
+    }
+    return 1;
+}
+
+int bitmap_exist(struct bitmap* bitmap, int value)
+{
+    assert(bitmap);
+    // 当len &lt;= 64时，直接退化为bmp64
+    if(bitmap-&gt;len &lt;= 64)
+        return bmp64_exist((struct bmp64*)bitmap, value);
+    // 如果查询是否存在1，只有查询bmp64_has_1中是否存在1
+    if(value)
+        return bmp64_exist(BMP64_HAS_1(bitmap), 1);
+    // 如果查询是否存在0，只有查询bmp64_has_0中是否存在1
+    else
+        return bmp64_exist(BMP64_HAS_0(bitmap), 1);
+}
+
+size_t bitmap_search(struct bitmap* bitmap, int value)
+{
+    assert(bitmap);
+    // 当len &lt;= 64时，直接退化为bmp64
+    if(bitmap-&gt;len &lt;= 64)
+    {
+        size_t index = bmp64_search((struct bmp64*)bitmap, value);
+        if(index == BMP64_NOT_FOUND)
+            return BITMAP_NOT_FOUND;
+        return index;
+    }
+    // 在bmp64_has_&lt;value&gt;中查找到一个1
+    size_t sub_index = bmp64_search(value ? BMP64_HAS_1(bitmap) : BMP64_HAS_0(bitmap), 1);
+    if(sub_index == BMP64_NOT_FOUND)
+        return BITMAP_NOT_FOUND;
+    // 在sub[sub_index]中查找一个值为value的位
+    size_t index_in_sub = bitmap_search(SUB_BITMAP(bitmap, sub_index), value);
+    assert(index_in_sub != BITMAP_NOT_FOUND);
+    size_t sub_maxlen;
+    GET_SUB_MAXLEN(bitmap-&gt;len, sub_maxlen);
+    // 计算逻辑上的索引
+    return sub_index * sub_maxlen + index_in_sub;
+}
+</pre>
+
+<p>浓浓的递归结构啊！</p>
+
+<p>写一个测试：</p>
+
+<p>test_bitmap.c</p>
+
+<pre>
+#include &lt;bitmap.h&gt;
+#include &lt;common.h&gt;
+
+int main()
+{
+    int ret;
+
+    struct bitmap b;
+    ret = bitmap_init(&amp;b, 4096, 0);
+    assert(ret);
+
+    ret = bitmap_exist(&amp;b, 0);
+    assert(ret);
+
+    ret = bitmap_exist(&amp;b, 1);
+    assert(!ret);
+
+    ret = bitmap_set(&amp;b, 3500, 1);
+    assert(ret);
+
+    ret = bitmap_exist(&amp;b, 0);
+    assert(ret);
+
+    ret = bitmap_exist(&amp;b, 1);
+    assert(ret);
+
+    for(size_t i = 0; i &lt; 4096; i++)
+    {
+        size_t index = bitmap_search(&amp;b, 0);
+        if(index == BITMAP_NOT_FOUND)
+            printf("NOT FOUND! ");
+        else
+        {
+            printf("%lu ", index);
+            bitmap_set(&amp;b, index, 1);
+        }
+    }
+    printf("\n");
+
+    return 0;
+}
+</pre>
+
+<pre>
+gcc -std=gnu99 bmp64.c bitmap.c test_bitmap.c -o test_bitmap -I.
+./test_bitmap
+</pre>
+
+<p><img src="2.png"></p>
+
+<p>可以看到，从0开始，唯独没有3500，而且最后一次输出“NOT FOUND!”，与预期一致！</p>
+
+                            </div>
                         </article>
                     </div>
                 </div>
