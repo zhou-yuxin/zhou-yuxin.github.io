@@ -72,6 +72,10 @@ int buddy_free(void* addr, size_t size);
 
 #include &lt;stdio.h&gt;
 
+#ifdef NO_ASSERT
+#define assert(x) 
+#endif
+
 #define ERROR(ret, show_errstr, msgs...)                                        \
     do                                                                          \
     {                                                                           \

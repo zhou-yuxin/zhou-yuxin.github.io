@@ -1,0 +1,262 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>高效通用bitmap（续）——bmp4k</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+        <link rel="stylesheet" href="../../../highlight.css">
+        <script src="../../../highlight.js"></script>
+        <script>hljs.initHighlightingOnLoad();</script>
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">高效通用bitmap（续）——bmp4k</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>前面在《<a href="../../2017/高效通用bitmap/index.html">高效通用bitmap</a>》中提出了一种支持任意长度的bitmap。不过里面有一个最最大的弊端就是，为了描述一个资源是否可用，事实上用了两个bit。这是因为struct bmp64结构，最多表示64个资源，但sizeof(struct bmp64)却是16，因为len字段也占用8字节。这在规模小的时候无所谓，因为bitmap占用的资源很少。但是，我接下来要做一个NVM上的内存分配器，其管理的空间可能高达6TB，而最小的分配单位是64字节。那么最极端的情况下，这6TB都用来分配64B的对象，那么会存在3*2^35个对象。如果每个对象占用2bit，那么总共会占用24GB的DDR空间。为了尽量节省开销，我决定重新实现一个，让每一个资源只占用一个bit，这样最多占用12GB了。</p>
+
+<p>本来的bmp64只能管理64个bit，太小，而4096位以上的bitmap其实往往用不到，而且因为递归层次较多，性能也比较慢。我打算在容量和复杂性之间折中一下，使用bmp4k，也就是双层结构，最多管理4096个对象。</p>
+
+<p>原理什么的在《<a href="../../2017/高效通用bitmap/index.html">高效通用bitmap</a>》中都介绍得很清楚了，这里就直接给出代码了。其实主要是现在心情很烦躁，我这么忙居然都觉得我很闲。</p>
+
+<p>bmp4k.h</p>
+
+<pre><code>
+#ifndef BMP4K_H
+#define BMP4K_H
+
+#include &lt;stdlib.h&gt;
+#include &lt;stdint.h&gt;
+
+// 一个bmp4k
+struct bmp4k
+{
+    // 长度
+    size_t len;
+    // 第i位代表bits[i]中是否有0
+    uint64_t has_0;
+    // 第i位代表bits[i]中是否有1
+    uint64_t has_1;
+    // 共4096个bit
+    uint64_t bits[64];
+};
+
+#define BMP4K_NOT_FOUND ((size_t)(-1))
+
+// 初始化bmp4k
+//   bmp4k: 一个bmp4k指针
+//   len: 长度，1~4096
+//   value_all: 把所有bit初始化为0或1
+// 成功返回，失败返回0
+int bmp4k_init(struct bmp4k* bmp4k, size_t len, int value_all);
+
+// 查询指定位的值
+//   bmp4k: 一个bmp4k指针
+//   index: 位的编号
+// 失败返回-1,成功返回1或0
+int bmp4k_get(struct bmp4k* bmp4k, size_t index);
+
+// 设置指定位的值
+//   bmp4k: 一个bmp4k指针
+//   index: 位的编号
+//   value: 位的值
+// 成功返回1, 失败返回0
+int bmp4k_set(struct bmp4k* bmp4k, size_t index, int value);
+
+// 判断是否存在1或0
+//   bmp4k: 一个bmp4k指针
+//   value: 位的值
+// 存在返回1,不存在返回0
+int bmp4k_exist(struct bmp4k* bmp4k, int value);
+
+// 搜索一个值为value的位
+//   bmp4k: 一个bmp4k指针
+//   value: 位的值
+// 存在则返回找到的位的编号，不存在则返回BMP4K_NOT_FOUND
+size_t bmp4k_search(struct bmp4k* bmp4k, int value);
+
+#endif
+</code></pre>
+
+<p>bmp4k.c</p>
+
+<pre><code>
+#include &lt;bmp4k.h&gt;
+#include &lt;common.h&gt;
+#include &lt;string.h&gt;
+
+#define DIV_CEIL(n, align) (((n) - 1) / (align) + 1)
+
+int bmp4k_init(struct bmp4k* bmp4k, size_t len, int value_all)
+{
+    assert(bmp4k);
+    if(len == 0 || len &gt; 4096)
+        ERROR(0, 0, "param &lt;len = %lu&gt; is invalid!", len);
+    bmp4k-&gt;len = len;
+    bmp4k-&gt;has_0 = value_all ? 0 : (uint64_t)(-1);
+    bmp4k-&gt;has_1 = value_all ? (uint64_t)(-1) : 0;
+    memset(bmp4k-&gt;bits, value_all ? (uint8_t)(-1) : 0, sizeof(bmp4k-&gt;bits));
+    return 1;
+}
+
+int bmp4k_get(struct bmp4k* bmp4k, size_t index)
+{
+    assert(bmp4k);
+    if(index &gt;= bmp4k-&gt;len)
+        ERROR(-1 , 0, "param &lt;index = %lu&gt; is bigger than &lt;bmp4k-&gt;len = %lu&gt;!", index, bmp4k-&gt;len);
+    return (bmp4k-&gt;bits[index / 64] &gt;&gt; (index % 64)) &amp; (uint64_t)1;
+}
+
+int bmp4k_set(struct bmp4k* bmp4k, size_t index, int value)
+{
+    assert(bmp4k);
+    if(index &gt;= bmp4k-&gt;len)
+        ERROR(0 , 0, "param &lt;index = %lu&gt; is bigger than &lt;bmp4k-&gt;len = %lu&gt;!", index, bmp4k-&gt;len);
+    size_t u64_index = index / 64;
+    size_t last_index = DIV_CEIL(bmp4k-&gt;len, 64) - 1;
+    assert(u64_index &lt;= last_index);
+    size_t bit_count = u64_index &lt; last_index ? 64 : bmp4k-&gt;len - last_index * 64;
+    assert(1 &lt;= bit_count &amp;&amp; bit_count &lt;= 64);
+    uint64_t mask = bit_count &lt; 64 ? ((uint64_t)1 &lt;&lt; bit_count) - 1 : (uint64_t)(-1);
+    if(value)
+    {
+        bmp4k-&gt;bits[u64_index] |= ((uint64_t)1 &lt;&lt; (index % 64));
+        bmp4k-&gt;has_1 |= ((uint64_t)1 &lt;&lt; u64_index);
+        if((bmp4k-&gt;bits[u64_index] | ~mask) == (uint64_t)(-1))
+            bmp4k-&gt;has_0 &amp;= ~((uint64_t)1 &lt;&lt; u64_index);
+    }
+    else
+    {
+        bmp4k-&gt;bits[u64_index] &amp;= ~((uint64_t)1 &lt;&lt; (index % 64));
+        bmp4k-&gt;has_0 |= ((uint64_t)1 &lt;&lt; u64_index);
+        if((bmp4k-&gt;bits[u64_index] &amp; mask) == 0)
+            bmp4k-&gt;has_1 &amp;= ~((uint64_t)1 &lt;&lt; u64_index);
+    }
+    return 1;
+}
+
+int bmp4k_exist(struct bmp4k* bmp4k, int value)
+{
+    assert(bmp4k);
+    size_t u64_count = DIV_CEIL(bmp4k-&gt;len, 64);
+    assert(1&lt;= u64_count &amp;&amp; u64_count &lt;= 64);
+    uint64_t mask = u64_count &lt; 64 ? ((uint64_t)1 &lt;&lt; u64_count) - 1 : (uint64_t)(-1);
+    if(value)
+        return (bmp4k-&gt;has_1 &amp; mask) != 0;
+    else
+        return (bmp4k-&gt;has_0 &amp; mask) != 0;
+}
+
+static size_t binary_search_u64(uint64_t bits, size_t bit_count)
+{
+    size_t left = bit_count - 1, right = 0;
+    while(left &gt; right)
+    {
+        size_t mid = (left + right) / 2;
+        assert(mid &lt; 63);
+        uint64_t mask = ((uint64_t)1 &lt;&lt; (mid + 1)) - ((uint64_t)1 &lt;&lt; right);
+        if(bits &amp; mask)
+            left = mid;
+        else
+            right = mid + 1;
+    }
+    size_t index = left;
+    return (bits &gt;&gt; index) &amp; (uint64_t)1 ? index : BMP4K_NOT_FOUND;
+}
+
+size_t bmp4k_search(struct bmp4k* bmp4k, int value)
+{
+    assert(bmp4k);
+    if(!bmp4k_exist(bmp4k, value))
+        return BMP4K_NOT_FOUND;
+    size_t u64_count = DIV_CEIL(bmp4k-&gt;len, 64);
+    assert(1&lt;= u64_count &amp;&amp; u64_count &lt;= 64);
+    size_t u64_index = binary_search_u64(value ? bmp4k-&gt;has_1 : bmp4k-&gt;has_0, u64_count);
+    if(u64_index == BMP4K_NOT_FOUND)
+        return BMP4K_NOT_FOUND;
+    size_t last_index = u64_count - 1;
+    size_t bit_count = u64_index &lt; last_index ? 64 : bmp4k-&gt;len - last_index * 64;
+    size_t bits = value ? bmp4k-&gt;bits[u64_index] : ~(bmp4k-&gt;bits[u64_index]);
+    size_t bit_index = binary_search_u64(bits, bit_count);
+    assert(((bits &gt;&gt; bit_index) &amp; (uint64_t)1));
+    return u64_index * 64 + bit_index;
+}
+</code></pre>
+
+<p>写一个测试用例：</p>
+
+<p>test_bmp4k.c</p>
+
+<pre><code>
+#include &lt;bmp4k.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;common.h&gt;
+
+int main()
+{
+    struct bmp4k b;
+    int ret;
+    
+    ret = bmp4k_init(&amp;b, 4000, 0);
+    assert(ret);
+
+    for(size_t i = 0; i &lt; 4000; i++)
+    {
+        size_t index = bmp4k_search(&amp;b, 0);
+        assert(index != BMP4K_NOT_FOUND);
+        ret = bmp4k_set(&amp;b, index, 1);
+        assert(ret);
+    }
+
+    ret = bmp4k_exist(&amp;b, 0);
+    assert(!ret);
+
+    ret = bmp4k_exist(&amp;b, 1);
+    assert(ret);
+
+    for(size_t i = 0; i &lt; 4000; i++)
+    {
+        size_t index = bmp4k_search(&amp;b, 1);
+        assert(index != BMP4K_NOT_FOUND);
+        ret = bmp4k_set(&amp;b, index, 0);
+        assert(ret);
+    }
+
+    ret = bmp4k_exist(&amp;b, 0);
+    assert(ret);
+
+    ret = bmp4k_exist(&amp;b, 1);
+    assert(!ret);
+
+    return 0;
+}
+</code></pre>
+
+<pre><code>
+gcc -std=gnu99 -O3 *.c -o test_bmp4k -I.
+./test_bmp4k
+</code></pre>
+
+<p>关闭assert，使用gcc -O3优化，在Intel(R) Xeon(R) Platinum 8180M CPU @ 2.50GHz的服务器上，各个长度级别的操作耗时如下：</p>
+
+<table>
+    <tr><th>bitmap_get</th><th>bitmap_set</th><th>bitmap_search</th></tr>
+    <tr><td>15ns</td><td>23ns</td><td>29ns</td></tr>
+</table>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
