@@ -74,7 +74,7 @@ body {
 }
 #page {
 	margin: 2em auto;
-	max-width: 1000px;
+	max-width: 2000px;
 }
 #branding hgroup {
 	margin: 0 7.6%;
@@ -89,7 +89,7 @@ body {
 }
 #content {
 	margin: 0 34% 0 7.6%;
-	width: 58.4%;
+	width: 90%;
 }
 #secondary {
 	float: right;
@@ -112,7 +112,7 @@ body {
 .singular footer.entry-meta,
 .singular #comments-title {
 	margin: 0 auto;
-	width: 68.9%;
+	width: 100%;
 }
 
 /* Attachments */
@@ -122,7 +122,7 @@ body {
 }
 .singular .image-attachment .entry-description {
 	margin: 0 auto;
-	width: 68.9%;
+	width: 100%;
 }
 
 /* Showcase */
