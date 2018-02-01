@@ -238,7 +238,19 @@ struct nvmalloc
 };
 </code></pre>
 
-<p>最基础的就是一个buddy allocator。然后有一个名为levels的nvmalloc_level一维数组，最后有一个名为chunk_maps的void*的一维数组。buddy和levels字段已经阐述过了。chunk_maps字段暂时忽略。</p>
+<p>最基础的就是一个buddy allocator。然后有一个名为levels的nvmalloc_level一维数组，最后有一个名为chunk_maps的void*的一维数组。buddy和levels字段已经阐述过了。chunk_maps[i]对应了NVM上[i*256KB， (i+1)*256KB)这么一段空间，描述该段空间的状态。具体含义如下：</p>
+
+<ul>
+    <li>如果chunk_maps[i]为0，则表明[i*256KB， (i+1)*256KB)这段空间未被使用；</li>
+    <li>如果(size_t)chunk_maps[i]为奇数，则表明[i*256KB， (i+1)*256KB)这段空间被一个大对象占据，对象大小为(size_t)chunk_maps[i] - 1；</li>
+    <li>否则，[i*256KB， (i+1)*256KB)这段空间被分配为一个chunk，chunk_maps[i]是一个指向chunk的指针。</li>
+</ul>
+
+<p>其结构可以用下图示意：</p>
+
+<p><img src="3.png"></p>
+
+<p>所以每次向buddy allocator申请或释放空间时，都需要填充chunk_maps数组。</p>
 
 <p>对于</p>
 
@@ -269,6 +281,8 @@ size_t nvmalloc_malloc(struct nvmalloc* nvmalloc, size_t size);
     <li>返回addr。</li>
 </ol>
 
+<p><img src="4.png"></p>
+
 <p>对于</p>
 
 <pre><code>
@@ -280,19 +294,7 @@ size_t nvmalloc_malloc(struct nvmalloc* nvmalloc, size_t size);
 size_t malloc_at(size_t addr, size_t size);
 </code></pre>
 
-<p>单纯使用上述的数据结构还不能胜任。为此我引入额外的数据结构——chunk_maps。chunk_maps[i]对应了NVM上[i*256KB， (i+1)*256KB)这么一段空间，描述该段空间的状态。具体含义如下：</p>
-
-<ul>
-    <li>如果chunk_maps[i]为0，则表明[i*256KB， (i+1)*256KB)这段空间未被使用；</li>
-    <li>如果(size_t)chunk_maps[i]为奇数，则表明[i*256KB， (i+1)*256KB)这段空间被一个大对象占据，对象大小为(size_t)chunk_maps[i] - 1；</li>
-    <li>否则，[i*256KB， (i+1)*256KB)这段空间被分配为一个chunk，chunk_maps[i]是一个指向chunk的指针。</li>
-</ul>
-
-<p>其结构可以用下图示意：</p>
-
-<p><img src="3.png"></p>
-
-<p>所以每次向buddy allocator申请或释放空间时，都需要填充chunk_maps数组。对于malloc_at操作，步骤如下：</p>
+<p>单纯使用上述的数据结构还不能胜任。为此我引入额外的数据结构——chunk_maps。对于malloc_at操作，步骤如下：</p>
 
 <ol>
     <li>如果size &lt;= 512KB，跳至步骤4;</li>
@@ -310,6 +312,8 @@ size_t malloc_at(size_t addr, size_t size);
     <li>如果chunk->bitmap不存在可用的bit，则把chunk从level->avails中移除，加入level->unavails中；</li>
     <li>分配成功，返回1。</li>
 </ol>
+
+<p><img src="5.png"></p>
 
 <p>对于</p>
 
@@ -340,6 +344,8 @@ int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr);
     <li>把chunk从level->avails中移除，释放chunk；</li>
     <li>释放成功，返回1。</li>
 </ol>
+
+<p><img src="6.png"></p>
 
 <p>nvmalloc.h</p>
 
