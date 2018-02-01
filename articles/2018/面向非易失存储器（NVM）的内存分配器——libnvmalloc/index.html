@@ -1,0 +1,872 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>面向非易失存储器（NVM）的内存分配器——libnvmalloc</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+        <link rel="stylesheet" href="../../../highlight.css">
+        <script src="../../../highlight.js"></script>
+        <script>hljs.initHighlightingOnLoad();</script>
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">面向非易失存储器（NVM）的内存分配器——libnvmalloc</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>前面几篇《<a href="../../2017/伙伴分配器（buddy allocator）/index.html">伙伴分配器（buddy allocator）</a>》和《<a href="../高效通用bitmap（续）——bmp4k/index.html">高效通用bitmap（续）——bmp4k</a>》中我分别创造了伙伴分配器和高效的bitmap。目的就是为了这一篇中需要创造的libnvmalloc。这是一个用于NVM（包括一切持久化存储设备）的内存分配器，这个内存分配器相比于传统的用于DRAM的内存分配器，最大的区别在于，其支持形如</p>
+
+<pre><code>
+int malloc_at(void* addr, size_t size);
+</code></pre>
+
+<p>这样的操作。该操作用于分配一段内存空间，不仅指定了大小，还指定了起始地址。malloc_at()操作对于DRAM是没有意义的，因为写入其中的数据只有在当前进程中有效，当进程重启后，数据丢失。而malloc_at()操作对于NVM是必须的，因为写入NVM的数据在下一次进程启动时依旧能够访问到，所以必须告诉分配器把空间分配在哪里。事实上，由于NVM是通过mmap()操作动态挂载到虚拟地址空间中的，因此malloc_at()操作中的地址应该是数据相对于NVM硬件开头的偏移量，即：</p>
+
+<pre><code>
+int nvm_malloc_at(size_t addr, size_t size);
+</code></pre>
+
+<p>对于NVM的使用，可以用一个小例子阐述。进程启动时，挂载NVM，假设NVM被挂载到了虚拟地址空间中的0x12340000,即：
+    
+<pre><code>
+void* nvm_base = mmap(...); // nvm_base = 0x12340000
+</code></pre>
+
+<p>然后使用malloc()操作在NVM上分配一段长度为256的空间，得到偏移量是0x2000：</p>
+
+<pre><code>
+size_t nvm_offset = nvm_malloc(256); // nvm_offset = 0x2000
+</code></pre>
+
+<p>那么进程中就可以使用一个指向0x12342000的指针来读写NVM上的这段空间：</p>
+
+<pre><code>
+void* nvm_ptr = (void*)((size_t)nvm_base + nvm_offset); // nvm_ptr = 0x12342000
+</code></pre>
+
+<p>比如写入一个字符串：</p>
+
+<pre><code>
+strcpy((char*)nvm_ptr, "hello,world!");
+</code></pre>
+
+<p>当进程重启后，或者在另一个进程中，虽然NVM可能会被挂载到不同的虚地址空间，但是仍然可以通过malloc_at()操作和之前分配的偏移量0x2000重新访问数据：</p>
+
+<pre><code>
+void* nvm_base = mmap(...); // nvm_base = 0x45670000
+size_t nvm_offset = 0x2000;
+int ret = nvm_malloc_at(nvm_offset);
+assert(ret);
+void* nvm_ptr = (void*)((size_t)nvm_base + nvm_offset); // nvm_ptr = 0x45672000
+printf("%s\n", (char*)nvm_ptr); // output: "hello,world!\n"
+</code></pre>
+
+<p>事实上，即使不使用nvm_malloc_at()，NVM上的数据也可以通过指针直接访问。但是，如果不使用nvm_malloc_at()告诉分配器某某地方存在数据，那么分配器很可能会把该段空间分配出去，从而导致数据被破坏。这就是malloc_at()操作对于libnvmalloc的必要性。另外从上面的示例中可以看到，该分配器处理地址都是逻辑上的偏移量，而不是虚拟地址。</p>
+
+<p>从功能上而言，《<a href="../../2017/伙伴分配器（buddy allocator）/index.html">伙伴分配器（buddy allocator）</a>》中设计的buddy allocator已经可以提供libnvmalloc需要的完整功能，因为其拥有</p>
+
+<pre><code>
+// 从buddy中分配一个单元
+//    buddy: 一个buddy的指针
+//    size: 单元大小
+// 成功返回单元在空间中的偏移量，失败返回BUDDY_ALLOCATE_FAILED。
+size_t buddy_allocate(struct buddy* buddy, size_t size);
+
+// 从buddy中分配一个单元
+//    buddy: 一个buddy的指针
+//    addr: 单元的起始位置，用单元在空间中的偏移量表示
+//    size: 单元大小
+// 成功返回addr，失败返回BUDDY_ALLOCATE_FAILED。
+size_t buddy_allocate_at(struct buddy* buddy, size_t addr, size_t size);
+
+// 释放一个单元回buddy中
+//    buddy: 一个buddy的指针
+//    addr: 单元的起始位置，用单元在空间中的偏移量表示
+//    size: 单元大小
+// 成功返回1，失败返回0。
+int buddy_free(struct buddy* buddy, size_t addr, size_t size);
+</code></pre>
+
+<p>这么三个函数。换个名字就成了所要的</p>
+
+<pre><code>
+// 从管理空间中分配一块空闲区域
+//    nvmalloc: 一个nvmalloc指针
+//    size: 分配空间大小
+// 成功返回地址，失败返回NVMALLOC_ALLOCATE_FAILED
+size_t nvmalloc_malloc(struct nvmalloc* nvmalloc, size_t size);
+
+// 在管理空间的指定位置分配一块区域
+//    nvmalloc: 一个nvmalloc指针
+//    addr: 地址
+//    size: 分配空间大小
+// 成功返回地址addr，失败返回NVMALLOC_ALLOCATE_FAILED
+size_t nvmalloc_malloc_at(struct nvmalloc* nvmalloc, size_t addr, size_t size);
+
+// 释放分配的空间
+//    nvmalloc: 一个nvmalloc指针
+//    addr: 地址
+// 成功返回1, 失败返回0
+int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr);
+</code></pre>
+
+<p>但是，buddy allocator有一个不太理想的特性，就是分配的单元的大小之间必须是2的整数次幂的比例。比如说，最小的分配大小是64字节，那么下一个等级就是128字节，再往下就是256字节，以此类推。这样，在最糟糕的情况下，内存利用率接近50%，因为用户申请2^n+1字节（65, 129, 257, 513...）的空间时，实际分配的是2^(n+1)字节（128, 256, 512, 1024...）的空间。</p>
+
+<p>提高空间利用率的一个好办法就是使用更细粒度的尺寸等级划分。如果可以把尺寸分成如下等级：</p>
+
+<ul>
+    <li><font color="red">64</font></li>
+    <li>80</li>
+    <li>96</li>
+    <li>112</li>
+    <li><font color="red">128</font></li>
+    <li>160</li>
+    <li>192</li>
+    <li>224</li>
+    <li><font color="red">256</font></li>
+    <li>320</li>
+    <li>384</li>
+    <li>448</li>
+    <li><font color="red">512</font></li>
+    <p> ............</p>
+</ul>
+
+
+
+<p>那么最糟糕的情况下，空间利用率为80%。因此，为了提高空间利用率，单纯的buddy allocator是不够的。我的设计是：多个小尺寸的对象构成chunk，以chunk为单位向buddy allocator申请空间；而大对象则直接向buddy allocator分配。</p>
+
+<p>大小为512K及以下的对象称作小对象，使用细粒度尺寸划分，其规则如下：</p>
+
+<ul>
+    <li><font color="red">对于尺度级别64，向buddy allocator申请256KB的空间，切分成4096个64字节的单元；</font></li>
+    <li>对于尺度级别80，向buddy allocator申请256KB的空间，切分成3276个80字节的单元；</li>
+    <li>对于尺度级别96，向buddy allocator申请256KB的空间，切分成2730个96字节的单元；</li>
+    <li>对于尺度级别112，向buddy allocator申请256KB的空间，切分成2340个112字节的单元；</li>
+    <li><font color="red">对于尺度级别128，向buddy allocator申请512KB的空间，切分成4096个128字节的单元；</font></li>
+    <li>对于尺度级别160，向buddy allocator申请512KB的空间，切分成3276个160字节的单元；</li>
+    <li>对于尺度级别192，向buddy allocator申请512KB的空间，切分成2730个192字节的单元；</li>
+    <li>对于尺度级别224，向buddy allocator申请512KB的空间，切分成2340个224字节的单元；</li>
+    <li><font color="red">对于尺度级别256，向buddy allocator申请1MB的空间，切分成4096个256字节的单元；</font></li>
+    <li>对于尺度级别320，向buddy allocator申请1MB的空间，切分成3276个320字节的单元；</li>
+    <li>对于尺度级别384，向buddy allocator申请1MB的空间，切分成2730个384字节的单元；</li>
+    <li>对于尺度级别448，向buddy allocator申请1MB的空间，切分成2340个448字节的单元；</li>
+    <li><font color="red">对于尺度级别512，向buddy allocator申请2MB的空间，切分成4096个512字节的单元；</font></li>
+    <p> ............</p>
+    <li><font color="red">对于尺度级别1024，向buddy allocator申请4MB的空间，切分成4096个1024字节的单元；</font></li>
+    <li>对于尺度级别1280，向buddy allocator申请4MB的空间，切分成3276个1280字节的单元；</li>
+    <li>对于尺度级别1536，向buddy allocator申请4MB的空间，切分成2730个1536字节的单元；</li>
+    <li>对于尺度级别1792，向buddy allocator申请4MB的空间，切分成2340个1792字节的单元；</li>
+    <li><font color="blue">对于尺度级别2048，向buddy allocator申请4MB的空间，切分成2048个2048字节的单元；</font></li>
+    <li><font color="blue">对于尺度级别2560，向buddy allocator申请4MB的空间，切分成1638个2560字节的单元；</font></li>
+    <li><font color="blue">对于尺度级别3072，向buddy allocator申请4MB的空间，切分成1132个3072字节的单元；</font></li>
+    <p> ............</p>
+    <li><font color="blue">对于尺度级别512K，向buddy allocator申请4MB的空间，切分成8个512K字节的单元。</font></li>
+</ul>
+
+<p>chunk大小最大为4MB。用bitmap细分chunk的示意图如下：</p>
+
+<p><img src="1.png"></p>
+
+<p>大小为512K以上的对象称作大对象，直接向buddy allocator申请，而且大小使用2的幂次方增大，即1MB，2MB，4MB，..., 512MB。</p>
+
+<p>对于小对象，一个chunk内部使用bitmap管理，也就是《<a href="../高效通用bitmap（续）——bmp4k/index.html">高效通用bitmap（续）——bmp4k</a>》中的bmp4k。这就是为什么chunk内部最多切4096个单元的原因。一般而言，一个软件系统中，1MB以上的大对象分配操作比较低频，而小对象操作非常频繁。由于bmp4k的操作速度比伙伴系统快很多，因此，这种buddy + bitmap的方式，既做到了空间利用率的提高，又到了性能的提升。</p>
+
+<p>一个chunk使用如下结构体表示：</p>
+
+<pre><code>
+// 一个用bitmap细分的chunk
+struct nvmalloc_chunk
+{
+    // chunk首地址
+    size_t addr;
+    // chunk长度
+    size_t len;
+    // 尺寸等级
+    size_t level_index;
+    // 分配单元大小
+    size_t item_size;
+    // 单元的bitmap
+    struct bmp4k bitmap;
+    // 前一个chunk
+    struct nvmalloc_chunk* prev;
+    // 后一个chunk
+    struct nvmalloc_chunk* next;
+};
+</code></pre>
+
+<p>比如一个用来管理4096个64字节单元的chunk，通过buddy_allocate()分配得到地址为0x10000000，那么addr字段就是0x10000000，len是256KB，level_index为0，item_size为64。</p>
+
+<p>每一个尺度级别都有两条链表avails和unavails，用如下结构表示：</p>
+
+<pre><code>
+// 同一个尺寸级别的所有chunk
+struct nvmalloc_level
+{
+    // 所有可分配的chunk的双向环
+    struct nvmalloc_chunk* avails;
+    // 所有不可分配的chunk的双向环
+    struct nvmalloc_chunk* unavails;
+};
+</code></pre>
+
+<p>所有使用chunk细分的尺度层级构成如下的结构：</p>
+
+<p><img src="2.png"></p>
+
+<p>对于某个特定的尺度级别，所有可分配的chunk都在avails指向的双向链表中，所有不可分配（已经全部分配完）的chunk都在unavails指向的双向链表中。</p>
+
+<p>一个完整的nvm分配器的数据结构如下：</p>
+
+<pre><code>
+// 一个nvmalloc分配器
+struct nvmalloc
+{
+    // 伙伴系统
+    struct buddy buddy;
+    // 尺寸级别种类
+    size_t level_count;
+    // 各个尺寸级别
+    struct nvmalloc_level* levels;
+    // chunk归属映射表数量
+    size_t map_count;
+    // 由地址快速得到归属chunk
+    void** chunk_maps;
+};
+</code></pre>
+
+<p>最基础的就是一个buddy allocator。然后有一个名为levels的nvmalloc_level一维数组，最后有一个名为chunk_maps的void*的一维数组。buddy和levels字段已经阐述过了。chunk_maps字段暂时忽略。</p>
+
+<p>对于</p>
+
+<pre><code>
+// 从管理空间中分配一块空闲区域
+//    nvmalloc: 一个nvmalloc指针
+//    size: 分配空间大小
+// 成功返回地址，失败返回NVMALLOC_ALLOCATE_FAILED
+size_t nvmalloc_malloc(struct nvmalloc* nvmalloc, size_t size);
+</code></pre>
+
+<p>步骤如下：</p>
+
+<ol>
+    <li>如果size &lt;= 512KB，跳至步骤4;</li>
+    <li>计算最小item_size，使得item_size是2的整数次幂，且item_size &gt;= size;</li>
+    <li>返回buddy_allocate(&amp;(nvmalloc->buddy), item_size)；</li>
+    <li>计算size对应的尺度级别，得到level_index和item_size；</li>
+    <li>得到level_index指向的level；</li>
+    <li>如果level->avails不为空，跳至步骤9；
+    <li>向buddy allocator申请一个chunk，并初始化；</li>
+    <li>把chunk加入level->avails链表；</li>
+    <li>得到level->avails开头的chunk；</li>
+    <li>搜索chunk->bitmap找到一个可用的bit，得到其索引item_index；</li>
+    <li>把该bit至为不可用；</li>
+    <li>如果chunk->bitmap不存在可用的bit，则把chunk从level->avails中移除，加入level->unavails中；</li>
+    <li>计算分配的地址addr = chunk->addr + item_index * item_size；</li>
+    <li>返回addr。</li>
+</ol>
+
+<p>对于</p>
+
+<pre><code>
+// 在管理空间的指定位置分配一块区域
+//    nvmalloc: 一个nvmalloc指针
+//    addr: 地址
+//    size: 分配空间大小
+// 成功返回地址addr，失败返回NVMALLOC_ALLOCATE_FAILED
+size_t malloc_at(size_t addr, size_t size);
+</code></pre>
+
+<p>单纯使用上述的数据结构还不能胜任。为此我引入额外的数据结构——chunk_maps。chunk_maps[i]对应了NVM上[i*256KB， (i+1)*256KB)这么一段空间，描述该段空间的状态。具体含义如下：</p>
+
+<ul>
+    <li>如果chunk_maps[i]为0，则表明[i*256KB， (i+1)*256KB)这段空间未被使用；</li>
+    <li>如果(size_t)chunk_maps[i]为奇数，则表明[i*256KB， (i+1)*256KB)这段空间被一个大对象占据，对象大小为(size_t)chunk_maps[i] - 1；</li>
+    <li>否则，[i*256KB， (i+1)*256KB)这段空间被分配为一个chunk，chunk_maps[i]是一个指向chunk的指针。</li>
+</ul>
+
+<p>其结构可以用下图示意：</p>
+
+<p><img src="3.png"></p>
+
+<p>所以每次向buddy allocator申请或释放空间时，都需要填充chunk_maps数组。对于malloc_at操作，步骤如下：</p>
+
+<ol>
+    <li>如果size &lt;= 512KB，跳至步骤4;</li>
+    <li>计算最小item_size，使得item_size是2的整数次幂，且item_size &gt;= size;</li>
+    <li>返回buddy_allocate_at(&amp;(nvmalloc->buddy), addr, item_size)；</li>
+    <li>计算map_index = addr / 256KB;</li>
+    <li>如果chunk_maps[map_index]为奇数，表明已被分配，返回错误；</li>
+    <li>如果chunk_maps[map_index]不为0，则chunk = chunk_maps[map_index]，跳至步骤10；</li>
+    <li>计算size对应的尺度级别，得到level_index和item_size；</li>
+    <li>向buddy allocator申请一个chunk，并初始化；</li>
+    <li>把chunk加入level->avails链表；</li>
+    <li>计算item_index = (addr - chunk->addr) / item_size;</li>
+    <li>如果chunk->bitmap的第item_index位不可用，表明已被分配，返回错误；</li>
+    <li>把chunk->bitmap的第item_index位设不可用；</li>  
+    <li>如果chunk->bitmap不存在可用的bit，则把chunk从level->avails中移除，加入level->unavails中；</li>
+    <li>分配成功，返回1。</li>
+</ol>
+
+<p>对于</p>
+
+<pre><code>
+// 释放分配的空间
+//    nvmalloc: 一个nvmalloc指针
+//    addr: 地址
+// 成功返回1, 失败返回0
+int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr);
+</code></pre>
+
+<p>步骤如下：</p>
+
+<ol>
+    <li>计算map_index = addr / 256KB;</li>
+    <li>如果chunk_maps[map_index]为0，表明未被分配，返回错误；</li>
+    <li>如果chunk_maps[map_index]为偶数，跳至步骤6；</li>
+    <li>得到大对象大小alloc_sz = chunk_maps[map_index] - 1；</li>
+    <li>通过buddy_free(&amp;(nvmalloc->buddy), addr, alloc_sz)释放，返回；</li>
+    <li>得到chunk = chunk_maps[map_index]；</li>
+    <li>计算item_index = (addr - chunk->addr) / chunk->item_size;</li>
+    <li>如果chunk->bitmap的第item_index位可用，表明未被分配，返回错误；</li>
+    <li>把chunk->bitmap的第item_index位设可用；</li>
+    <li>得到level = nvmalloc->levels[chunk->level_index]；</li>
+    <li>如果chunk在level->unavails中，把chunk从level->unavails中移除，加入level->avails中；</li>
+    <li>如果chunk->bitmap中还有不可用的bit，则跳至步骤15；
+    <li>通过buddy_free(&amp;(nvmalloc->buddy), chunk->addr, chunk->len)归还空间;</li>
+    <li>把chunk从level->avails中移除，释放chunk；</li>
+    <li>释放成功，返回1。</li>
+</ol>
+
+<p>nvmalloc.h</p>
+
+<pre><code>
+#ifndef NVMALLOC_H
+#define NVMALLOC_H
+
+#include &lt;buddy.h&gt;
+#include &lt;bmp4k.h&gt;
+#include &lt;stdlib.h&gt;
+
+// 最小分配单元
+#define NVMALLOC_MIN_ITEM_SIZE 64
+// 最大分配单元
+#define NVMALLOC_MAX_ITEM_SIZE (512&lt;&lt;20)        //512M
+// 使用bitmap细分的最大单元
+#define NVMALLOC_MAX_BMP_ITEM_SIZE (512&lt;&lt;10)    //512K
+// 使用bitmap细分的最小chunk
+#define NVMALLOC_MIN_BMP_CHUNK_SIZE (NVMALLOC_MIN_ITEM_SIZE * 4096) //256K
+// 使用bitmap细分的最大chunk
+#define NVMALLOC_MAX_BMP_CHUNK_SIZE (4&lt;&lt;20)     //4M
+// 最小分配单元步长
+#define NVMALLOC_MIN_ITEM_SIZE_DELTA 16
+
+// 分配失败时的返回值
+#define NVMALLOC_ALLOCATE_FAILED ((size_t)(-1))
+
+// 一个用bitmap细分的chunk
+struct nvmalloc_chunk
+{
+    // chunk首地址
+    size_t addr;
+    // chunk长度
+    size_t len;
+    // 尺寸等级
+    size_t level_index;
+    // 分配单元大小
+    size_t item_size;
+    // 单元的bitmap
+    struct bmp4k bitmap;
+    // 前一个chunk
+    struct nvmalloc_chunk* prev;
+    // 后一个chunk
+    struct nvmalloc_chunk* next;
+};
+
+// 同一个尺寸级别的所有chunk
+struct nvmalloc_level
+{
+    // 所有可分配的chunk的双向环
+    struct nvmalloc_chunk* avails;
+    // 所有不可分配的chunk的双向环
+    struct nvmalloc_chunk* unavails;
+};
+
+// 一个nvmalloc分配器
+struct nvmalloc
+{
+    // 伙伴系统
+    struct buddy buddy;
+    // 尺寸级别种类
+    size_t level_count;
+    // 各个尺寸级别
+    struct nvmalloc_level* levels;
+    // chunk归属映射表数量
+    size_t map_count;
+    // 由地址快速得到归属chunk
+    void** chunk_maps;
+};
+
+// 初始化nvmalloc
+//    nvmalloc: 一个nvmalloc指针
+//    capacity: 管理的空间大小
+// 成功返回1, 失败返回0
+size_t nvmalloc_init(struct nvmalloc* nvmalloc, size_t capacity);
+
+// 销毁一个nvmalloc（但不负责struct nvmalloc本身的释放）
+//    nvmalloc: 一个nvmalloc指针
+// 成功返回1, 失败返回0
+int nvmalloc_deinit(struct nvmalloc* nvmalloc);
+
+// 从管理空间中分配一块空闲区域
+//    nvmalloc: 一个nvmalloc指针
+//    size: 分配空间大小
+// 成功返回地址，失败返回NVMALLOC_ALLOCATE_FAILED
+size_t nvmalloc_malloc(struct nvmalloc* nvmalloc, size_t size);
+
+// 在管理空间的指定位置分配一块区域
+//    nvmalloc: 一个nvmalloc指针
+//    addr: 地址
+//    size: 分配空间大小
+// 成功返回地址addr，失败返回NVMALLOC_ALLOCATE_FAILED
+size_t nvmalloc_malloc_at(struct nvmalloc* nvmalloc, size_t addr, size_t size);
+
+// 释放分配的空间
+//    nvmalloc: 一个nvmalloc指针
+//    addr: 地址
+// 成功返回1, 失败返回0
+int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr);
+
+// 获取分配的可用空间大小
+//    nvmalloc: 一个nvmalloc指针
+//    addr: 地址
+// 成功返回大小，失败返回0 
+size_t nvmalloc_usable_size(struct nvmalloc* nvmalloc, size_t addr);
+
+#endif
+</code></pre>
+
+<p>nvmalloc.c</p>
+
+<pre><code>
+#include &lt;common.h&gt;
+#include &lt;string.h&gt;
+#include &lt;nvmalloc.h&gt;
+
+// 计算n是2的几次方。如果n不是2的自然数幂，那么返回(size_t)(-1)
+static size_t to_power(size_t n)
+{
+    size_t power;
+    for(power = 0; n &gt;&gt; (power + 1); power++);
+    if((1 &lt;&lt; power) != n)
+        return (size_t)(-1);
+    return power;
+}
+
+size_t nvmalloc_init(struct nvmalloc* nvmalloc, size_t capacity)
+{
+    assert(nvmalloc);
+    size_t min_power = to_power(NVMALLOC_MIN_ITEM_SIZE);
+    assert(min_power != (size_t)(-1));
+    size_t max_power = to_power(NVMALLOC_MAX_ITEM_SIZE);
+    assert(max_power != (size_t)(-1));
+    size_t bmp_max_power = to_power(NVMALLOC_MAX_BMP_ITEM_SIZE);
+    assert(bmp_max_power != (size_t)(-1));
+    assert(min_power &lt;= bmp_max_power &amp;&amp; bmp_max_power &lt;= max_power);
+    size_t min_chunk_power = to_power(NVMALLOC_MIN_BMP_CHUNK_SIZE);
+    assert(min_chunk_power != (size_t)(-1));
+    size_t max_chunk_power = to_power(NVMALLOC_MAX_BMP_CHUNK_SIZE);
+    assert(max_chunk_power != (size_t)(-1));
+    assert(min_chunk_power &lt;= max_chunk_power &amp;&amp; max_chunk_power &lt;= max_power);
+    size_t min_item_delta_power = to_power(NVMALLOC_MIN_ITEM_SIZE_DELTA);
+    assert(min_item_delta_power != (size_t)(-1));
+    assert(min_item_delta_power &lt;= min_power);
+    nvmalloc-&gt;level_count = (bmp_max_power - min_power) * (NVMALLOC_MIN_ITEM_SIZE / NVMALLOC_MIN_ITEM_SIZE_DELTA) + 1;
+    nvmalloc-&gt;levels = malloc(sizeof(struct nvmalloc_level) * nvmalloc-&gt;level_count);
+    if(!nvmalloc-&gt;levels)
+        ERROR(0, 1, "malloc(sizeof(struct nvmalloc_level) * %lu) failed!", nvmalloc-&gt;level_count);
+    memset(nvmalloc-&gt;levels, 0, sizeof(struct nvmalloc_level) * nvmalloc-&gt;level_count);
+    nvmalloc-&gt;map_count = capacity / NVMALLOC_MIN_BMP_CHUNK_SIZE;
+    nvmalloc-&gt;chunk_maps = malloc(sizeof(void*) * nvmalloc-&gt;map_count);
+    if(!nvmalloc-&gt;chunk_maps)
+        ERROR(0, 1, "malloc(sizeof(void*) * %lu) failed!", nvmalloc-&gt;map_count);
+    memset(nvmalloc-&gt;chunk_maps, 0, sizeof(void*) * nvmalloc-&gt;map_count);
+    int ret = buddy_init(&amp;(nvmalloc-&gt;buddy), capacity, NVMALLOC_MIN_BMP_CHUNK_SIZE, NVMALLOC_MAX_ITEM_SIZE);
+    if(!ret)
+        ERROR(0, 0, "buddy_init(&amp;(nvmalloc-&gt;buddy), %lu, %d, %d) failed!", capacity, NVMALLOC_MIN_BMP_CHUNK_SIZE, NVMALLOC_MAX_ITEM_SIZE);
+    return 1;
+}
+
+int nvmalloc_deinit(struct nvmalloc* nvmalloc)
+{
+    assert(nvmalloc);
+    if(!buddy_deinit(&amp;(nvmalloc-&gt;buddy)))
+        ERROR(0, 0, "buddy_deinit(&amp;(nvmalloc-&gt;buddy)) failed!");
+    for(size_t i = 0; i &lt; nvmalloc-&gt;level_count; i++)
+    {
+        struct nvmalloc_chunk* chunk = nvmalloc-&gt;levels[i].avails;
+        while(chunk)
+        {
+            struct nvmalloc_chunk* next = chunk-&gt;next;
+            free(chunk);
+            chunk = next;
+        }
+        chunk = nvmalloc-&gt;levels[i].unavails;
+        while(chunk)
+        {
+            struct nvmalloc_chunk* next = chunk-&gt;next;
+            free(chunk);
+            chunk = next;
+        }
+    }
+    free(nvmalloc-&gt;levels);
+    free(nvmalloc-&gt;chunk_maps);
+    return 1;
+}
+
+// 把大小变成chunk等级和分配单元大小
+#define PARSE_SIZE(size, level, item_size)                                                  \
+    do                                                                                      \
+    {                                                                                       \
+        if((size) &lt;= NVMALLOC_MIN_ITEM_SIZE)                                                \
+        {                                                                                   \
+            (level) = 0;                                                                    \
+            (item_size) = NVMALLOC_MIN_ITEM_SIZE;                                           \
+            break;                                                                          \
+        }                                                                                   \
+        size_t _step = 0;                                                                   \
+        while(((size_t)NVMALLOC_MIN_ITEM_SIZE &lt;&lt; (_step + 1)) - 1 &lt; (size))                 \
+            _step++;                                                                        \
+        size_t _base = ((size_t)NVMALLOC_MIN_ITEM_SIZE &lt;&lt; _step);                           \
+        assert(_base &lt;= (size));                                                            \
+        size_t _delta = (size_t)NVMALLOC_MIN_ITEM_SIZE_DELTA &lt;&lt; _step;                      \
+        size_t _index = ((size) - _base + _delta - 1) / _delta;                             \
+        (level) = _step * (NVMALLOC_MIN_ITEM_SIZE / NVMALLOC_MIN_ITEM_SIZE_DELTA) + _index; \
+        (item_size) = _base + _index * _delta;                                              \
+    }                                                                                       \
+    while(0)
+
+// 给nvmalloc-&gt;chunk_maps标记
+#define MARK_CHUNK_MAPS(nvmalloc, addr, len, mark)                      \
+    do                                                                  \
+    {                                                                   \
+        assert((addr) % NVMALLOC_MIN_BMP_CHUNK_SIZE == 0);              \
+        size_t _map_index = (addr) / NVMALLOC_MIN_BMP_CHUNK_SIZE;       \
+        assert((len) % NVMALLOC_MIN_BMP_CHUNK_SIZE == 0);               \
+        size_t _map_count = (len) / NVMALLOC_MIN_BMP_CHUNK_SIZE;        \
+        assert(_map_count);                                             \
+        assert(_map_index + _map_count &lt;= (nvmalloc)-&gt;map_count);       \
+        for(size_t _i = 0; _i &lt; _map_count; _i++)                       \
+            (nvmalloc)-&gt;chunk_maps[_map_index + _i] = (void*)(mark);    \
+    }                                                                   \
+    while(0)
+
+#define min(a, b) ((a) &lt; (b) ? (a) : (b))
+    
+// 计算n的最大倍数x且x&lt;=max
+#define MULTI_FLOOR(n, max) ((size_t)((max) / (n)) * (n))
+
+// 根据分配单元大小计算chunk大小
+#define CHUNK_SIZE(item_size) MULTI_FLOOR(NVMALLOC_MIN_BMP_CHUNK_SIZE, min((item_size) * 4096, NVMALLOC_MAX_BMP_CHUNK_SIZE))
+
+// 分配一个chunk
+#define ALLOCATE_CHUNK(nvmalloc, chunk, _addr, _len, _level_index, _item_size, fail_ret)    \
+    do                                                                                      \
+    {                                                                                       \
+        (chunk) = malloc(sizeof(struct nvmalloc_chunk));                                    \
+        if(!(chunk))                                                                        \
+            ERROR((fail_ret), 1, "malloc(sizeof(struct nvmalloc_chunk) failed!");           \
+        (chunk)-&gt;addr = (_addr);                                                            \
+        (chunk)-&gt;len = (_len);                                                              \
+        (chunk)-&gt;level_index = (_level_index);                                              \
+        (chunk)-&gt;item_size = (_item_size);                                                  \
+        int _ret = bmp4k_init(&amp;((chunk)-&gt;bitmap), (_len) / (_item_size), 1);                \
+        assert(_ret);                                                                       \
+        assert((size_t)(chunk) % 2 == 0);                                                   \
+        MARK_CHUNK_MAPS((nvmalloc), (_addr), (_len), (chunk));                              \
+    }                                                                                       \
+    while(0)
+
+// 把chunk从链表移除
+#define REMOVE_CHUNK_FROM_LIST(list, chunk)         \
+    do                                              \
+    {                                               \
+        if((chunk)-&gt;prev)                           \
+            (chunk)-&gt;prev-&gt;next = (chunk)-&gt;next;    \
+        if((chunk)-&gt;next)                           \
+            (chunk)-&gt;next-&gt;prev = (chunk)-&gt;prev;    \
+        if((*(list)) == (chunk))                    \
+            (*(list)) = (chunk)-&gt;next;              \
+    }                                               \
+    while(0)
+
+// 把chunk放入链表头部
+#define ADD_CHUNK_TO_HEAD(list, chunk)              \
+    do                                              \
+    {                                               \
+        (chunk)-&gt;next = (*(list));                  \
+        if((chunk)-&gt;next)                           \
+            (chunk)-&gt;next-&gt;prev = (chunk);          \
+        (*(list)) = (chunk);                        \
+        (chunk)-&gt;prev = 0;                          \
+    }                                               \
+    while(0)
+
+// 如果chunk已经全部分配完，则从level-&gt;avals头部取出，放入level-&gt;unavals头部
+#define MOVE_TO_UNAVAIL_IF_NEED(chunk, level)                   \
+    do                                                          \
+    {                                                           \
+        if(!bmp4k_exist(&amp;((chunk)-&gt;bitmap), 1))                 \
+        {                                                       \
+            REMOVE_CHUNK_FROM_LIST(&amp;((level)-&gt;avails), chunk);  \
+            ADD_CHUNK_TO_HEAD(&amp;((level)-&gt;unavails), chunk);     \
+        }                                                       \
+    }                                                           \
+    while(0)
+
+size_t nvmalloc_malloc(struct nvmalloc* nvmalloc, size_t size)
+{
+    assert(nvmalloc);
+    if(size &gt; NVMALLOC_MAX_BMP_ITEM_SIZE)
+    {
+        size_t alloc_sz = NVMALLOC_MAX_BMP_ITEM_SIZE * 2;
+        while(alloc_sz &lt; size)
+            alloc_sz *= 2;
+        size_t addr = buddy_allocate(&amp;(nvmalloc-&gt;buddy), alloc_sz);
+        if(addr == BUDDY_ALLOCATE_FAILED)
+            ERROR(NVMALLOC_ALLOCATE_FAILED, 0, "buddy_allocate(&amp;(nvmalloc-&gt;buddy), %lu) failed!", alloc_sz);
+        MARK_CHUNK_MAPS(nvmalloc, addr, alloc_sz, alloc_sz + 1);
+        return addr;
+    }
+    size_t level_index, item_size;
+    PARSE_SIZE(size, level_index, item_size);
+    assert(level_index &lt; nvmalloc-&gt;level_count);
+    struct nvmalloc_level* level = nvmalloc-&gt;levels + level_index;
+    if(!level-&gt;avails)
+    {
+        size_t chunk_sz = CHUNK_SIZE(item_size);
+        size_t addr = buddy_allocate(&amp;(nvmalloc-&gt;buddy), chunk_sz);
+        if(addr == BUDDY_ALLOCATE_FAILED)
+            ERROR(NVMALLOC_ALLOCATE_FAILED, 0, "buddy_allocate(&amp;(nvmalloc-&gt;buddy), %lu) failed!", chunk_sz);
+        struct nvmalloc_chunk* chunk;
+        ALLOCATE_CHUNK(nvmalloc, chunk, addr, chunk_sz, level_index, item_size, NVMALLOC_ALLOCATE_FAILED);
+        ADD_CHUNK_TO_HEAD(&amp;(level-&gt;avails), chunk);
+    }
+    struct nvmalloc_chunk* chunk = level-&gt;avails;
+    assert(chunk);
+    assert(chunk-&gt;level_index == level_index);
+    assert(chunk-&gt;item_size == item_size);
+    size_t item_index = bmp4k_search(&amp;(chunk-&gt;bitmap), 1);
+    assert(item_index != BMP4K_NOT_FOUND);
+    int ret = bmp4k_set(&amp;(chunk-&gt;bitmap), item_index, 0);
+    assert(ret);
+    size_t alloc_addr = chunk-&gt;addr + item_index * item_size;
+    MOVE_TO_UNAVAIL_IF_NEED(chunk, level);
+    return alloc_addr;
+}
+
+#define MAP_ADDR_TO_CHUNK(nvmalloc, addr, chunk, fail_ret)                                  \
+    do                                                                                      \
+    {                                                                                       \
+        size_t _map_index = (addr) / NVMALLOC_MIN_BMP_CHUNK_SIZE;                           \
+        if(_map_index &gt;= (nvmalloc)-&gt;map_count)                                             \
+            ERROR((fail_ret), 0, "param &lt;%s = %lu&gt; is out of range!", #addr, (addr));       \
+        (chunk) = (nvmalloc)-&gt;chunk_maps[_map_index];                                       \
+    }                                                                                       \
+    while(0)
+
+size_t nvmalloc_malloc_at(struct nvmalloc* nvmalloc, size_t addr, size_t size)
+{
+    assert(nvmalloc);
+    if(size &gt; NVMALLOC_MAX_BMP_ITEM_SIZE)
+    {
+        size_t alloc_sz = NVMALLOC_MAX_BMP_ITEM_SIZE * 2;
+        while(alloc_sz &lt; size)
+            alloc_sz *= 2;
+        if(addr % alloc_sz)
+            ERROR(NVMALLOC_ALLOCATE_FAILED, 0, "param &lt;addr = %lu&gt; is not aligned by &lt;alloc_sz = %lu&gt;!", addr, alloc_sz);
+        if(buddy_allocate_at(&amp;(nvmalloc-&gt;buddy), addr, alloc_sz) == BUDDY_ALLOCATE_FAILED)
+            ERROR(NVMALLOC_ALLOCATE_FAILED, 0, "buddy_allocate_at(&amp;(nvmalloc-&gt;buddy), %lu, %lu) failed!", addr, alloc_sz);
+        MARK_CHUNK_MAPS(nvmalloc, addr, alloc_sz, alloc_sz + 1);
+        return addr;
+    }
+    struct nvmalloc_chunk* chunk;
+    MAP_ADDR_TO_CHUNK(nvmalloc, addr, chunk, NVMALLOC_ALLOCATE_FAILED);
+    if((size_t)chunk % 2)
+        ERROR(NVMALLOC_ALLOCATE_FAILED, 0, "param &lt;addr = %lu&gt; has been allocated to size %lu!", addr, (size_t)chunk - 1);
+    size_t level_index, item_size;
+    PARSE_SIZE(size, level_index, item_size);
+    assert(level_index &lt; nvmalloc-&gt;level_count);
+    struct nvmalloc_level* level = nvmalloc-&gt;levels + level_index;
+    if(!chunk)
+    {
+        size_t chunk_sz = CHUNK_SIZE(item_size);
+        size_t chunk_addr = MULTI_FLOOR(chunk_sz, addr);
+        size_t item_index = (addr - chunk_addr) / item_size;
+        if(addr != chunk_addr + item_index * item_size)
+            ERROR(NVMALLOC_ALLOCATE_FAILED, 0, "param &lt;addr = %lu&gt; is not aligned by item size %lu!", addr, item_size);
+        if(buddy_allocate_at(&amp;(nvmalloc-&gt;buddy), chunk_addr, chunk_sz) == BUDDY_ALLOCATE_FAILED)
+            ERROR(NVMALLOC_ALLOCATE_FAILED, 0, "buddy_allocate_at(&amp;(nvmalloc-&gt;buddy), %lu, %lu) failed!", chunk_addr, chunk_sz);
+        ALLOCATE_CHUNK(nvmalloc, chunk, chunk_addr, chunk_sz, level_index, item_size, NVMALLOC_ALLOCATE_FAILED);
+        ADD_CHUNK_TO_HEAD(&amp;(level-&gt;avails), chunk);
+    }
+    else if(chunk-&gt;item_size != item_size)
+        ERROR(NVMALLOC_ALLOCATE_FAILED, 0, "param &lt;addr = %lu&gt; has been allocated to size %lu!", addr, chunk-&gt;item_size);
+    assert(chunk);
+    assert(chunk-&gt;level_index == level_index);
+    assert(chunk-&gt;item_size == item_size);
+    size_t item_index = (addr - chunk-&gt;addr) / item_size;
+    if(addr != chunk-&gt;addr + item_index * item_size)
+        ERROR(NVMALLOC_ALLOCATE_FAILED, 0, "param &lt;addr = %lu&gt; is not aligned by item size %lu!", addr, item_size);
+    if(bmp4k_get(&amp;(chunk-&gt;bitmap), item_index) != 1)
+        ERROR(NVMALLOC_ALLOCATE_FAILED, 0, "object(&lt;addr = %lu&gt;, &lt;size = %lu&gt;) has been allocated!", addr, item_size);
+    int ret = bmp4k_set(&amp;(chunk-&gt;bitmap), item_index, 0);
+    assert(ret);
+    MOVE_TO_UNAVAIL_IF_NEED(chunk, level);
+    return addr;
+}
+
+#define GET_ALLOCATED_ITEM_INDEX(chunk, _addr, item_index, fail_ret)                                                                \
+    do                                                                                                                              \
+    {                                                                                                                               \
+        if(!(chunk))                                                                                                                \
+            ERROR((fail_ret), 0, "param &lt;%s = %lu&gt; has not been allocated!", #_addr, (_addr));                                      \
+        assert((chunk)-&gt;item_size);                                                                                                 \
+        (item_index) = ((_addr) - (chunk)-&gt;addr) / (chunk)-&gt;item_size;                                                              \
+        if((_addr) != (chunk)-&gt;addr + (item_index) * (chunk)-&gt;item_size)                                                            \
+            ERROR((fail_ret), 0, "param &lt;%s = %lu&gt; is not aligned by item size %lu!", #_addr, (addr), (chunk)-&gt;item_size);          \
+        if(bmp4k_get(&amp;((chunk)-&gt;bitmap), (item_index)) != 0)                                                                        \
+            ERROR((fail_ret), 0, "object(&lt;addr = %lu&gt;, &lt;item_size = %lu&gt;) has not been allocated!", (_addr), (chunk)-&gt;item_size);   \
+    }                                                                                                                               \
+    while(0)
+
+int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr)
+{
+    assert(nvmalloc);
+    struct nvmalloc_chunk* chunk;
+    MAP_ADDR_TO_CHUNK(nvmalloc, addr, chunk, 0);
+    if((size_t)chunk % 2)
+    {
+        size_t alloc_sz = (size_t)chunk - 1;
+        assert(to_power(alloc_sz) != (size_t)(-1));
+        if(addr % alloc_sz)
+            ERROR(0, 0, "param &lt;addr = %lu&gt; is not aligned by &lt;alloc_sz = %lu&gt;!", addr, alloc_sz);
+        if(!buddy_free(&amp;(nvmalloc-&gt;buddy), addr, (size_t)chunk - 1))
+            ERROR(0, 0, "buddy_free(&amp;(nvmalloc-&gt;buddy), %lu, %lu) failed!", addr, (size_t)chunk - 1);
+        return 1;
+    }
+    size_t item_index;
+    GET_ALLOCATED_ITEM_INDEX(chunk, addr, item_index, 0);
+    int was_unavail = !bmp4k_exist(&amp;(chunk-&gt;bitmap), 1);
+    int ret = bmp4k_set(&amp;(chunk-&gt;bitmap), item_index, 1);
+    assert(ret);
+    struct nvmalloc_level* level = nvmalloc-&gt;levels + chunk-&gt;level_index;
+    if(!bmp4k_exist(&amp;(chunk-&gt;bitmap), 0))
+    {
+        if(!buddy_free(&amp;(nvmalloc-&gt;buddy), chunk-&gt;addr, chunk-&gt;len))
+            ERROR(0, 0, "buddy_free(&amp;(nvmalloc-&gt;buddy), %lu, %lu) failed!", chunk-&gt;addr, chunk-&gt;len);
+        MARK_CHUNK_MAPS((nvmalloc), chunk-&gt;addr, chunk-&gt;len, 0);
+        REMOVE_CHUNK_FROM_LIST(was_unavail ? &amp;((level)-&gt;unavails) : &amp;((level)-&gt;avails), chunk);
+        free(chunk);
+        return 1;
+    }
+    if(was_unavail)
+    {
+        REMOVE_CHUNK_FROM_LIST(&amp;((level)-&gt;unavails), chunk);
+        ADD_CHUNK_TO_HEAD(&amp;((level)-&gt;avails), chunk);
+    }
+    return 1;
+}
+
+size_t nvmalloc_usable_size(struct nvmalloc* nvmalloc, size_t addr)
+{
+    assert(nvmalloc);
+    struct nvmalloc_chunk* chunk;
+    MAP_ADDR_TO_CHUNK(nvmalloc, addr, chunk, 0);
+    if((size_t)chunk % 2)
+    {
+        size_t alloc_sz = (size_t)chunk - 1;
+        assert(to_power(alloc_sz) != (size_t)(-1));
+        if(addr % alloc_sz)
+            ERROR(0, 0, "param &lt;addr = %lu&gt; is not aligned by &lt;alloc_sz = %lu&gt;!", addr, alloc_sz);
+        return alloc_sz;
+    }
+    size_t item_index;
+    GET_ALLOCATED_ITEM_INDEX(chunk, addr, item_index, 0);
+    return chunk-&gt;item_size;
+}
+</code></pre>
+
+<p>把common.h、avl.h、avl.c、buddy.h、buddy.c、bmp4k.h、bmp4k.c、nvmalloc.h、nvmalloc.c放在一起，然后写一个测试用例：</p>
+
+<pre><code>
+#include &lt;common.h&gt;
+#include &lt;nvmalloc.h&gt;
+
+int main()
+{
+    struct nvmalloc nvm;
+    int ret;
+    size_t addr;
+    size_t size;
+
+    ret = nvmalloc_init(&amp;nvm, (size_t)1&lt;&lt;40);
+    assert(ret);
+
+    for(size_t i = 0; i &lt; 100000000; i++)
+    {
+        addr = nvmalloc_malloc_at(&amp;nvm, i&lt;&lt;6, 1&lt;&lt;6);
+        assert(addr != NVMALLOC_ALLOCATE_FAILED);
+    }
+
+    for(size_t i = 0; i &lt; 1000000000; i++)
+    {
+        ret = nvmalloc_free(&amp;nvm, i&lt;&lt;6);
+        assert(ret);
+    }
+
+    ret = nvmalloc_deinit(&amp;nvm);
+    assert(ret);
+
+    return 0;
+}
+</code></pre>
+
+<pre><code>
+gcc -std=gnu99 *.c -o nvmalloc_test -I. -O3
+</code></pre>
+
+<p>关闭assert，开启-O3优化，在Intel(R) Core(TM) i5-2450M CPU @ 2.50GHz的笔记本上，测试性能如下：</p>
+
+<table>
+    <tr><th>尺寸</th><th>malloc</th><th>malloc_at</th><th>free</th></tr>
+    <tr><td>64</td><td>62.06ns</td><td>27.79ns</td><td>34.75ns</td></tr>
+    <tr><td>128</td><td>75.06ns</td><td>38.30ns</td><td>31.89ns</td></tr>
+    <tr><td>256</td><td>75.62ns</td><td>41.35ns</td><td>31.67ns</td></tr>
+    <tr><td>512</td><td>76.68ns</td><td>41.12ns</td><td>33.65ns</td></tr>
+    <tr><td>1K</td><td>77.26ns</td><td>43.32ns</td><td>30.12ns</td></tr>
+    <tr><td>2K</td><td>77.52ns</td><td>44.02ns</td><td>34.72ns</td></tr>
+    <tr><td>4K</td><td>78.47ns</td><td>45.23ns</td><td>36.08ns</td></tr>
+    <tr><td>8K</td><td>75.03ns</td><td>45.41ns</td><td>38.36ns</td></tr>
+    <tr><td>16K</td><td>63.13ns</td><td>47.68ns</td><td>37.49ns</td></tr>
+    <tr><td>32K</td><td>57.98ns</td><td>50.40ns</td><td>35.98ns</td></tr>
+    <tr><td>64K</td><td>65.06ns</td><td>56.24ns</td><td>37.00ns</td></tr>
+    <tr><td>128K</td><td>65.12ns</td><td>70.06ns</td><td>34.74ns</td></tr>
+    <tr><td>256K</td><td>75.25ns</td><td>75.17ns</td><td>29.85ns</td></tr>
+    <tr><td>512K</td><td>80.13ns</td><td>85.42ns</td><td>30.12ns</td></tr>
+</table>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
