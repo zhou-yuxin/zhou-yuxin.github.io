@@ -111,12 +111,19 @@ int nvmalloc_deinit(struct nvmalloc* nvmalloc)
     while(0)
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
-    
+
 // 计算n的最大倍数x且x<=max
 #define MULTI_FLOOR(n, max) ((size_t)((max) / (n)) * (n))
-
+ 
 // 根据分配单元大小计算chunk大小
-#define CHUNK_SIZE(item_size) MULTI_FLOOR(NVMALLOC_MIN_BMP_CHUNK_SIZE, min((item_size) * 4096, NVMALLOC_MAX_BMP_CHUNK_SIZE))
+#define CHUNK_SIZE(item_size)                                                   \
+    ({                                                                          \
+        size_t _upper = min((item_size) * 4096, NVMALLOC_MAX_BMP_CHUNK_SIZE);   \
+        size_t _shift = 0;                                                      \
+        while((NVMALLOC_MIN_BMP_CHUNK_SIZE << (_shift + 1)) > _upper)           \
+            _shift++;                                                           \
+        NVMALLOC_MIN_BMP_CHUNK_SIZE << _shift;                                  \
+    })
 
 // 分配一个chunk
 #define ALLOCATE_CHUNK(nvmalloc, chunk, _addr, _len, _level_index, _item_size, fail_ret)    \
