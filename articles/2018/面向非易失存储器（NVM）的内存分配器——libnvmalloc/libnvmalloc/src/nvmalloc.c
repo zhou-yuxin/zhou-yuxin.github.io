@@ -120,7 +120,7 @@ int nvmalloc_deinit(struct nvmalloc* nvmalloc)
     ({                                                                          \
         size_t _upper = min((item_size) * 4096, NVMALLOC_MAX_BMP_CHUNK_SIZE);   \
         size_t _shift = 0;                                                      \
-        while((NVMALLOC_MIN_BMP_CHUNK_SIZE << (_shift + 1)) > _upper)           \
+        while((NVMALLOC_MIN_BMP_CHUNK_SIZE << (_shift + 1)) <= _upper)          \
             _shift++;                                                           \
         NVMALLOC_MIN_BMP_CHUNK_SIZE << _shift;                                  \
     })
