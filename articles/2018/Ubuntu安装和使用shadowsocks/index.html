@@ -1,0 +1,76 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>Ubuntu安装和使用shadowsocks</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+        <link rel="stylesheet" href="../../../highlight.css">
+        <script src="../../../highlight.js"></script>
+        <script>hljs.initHighlightingOnLoad();</script>
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">Ubuntu安装和使用shadowsocks</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>最近在移动硬盘中安装了一个Ubuntu，这样就不需要带着两台电脑到处跑了～这个Ubuntu将长期使用，所以很多基本的环境、工具都需要配置好。其中之一就是shadowsocks科学上网。</p>
+
+<p>由于安装的是Ubuntu 16.04，所以安装shadowsocks异常容易：</p>
+
+<pre><code>
+sudo apt-get install shadowsocks
+</code></pre>
+
+<p>一句命令就能够安装完成。不过呢，这个命令安装的shadowsocks版本是2.1.0，略有点老。另外，该方法也只能在Ubunu 16.04+版本上能用。更加通用的办法是：</p>
+
+<pre><code>
+sudo pip install shadowsocks
+</code></pre>
+
+<p>因为毕竟Linux上的shadowsocks其实就是一个python软件。</p>
+
+<p>不管用什么方式安装，安装好之后，都可以使用sslocal命令来启动shadowsocks客户端。shadowsocks的配置可以通过命令行参数传入，也可以通过配置文件传入。我编辑了/etc/shadowsocks/config.json文件，内容如下：</p>
+
+<pre><code>
+{
+    "server": "144.168.58.91",
+    "server_port": 10000,
+    "password": "**********",
+    "local_address": "127.0.0.1",
+    "local_port": 1080,
+    "method": "aes-256-cfb"
+}
+</code></pre>
+
+<p>其中server, server_port和password都需要根据自己的情况设置。之后启动客户端：</p>
+
+<pre><code>
+sslocal -c /etc/shadowsocks/config.json
+</code></pre>
+
+<p>由于是一个用户态进程，所以不需要sudo。启动之后，shadowsocks就在localhost的1080端口接受请求了。</p>
+
+<p>对于Firefox浏览器而言，在设置中设置网络代理：</p>
+
+<p><img src="1.png"></p>
+
+<p>如果服务器没有问题的话，就可以翻墙外出啦！</p>
+
+<p><img src="2.jpg"></p>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
