@@ -1,0 +1,616 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>NVM缓冲日志文件libnvmbuflog（一）——环形缓冲区nvmbuffer</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+        <link rel="stylesheet" href="../../../highlight.css">
+        <script src="../../../highlight.js"></script>
+        <script>hljs.initHighlightingOnLoad();</script>
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">NVM缓冲日志文件libnvmbuflog（一）——环形缓冲区nvmbuffer</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>============================阶段一：概述=============================</p>
+
+<p>很多服务器软件都需要使用到日志文件。有些日志文件是给人阅读的（比如分析错误日志），有些是用于数据恢复的（比如MySQL的UNDO log，redis的AOF）。大多数日志文件都有以下特点：</p>
+
+<ul>
+    <li>单次写入数据量较小</li>
+    <li>写入操作较频繁</li>
+    <li>需要显式调用fsync()确保落盘</li>
+</ul>
+
+<p>这往往成了软件性能的瓶颈。一方面，write()是系统调用，需要有很大的性能开销，另一方面，fsync()使得文件缓冲区失效，严重暴露了磁盘的高延迟问题——磁盘是块设备，只能以块为单位进行读写，即使写入1字节然后fsync()，也会重写整个块。</p>
+
+<p>传统的基于磁盘的日志文件，除了性能上的弊端外，还有功能上的缺陷。磁盘无法保证write()操作是原子性的。比如在执行</p>
+
+<pre><code>
+write(fd, 'hello,world!', 12);
+fsync(fd);
+</code></pre>
+
+<p>的中途，如果系统崩溃，那么可能文件末尾写入了“hell"，造成了数据的不完整。对于给人类阅读的日志文件，数据不完整还不是什么问题，但是用于数据恢复的日志文件是不容许这样的不完整性的。在过去，没有一个通用的解决办法，各个软件根据自身的业务特性提出了不同的方案。比如在Redis的AOF中，当需要记录</p>
+
+<pre>
+set name ayaharu
+</pre>
+
+<p>这样一条命令时，会使用这样的格式：</p>
+
+<pre>
+*3
+$3
+set
+$4
+name
+$7
+ayaharu
+</pre>
+
+<p>其中*3表示后面有三个项。每一个项开头是$&lt;length&gt;，表示项的长度，之后是项的内容。所有单元使用\r\n隔开。这样，当写入过程中系统崩溃时，可能记录了这样的不完整数据：</p>
+
+<pre>
+*3
+$3
+set
+$4
+nam
+</pre>
+
+<p>根据格式规范即可判定该命令记录不完整，而且可以知道命令开头在哪里，从而修复日志文件（移除最后一条不完整的记录）。</p>
+
+<p>但是，这无疑增加了数据量，造成了性能进一步下降。其他不同的软件的方法，也各有牺牲。</p>
+
+<p>事实上，磁盘的带宽是通常是足够的（固态硬盘可以达到GB/s级别的写入速度，即使是机械磁盘也可以达到MB/s的写入速度），瓶颈在于单次访问延迟（一次fsync()可能需要几十毫秒）。在传统的文件系统中，通过在内存上开辟一块缓冲区，将写入文件的内容先积累在缓冲区中，当足够多时再一次性写入磁盘，从而大大提高了写入性能。但是这也导致了系统崩溃时数据可能丢失。</p>
+
+<p>而NVM（非易失性内存）的出现带来了福音。由于结构上的特性，NVM可以按字节寻址，因此不会出现块设备那样的问题。此外，NVM挂在内部总线上，可以通过CPU的load/store指令进行访问，从软件的角度看与内存无异，所有读写操作都在用户态完成，无需系统调用。那么，先将写入文件的数据积累在NVM上的一块缓冲区中，当数据足够多时再一次性写入磁盘，也应该能够提高性能。而由于NVM的非易失性，NVM缓冲区中的数据在系统崩溃时不会丢失。因此，通过设计适当的算法，应该能够将NVM作为磁盘的缓冲，提高写入性能，并确保写入操作的原子性。</p>
+
+<p>这篇博客就是详细描述一种建立在NVM上的环形缓冲区，命名为nvmbuffer。nvmbuffer具有高速、非易失性和原子性的特点，而且可以快速重用（清空其中的数据）。nvmbuffer的应用场景如下：</p>
+
+<ol>
+    <li>频繁得将短小数据写入nvmbuffer中</li>
+    <li>当nvmbuffer中数据足够多时，将数据dump到文件中</li>
+    <li>重用（清空）nvmbuffer</li>
+    <li>回到第一步</li>
+</ol></p>
+
+<p>============================阶段二：基本假设============================</p>
+
+<p>首先我们要对NVM的特性作出如下两个假设：</p>
+
+<ol>
+    <li>当把cacheline中的数据刷出到NVM时，NVM中的写入是顺序的</li>
+    <li>NVM对于总线带宽的写入是原子性的</li>
+</ol>
+
+<p>第一条的含义是这样的：当把cacheline刷出CPU的cache时，第i字节不比第i+1字节被持久化的时间晚。假设cacheline是64字节的，那么第0字节一定比第1字节更早的写入NVM，第10字节一定比第60字节更早得写入NVM。当然，这里说的“更早”，更确切地表达是“不晚于”。如果这条假设成立，那么即可得到结论：若cacheline中最后一字节被写入NVM，那么之前的字节也一定已经持久化。</p>
+
+<p>第二条的含义是这样的：假设机器总线宽度是64位，也就是8字节，那么将一个对齐的8字节刷入NVM时，要么这8字节都写入，要么这8字节都没写入。</p>
+
+<p>============================阶段三：设计==============================</p>
+
+<p>其实我前后设计了非常多的方案，但是目前这个是我最满意的。之前那些就不提了～为了方便描述，我这里假设机器总线是64位的，一条cacheline是64字节（这也是目前主流的Intel CPU的参数）。首先，这是一个环形缓冲区，可以在脑海中想象一个环。环由若干个block构成，每一个block就是一个对齐的64字节。此外，还有一个对齐的64字节处在环外，用于记录环形缓冲区的起始位置。该64字节中其实只用了开头的8字节，作为一个size_t变量，命名为start。刚开始时，start设置为0，环中的所有字节全部置为0xff，如下图所示：</p>
+
+<p><img src="1.png"></p>
+
+<p>当用户想要写入30字节的数据时，那么在第一个block中，先把30作为uint32_t写入，占用4字节，然后写入30字节的数据，最后在block的末尾字节写入0。此时如图：</p>
+
+<p><img src="2.png"></p>
+
+<p>开头4字节命名为len，之后len个字节就是数据，block末尾字节命名为eob（end of block）。</p>
+
+<p>当用户想接着写入92字节的数据时，那么在第二个block中，先把92作为uint32_t写入，占用4字节，然后写入59字节的数据，再在第二个block的eob中写入0。然后，在第三个block中，写入33字节的数据，并在第三个block中的eob中写入0。如图所示：</p>
+
+<p><img src="3.png"></p>
+
+<p>可以看到，每次写入用户数据时，第一个block可以容纳64-sizeof(uint32_t)-1 = 59字节的用户数据，后续的每一个block可以容纳64-1 = 63字节的用户数据。每一个block末尾的eob都填入0。每次填满一个block，就把该block刷出cacheline（通过clwb指令），并开始填充下一个block。</p>
+
+<p>读取数据时，首先从start指向的位置开始：</p>
+
+<ul>
+    <li>读取一个uint32_t，作为len</li>
+    <li>根据len计算最后一个block的eob所在位置，并读取之</li>
+    <li>如果eob不是0，则说明没有更多数据，否则是一段正确写入的数据</li>
+</ul>
+
+<p>这样的读写规则就保证了原子性，为什么呢？</p>
+
+<p>因为eob处于block末尾，而block又是顺序刷出，根据假设一，最后一个eob一定不会早于其他字节被持久化。因此，如果最后一个eob写入成功，即可断定所有block写入成功。如果最后一个eob没有写入成功，那么就认定写入过程中崩溃，丢弃之。</p>
+
+<p>假设此时用户想要重用（清空）缓冲区，那么只需要将start设置为最后一次写入的位置加一即可。重用后如图所示：</p>
+
+<p><img src="4.png"></p>
+
+<p>假设接着用户又依次写入了99字节、70字节，那么如图所示：</p>
+
+<p><img src="5.png"></p>
+
+<p>接下来就是重点了！假设此时用户想继续写入80字节。那么先把80当作uint32_t写入，填充59字节的数据，末尾写入eob=0，此时的中间状态如下：</p>
+
+<p><img src="6.png"></p>
+
+<p>接下来的80-59 = 21字节数据需要写入下一个block。<font color='red'>显然，环形缓冲区“套圈”了。此后，写入的eob将是1，而不再是0。</font>这是因为，逻辑上的下一个block，也就是物理上的第一个block的eob已经写入了0。如果之后写入的eob还是0的话，就无法通过eob来判定写入的成功或失败。因此必须换一个eob！写入之后的状态如下：</p>
+
+<p><img src="7.png"></p>
+
+<p>“每次套圈，eob翻转”就是eob的更新规则，这样就能保证每次eob的原值与欲写入的新值是不同的！</p>
+
+<p>假设用户又写入了10字节，那么状态如下：</p>
+
+<p><img src="8.png"></p>
+
+<p>此时，如果用户想要重用（清空）缓冲区，则把start置为640即可。状态如下：</p>
+
+<p><img src="9.png"></p>
+
+<p>为何是640而不是128呢？换句话说，为何是逻辑位置而不是物理位置呢？这是因为，根据逻辑位置，不仅可以计算出物理位置，还能计算出此时的eob应该是0还是1，也就是说逻辑地址包好了更多的信息。当然，使用逻辑地址有一个问题就是，当start不停累加，可能会溢出。这个问题很容易解决。只需要每次把start的值除以环的大小的两倍，得到的余数赋值给start即可。至于为啥？自己想哈哈哈～</p>
+
+<p>================================阶段四：实现===============================</p>
+
+<p>代码总共分4个文件：common.h、nvmflush.h、nvmbuffer.h和nvmbuffer.c。</p>
+
+<p>common.h</p>
+
+<pre><code>
+#ifndef COMMON_H
+#define COMMON_H
+
+#include &lt;stdio.h&gt;
+
+#ifdef NO_ASSERT
+#define assert(x)
+#endif
+
+#define ERROR(ret, show_errstr, msgs...)                                        \
+    ({                                                                          \
+        fprintf(stderr, "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+        fprintf(stderr, ##msgs);                                                \
+        if(show_errstr)                                                         \
+            perror(0);                                                          \
+        else                                                                    \
+            printf("\n");                                                       \
+        return (ret);                                                           \
+    })
+
+#ifndef assert
+#include &lt;assert.h&gt;
+#endif
+
+#endif
+</code></pre>
+
+<p>nvmflush.h</p>
+
+<pre><code>
+#ifndef NVMFLUSH_H
+#define NVMFLUSH_H
+
+#include &lt;common.h&gt;
+
+typedef int (*nvmflush_t)(void* addr, size_t size);
+
+#define NVMFLUSH_FLUSH(flush_func, addr, size, fail_ret)                            \
+    ({                                                                              \
+        if((flush_func) &amp;&amp; !(flush_func)((addr), (size)))                           \
+            ERROR((fail_ret), 0, "flush_func(%p, %lu) failed!", (addr), (size));    \
+    })
+
+#define NVMFLUSH_SET(flush_func, key, val, fail_ret)                    \
+    ({                                                                  \
+        (key) = (val);                                                  \
+        NVMFLUSH_FLUSH((flush_func), &amp;(key), sizeof(key), (fail_ret));  \
+    })
+
+#endif
+</code></pre>
+
+<p>nvmbuffer.h</p>
+
+<pre><code>
+#ifndef NVMBUFFER_H
+#define NVMBUFFER_H
+
+#include &lt;stdint.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;nvmflush.h&gt;
+
+// 一个NVM缓冲区
+struct nvmbuffer
+{
+    // 对齐大小
+    size_t align;
+    // NVM硬件刷入函数
+    nvmflush_t flush;
+    // 指针-&gt;环形缓冲区逻辑开头位置，存放于NVM上
+    size_t* start;
+    // 指针-&gt;环形缓冲区其实地址，指向NVM
+    char* buffer;
+    // 环形缓冲区长度(align的整数倍)
+    size_t total_len;
+    // 当前写入位置(align的整数倍)
+    size_t seek;
+    // 当前写入块的eob值（end of block)，0或1
+    char eob;
+    // 空闲缓冲区长度(align的整数倍)
+    size_t free_len;
+    // 实际写入用户数据长度
+    size_t data_len;
+};
+
+/*
+初始化NVM缓冲区，
+    nvmbuffer: nvmbuffer结构体指针
+    nvm_buf: NVM空间
+    nvm_capacity: NVM空间大小
+    nvm_align: NVM对齐大小
+    nvm_flush: NVM硬件刷入函数
+    reset: 是否重置NVM缓冲区
+成功返回1，失败返回0。该函数不保证原子性。
+*/
+int nvmbuffer_init(struct nvmbuffer* nvmbuffer, void* nvm_buf, size_t nvm_capacity, size_t nvm_align,
+        nvmflush_t nvm_flush, int reset);
+
+/*
+获取NVM缓冲区单次写入的最大数据长度
+    nvmbuffer: nvmbuffer结构体指针
+返回NVM缓冲区单次写入的最大数据长度
+*/
+size_t nvmbuffer_max_data_len(const struct nvmbuffer* nvmbuffer);
+
+/*
+获取NVM缓冲区当前可写入的最大数据长度
+    nvmbuffer: nvmbuffer结构体指针
+返回NVM缓冲区当前可写入的最大数据长度
+*/
+size_t nvmbuffer_writable_len(const struct nvmbuffer* nvmbuffer);
+
+/*
+获取NVM缓冲区当前已写入的数据长度
+    nvmbuffer: nvmbuffer结构体指针
+返回NVM缓冲区当前已写入的数据长度
+*/
+size_t nvmbuffer_written_len(const struct nvmbuffer* nvmbuffer);
+
+/*
+向NVM缓冲区写入数据
+    nvmbuffer: nvmbuffer结构体指针
+    data: 用户数据区域
+    len: 用户数据长度
+成功返回1，失败返回0。该函数保证原子性。
+*/
+int nvmbuffer_write(struct nvmbuffer* nvmbuffer, const char* data, size_t len);
+
+/*
+将NVM缓冲区中当前已写入的用户数据输出到文件
+    nvmbuffer: nvmbuffer结构体指针
+    fd: 文件描述符
+成功返回1，失败返回0。
+*/
+int nvmbuffer_dump(const struct nvmbuffer* nvmbuffer, int fd);
+
+/*
+清空NVM缓冲区以重用
+    nvmbuffer: nvmbuffer结构体指针
+成功返回1，失败返回0。该函数保证原子性。
+*/
+int nvmbuffer_reuse(struct nvmbuffer* nvmbuffer);
+
+#endif
+</code></pre>
+
+<p>nvmbuffer.c</p>
+
+<pre><code>
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;nvmbuffer.h&gt;
+
+// 当把缓冲区中的数据dump到文件时，避免每一个block调用依次write()，而是想把数据拷贝到内存缓冲区中，再调用write()
+#define DUMP_BUFFER_SIZE 65536
+
+
+#define MIN(a, b) ((a) &lt; (b) ? (a) : (b))
+
+// n/p向上取整
+#define DIV_CEIL(n, p) (((n) - 1) / (p) + 1)
+
+// 在position位置的数据块长度
+#define DATA_LEN_AT(nvmbuffer, position)                                    \
+    ({                                                                      \
+        uint32_t* _plen = (uint32_t*)((nvmbuffer)-&gt;buffer + (position));    \
+        (*_plen);                                                           \
+    })
+
+// 根据数据块长度计算出需要占用的大小
+#define DATA_LEN_TO_CHUNK_LEN(nvmbuffer, data_len)                  \
+    ({                                                              \
+        size_t _count;                                              \
+        size_t _first = (nvmbuffer)-&gt;align - sizeof(uint32_t) - 1;  \
+        size_t _other = (nvmbuffer)-&gt;align - 1;                     \
+        if((data_len) &lt;= _first)                                    \
+            _count = 1;                                             \
+        else                                                        \
+            _count = 1 + DIV_CEIL((data_len) - _first, _other);     \
+        _count * (nvmbuffer)-&gt;align;                                \
+    })
+
+// 获取指定位置开始的数据块占用长度
+#define CHUNK_LEN_AT(nvmbuffer, position, max_len, eob)                     \
+    ({                                                                      \
+        assert(nvmbuffer);                                                  \
+        assert((position) &lt; (nvmbuffer)-&gt;total_len);                        \
+        assert((position) % (nvmbuffer)-&gt;align == 0);                       \
+        assert((max_len) &lt;= (nvmbuffer)-&gt;total_len);                        \
+        assert((eob) == 0 || (eob) == 1);                                   \
+        size_t _chunk_len;                                                  \
+        uint32_t _len = DATA_LEN_AT((nvmbuffer), (position));               \
+        do                                                                  \
+        {                                                                   \
+            if(_len &gt;= (max_len))                                           \
+            {                                                               \
+                _chunk_len = 0;                                             \
+                break;                                                      \
+            }                                                               \
+            _chunk_len = DATA_LEN_TO_CHUNK_LEN((nvmbuffer), _len);          \
+            if(_chunk_len &gt; (max_len))                                      \
+            {                                                               \
+                _chunk_len = 0;                                             \
+                break;                                                      \
+            }                                                               \
+            size_t _eob_pos = (position) + _chunk_len - 1;                  \
+            char _eob = (eob);                                              \
+            if(_eob_pos &gt;= (nvmbuffer)-&gt;total_len)                          \
+            {                                                               \
+                _eob_pos -= (nvmbuffer)-&gt;total_len;                         \
+                _eob = 1 - _eob;                                            \
+            }                                                               \
+            assert(_eob_pos &lt; (nvmbuffer)-&gt;total_len);                      \
+            char* _peob = (nvmbuffer)-&gt;buffer + _eob_pos;                   \
+            if((*_peob) != _eob)                                            \
+            {                                                               \
+                _chunk_len = 0;                                             \
+                break;                                                      \
+            }                                                               \
+        }                                                                   \
+        while(0);                                                           \
+        _chunk_len;                                                         \
+    })
+
+// start值转换为seek
+#define START_TO_SEEK(nvmbuffer, start)             \
+    ({                                              \
+        assert(nvmbuffer);                          \
+        assert((start) % (nvmbuffer)-&gt;align == 0);  \
+        ((start) % (nvmbuffer)-&gt;total_len);         \
+    })
+
+// start值转换成eob
+#define START_TO_EOB(nvmbuffer, start)                      \
+    ({                                                      \
+        assert(nvmbuffer);                                  \
+        assert((start) % (nvmbuffer)-&gt;align == 0);          \
+        ((char)(((start) / (nvmbuffer)-&gt;total_len) % 2));   \
+    })
+
+// 数据块占用长度转换成数据容量
+#define CHUNK_LEN_TO_DATA_CAPACITY(nvmbuffer, chunk_len)            \
+    ({                                                              \
+        assert((chunk_len) % (nvmbuffer)-&gt;align == 0);              \
+        size_t _count = (chunk_len) / (nvmbuffer)-&gt;align;           \
+        size_t _first = (nvmbuffer)-&gt;align - sizeof(uint32_t) - 1;  \
+        size_t _other = (nvmbuffer)-&gt;align - 1;                     \
+        _count == 0 ? 0 : _first + (_count - 1) * _other;           \
+    })
+
+int nvmbuffer_init(struct nvmbuffer* nvmbuffer, void* nvm_buf, size_t nvm_capacity, size_t nvm_align,
+        nvmflush_t nvm_flush, int reset)
+{
+    assert(nvmbuffer);
+    assert(nvm_buf);
+    if(nvm_align &lt;= sizeof(uint32_t) + 1 || nvm_align &lt; sizeof(size_t))
+        ERROR(0, 0, "param &lt;nvm_align = %lu&gt; is too small!", nvm_align);
+    if(nvm_align &gt; DUMP_BUFFER_SIZE)
+        ERROR(0, 0, "param &lt;nvm_align = %lu&gt; is too big!", nvm_align);
+    if((size_t)nvm_buf % nvm_align)
+        ERROR(0, 0, "param &lt;nvm_buf = %p&gt; is not aligned by &lt;nvm_align = %lu&gt;!", nvm_buf, nvm_align);
+    size_t block_count;
+    if((block_count = nvm_capacity / nvm_align) &lt; 2)
+        ERROR(0, 0, "param &lt;nvm_capacity = %lu&gt; is too small!", nvm_capacity);
+    nvmbuffer-&gt;align = nvm_align;
+    nvmbuffer-&gt;flush = nvm_flush;
+    nvmbuffer-&gt;start = (size_t*)nvm_buf;
+    nvmbuffer-&gt;buffer = (char*)nvm_buf + nvm_align;
+    nvmbuffer-&gt;total_len = (block_count - 1) * nvm_align;
+    if(reset)
+    {
+        NVMFLUSH_SET(nvm_flush, (*(nvmbuffer-&gt;start)), 0, 0);
+        memset(nvmbuffer-&gt;buffer, 0xff, nvmbuffer-&gt;total_len);
+        NVMFLUSH_FLUSH(nvm_flush, nvmbuffer-&gt;buffer, nvmbuffer-&gt;total_len, 0);
+    }
+    size_t start = (*(nvmbuffer-&gt;start));
+    nvmbuffer-&gt;seek = START_TO_SEEK(nvmbuffer, start);
+    nvmbuffer-&gt;eob = START_TO_EOB(nvmbuffer, start);
+    nvmbuffer-&gt;free_len = nvmbuffer-&gt;total_len;
+    nvmbuffer-&gt;data_len = 0;
+    size_t chunk_len;
+    while((chunk_len = CHUNK_LEN_AT(nvmbuffer, nvmbuffer-&gt;seek, nvmbuffer-&gt;free_len, nvmbuffer-&gt;eob)))
+    {
+        uint32_t len = DATA_LEN_AT(nvmbuffer, nvmbuffer-&gt;seek);
+        nvmbuffer-&gt;data_len += len;
+        nvmbuffer-&gt;seek += chunk_len;
+        assert(nvmbuffer-&gt;free_len &gt;= chunk_len);
+        nvmbuffer-&gt;free_len -= chunk_len;
+        if(nvmbuffer-&gt;seek &gt;= nvmbuffer-&gt;total_len)
+        {
+            nvmbuffer-&gt;seek -= nvmbuffer-&gt;total_len;
+            assert(nvmbuffer-&gt;seek &lt; nvmbuffer-&gt;total_len);
+            nvmbuffer-&gt;eob = 1 - nvmbuffer-&gt;eob;
+        }
+    }
+    return 1;
+}
+
+size_t nvmbuffer_max_data_len(const struct nvmbuffer* nvmbuffer)
+{
+    assert(nvmbuffer);
+    return CHUNK_LEN_TO_DATA_CAPACITY(nvmbuffer, nvmbuffer-&gt;total_len);
+}
+
+size_t nvmbuffer_writable_len(const struct nvmbuffer* nvmbuffer)
+{
+    assert(nvmbuffer);
+    return CHUNK_LEN_TO_DATA_CAPACITY(nvmbuffer, nvmbuffer-&gt;free_len);
+}
+
+size_t nvmbuffer_written_len(const struct nvmbuffer* nvmbuffer)
+{
+    assert(nvmbuffer);
+    return nvmbuffer-&gt;data_len;
+}
+
+int nvmbuffer_write(struct nvmbuffer* nvmbuffer, const char* data, size_t len)
+{
+    assert(nvmbuffer);
+    assert(data);
+    size_t writable_len = nvmbuffer_writable_len(nvmbuffer);
+    if(len &gt; writable_len)
+    {
+        size_t max_data_len = nvmbuffer_max_data_len(nvmbuffer);
+        assert(max_data_len &gt;= writable_len);
+        if(len &gt; max_data_len)
+            ERROR(0, 0, "param &lt;len = %lu&gt; is too big, max data length is %lu!", len, max_data_len);
+        ERROR(0, 0, "param &lt;len = %lu&gt; is too big, only %lu writable!", len, writable_len);
+    }
+    nvmbuffer-&gt;data_len += len;
+    int first_block = 1;
+    while(len)
+    {
+        assert(nvmbuffer-&gt;seek % nvmbuffer-&gt;align == 0);
+        char* base = nvmbuffer-&gt;buffer + nvmbuffer-&gt;seek;
+        char* copy_ptr = base;
+        size_t copy_capacity = nvmbuffer-&gt;align - 1;
+        char* peob = base + copy_capacity;
+        if(first_block)
+        {
+            uint32_t* plen = (uint32_t*)base;
+            (*plen) = len;
+            copy_ptr += sizeof(uint32_t);
+            copy_capacity -= sizeof(uint32_t);
+            first_block = 0;
+        }
+        size_t copy_len = MIN(len, copy_capacity);
+        memcpy(copy_ptr, data, copy_len);
+        (*peob) = nvmbuffer-&gt;eob;
+        NVMFLUSH_FLUSH(nvmbuffer-&gt;flush, base, nvmbuffer-&gt;align, 0);
+        data += copy_len;
+        len -= copy_len;
+        nvmbuffer-&gt;seek += nvmbuffer-&gt;align;
+        assert(nvmbuffer-&gt;seek &lt;= nvmbuffer-&gt;total_len);
+        assert(nvmbuffer-&gt;free_len &gt;= nvmbuffer-&gt;align);
+        nvmbuffer-&gt;free_len -= nvmbuffer-&gt;align;
+        if(nvmbuffer-&gt;seek == nvmbuffer-&gt;total_len)
+        {
+            nvmbuffer-&gt;seek = 0;
+            nvmbuffer-&gt;eob = 1 - nvmbuffer-&gt;eob;
+        }
+    }
+    return 1;
+}
+
+int nvmbuffer_dump(const struct nvmbuffer* nvmbuffer, int fd)
+{
+    assert(nvmbuffer);
+    assert(fd &gt;= 0);
+    size_t start = (*(nvmbuffer-&gt;start));
+    size_t seek = START_TO_SEEK(nvmbuffer, start);
+    size_t eob = START_TO_EOB(nvmbuffer, start);
+    assert(nvmbuffer-&gt;total_len &gt;= nvmbuffer-&gt;free_len);
+    size_t dump_len = nvmbuffer-&gt;total_len - nvmbuffer-&gt;free_len;
+    if(dump_len == 0)
+        return 1;
+    char buffer[DUMP_BUFFER_SIZE];
+    size_t buffer_len = 0;
+    size_t data_len = 0;
+    size_t chunk_len;
+    while((chunk_len = CHUNK_LEN_AT(nvmbuffer, seek, dump_len, eob)))
+    {
+        size_t next_seek = (seek + chunk_len) % nvmbuffer-&gt;total_len;
+        uint32_t len = DATA_LEN_AT(nvmbuffer, seek);
+        data_len += len;
+        int first_block = 1;
+        while(len)
+        {
+            assert(seek % nvmbuffer-&gt;align == 0);
+            char* copy_ptr = nvmbuffer-&gt;buffer + seek;
+            size_t copy_capacity = nvmbuffer-&gt;align - 1;
+            if(first_block)
+            {
+                copy_ptr += sizeof(uint32_t);
+                copy_capacity -= sizeof(uint32_t);
+                first_block = 0;
+            }
+            size_t copy_len = MIN(len, copy_capacity);
+            if(buffer_len + copy_len &gt; sizeof(buffer))
+            {
+                if(write(fd, buffer, buffer_len) != buffer_len)
+                    ERROR(0, 1, "write(%d, buffer, %lu) failed!", fd, buffer_len);
+                buffer_len = 0;
+            }
+            assert(buffer_len + copy_len &lt;= sizeof(buffer));
+            memcpy(buffer + buffer_len, copy_ptr, copy_len);
+            buffer_len += copy_len;
+            len -= copy_len;
+            seek += nvmbuffer-&gt;align;
+            assert(dump_len &gt;= nvmbuffer-&gt;align);
+            dump_len -= nvmbuffer-&gt;align;
+            assert(seek &lt;= nvmbuffer-&gt;total_len);
+            if(seek == nvmbuffer-&gt;total_len)
+            {
+                seek = 0;
+                eob = 1 - eob;
+            }
+        }
+        assert(seek == next_seek);
+    }
+    assert(data_len == nvmbuffer-&gt;data_len);
+    if(buffer_len &amp;&amp; write(fd, buffer, buffer_len) != buffer_len)
+        ERROR(0, 1, "write(%d, buffer, %lu) failed!", fd, buffer_len);
+    return 1;
+}
+
+int nvmbuffer_reuse(struct nvmbuffer* nvmbuffer)
+{
+    assert(nvmbuffer);
+    assert(nvmbuffer-&gt;free_len &lt;= nvmbuffer-&gt;total_len);
+    size_t used_len = nvmbuffer-&gt;total_len - nvmbuffer-&gt;free_len;
+    size_t start = (*(nvmbuffer-&gt;start)) + used_len;
+    size_t new_start = start % (nvmbuffer-&gt;total_len * 2);
+    assert(START_TO_SEEK(nvmbuffer, start) == START_TO_SEEK(nvmbuffer, new_start));
+    assert(START_TO_EOB(nvmbuffer, start) == START_TO_EOB(nvmbuffer, new_start));
+    assert(START_TO_SEEK(nvmbuffer, new_start) == nvmbuffer-&gt;seek);
+    NVMFLUSH_SET(nvmbuffer-&gt;flush, (*(nvmbuffer-&gt;start)), new_start, 0);
+    nvmbuffer-&gt;free_len = nvmbuffer-&gt;total_len;
+    nvmbuffer-&gt;data_len = 0;
+    return 1;
+}
+</code></pre>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>

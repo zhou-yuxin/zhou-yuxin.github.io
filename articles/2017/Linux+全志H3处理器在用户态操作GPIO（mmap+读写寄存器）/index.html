@@ -107,7 +107,7 @@
 if(fd&lt;0)
     return 1;
 void* ptr=mmap(0,1,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0x01C21000);
-if(ptr==0)
+if(ptr==MAP_FAILED)
     return 1;
 *ptr=0x1234;
 </pre>
@@ -120,7 +120,7 @@ if(ptr==0)
 if(fd&lt;0)
     return 1;
 void* map_addr=mmap(0,0x234+1,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0x01C21000);
-if(map_addr==0)
+if(map_addr==MAP_FAILED)
     return 1;
 void* ptr=map_addr+0x234;
 *ptr=0x1234;</pre>
@@ -220,7 +220,7 @@ int gpio_init()
     //映射到物理地址
     void* map_addr=mmap(0,MEM_AREA_SIZE,PROT_READ|PROT_WRITE,MAP_SHARED,fd,BASE_ADDR-offset);
     //映射失败
-    if(map_addr==0)
+    if(map_addr==MAP_FAILED)
     {
         perror("mmap failed!\n");
         close(fd);
