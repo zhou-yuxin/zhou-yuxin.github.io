@@ -316,7 +316,6 @@ int nvmbuffer_reuse(struct nvmbuffer* nvmbuffer);
 // 当把缓冲区中的数据dump到文件时，避免每一个block调用依次write()，而是想把数据拷贝到内存缓冲区中，再调用write()
 #define DUMP_BUFFER_SIZE 65536
 
-
 #define MIN(a, b) ((a) &lt; (b) ? (a) : (b))
 
 // n/p向上取整
