@@ -508,6 +508,7 @@ int nvmbuffer_write(struct nvmbuffer* nvmbuffer, const char* data, size_t len)
         }
         size_t copy_len = MIN(len, copy_capacity);
         memcpy(copy_ptr, data, copy_len);
+        assert((*peob) != nvmbuffer-&gt;eob);
         (*peob) = nvmbuffer-&gt;eob;
         NVMFLUSH_FLUSH(nvmbuffer-&gt;flush, base, nvmbuffer-&gt;align, 0);
         data += copy_len;
