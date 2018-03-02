@@ -1,0 +1,415 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>NVM缓冲日志文件libnvmbuflog（二）——双缓冲与灾后恢复</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+        <link rel="stylesheet" href="../../../highlight.css">
+        <script src="../../../highlight.js"></script>
+        <script>hljs.initHighlightingOnLoad();</script>
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">NVM缓冲日志文件libnvmbuflog（二）——双缓冲与灾后恢复</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>==================================阶段一：概述================================</p>
+
+<p>在上一篇《<a href="../NVM缓冲日志文件libnvmbuflog（一）——环形缓冲区nvmbuffer/index.html">NVM缓冲日志文件libnvmbuflog（一）——环形缓冲区nvmbuffer</a>》中，我已经创造了一种建立在NVM上的缓冲区，对该缓冲区的写入、重置操作都是原子性的。但是，单单有这样一个缓冲区是不够的，还需要与文件系统结合起来，使其作为磁盘文件的缓冲器。</p>
+
+<p>一种简单的想法是，当用户想要写入内容时，如果能放入nvmbuffer中，那么就写入nvmbuffer。否则如果放不下，就先把nvmbuffer中的内容dump到文件，然后再把内容写入nvmbuffer中。但是，这样的串行操作有一个问题，即当nvmbuffer正在dump时，线程阻塞，使得那一次的写入操作非常耗时。</p>
+
+<p>根据多年的经验，这种情况下使用双缓冲即可缓解问题——有两个nvmbuffer，前台的用于写入数据，后台的用于dump到文件。当用户想要写入内容时，先写入前台nvmbuffer中。当前台nvmbuffer无法放入更多数据时，那么交换两个nvmbuffer，把原本的前台nvmbuffer放到后台，在一个后台线程中将其dump到文件。而本来的后台nvmbuffer就到了前台来接收用户数据。这样，可以大大缩短用户线程阻塞的时间。事实上，当用户写入带宽小于磁盘带宽时，往往在前台nvmbuffer切换到后台前，后台nvmbuffer早就完成了dump，于是无需阻塞。</p>
+
+<p>原理很简单，但是实际操作时还有很多细节需要考虑。首先是线程同步问题：当后台线程还在dump时，如果需要交换nvmbuffer，必须阻塞，直到上次dump完成。这个可以使用信号量完成。其次是如何保证状态切换的原子性以及dump操作的原子性，这个将在下文详细描述。</p>
+
+<p>========================阶段二：设计——保证dump操作原子性============================</p>
+
+<p>除了两个nvmbuffer外，NVM上还存在状态信息，其由三元组（file_len, write_buf, is_dumping）构成。file_len即磁盘文件当前长度，write_buf即前台nvmbuffer的编号（0或1），is_dumping是一个布尔值，表示当前后台nvmbuffer是否正在dump。这个三元组可以保证dump操作的原子性。</p>
+
+<p>初始化时，file_len设置为磁盘文件当前长度，write_buf设置为0，is_dumping设置为false。假设最开始是空文件，那么状态三元组为</p>
+
+<pre>
+(file_len = 0, write_buf = 0, is_dumping = false)
+</pre>
+
+<p>当用户向nvmbuffer[0]写入数据时，数据被持久化到nvmbuffer[0]中，而且是原子性的。假设当用户写入了1000字节后，触发了nvmbuffer交换。此时，先将状态三元组设置为</p>
+
+<pre>
+(file_len = 0, write_buf = 1, is_dumping = true)
+</pre>
+
+<p>即把后台的nvmbuffer放到前台来，并且标记当前正在dump。然后，在后台线程中dump出nvmbuffer[0]中的1000字节。如果成功完成了，那么将三元组设置为</p>
+
+<pre>
+(file_len = 1000, write_buf = 1, is_dumping = false)
+</pre>
+
+<p>如果在dump过程中，系统崩溃，那么重启后，发现状态三元组依旧是之前的</p>
+
+<pre>
+(file_len = 0, write_buf = 1, is_dumping = true)
+</pre>
+
+<p>那么首先把文件长度截取到0，然后重新进行dump。因此，这样的状态三元组，能做到“一切顺利时OK，中途崩溃也能检测到、修复文件并重新dump”。一言以敝之，三元组表述的一定是一个一致的状态！</p>
+
+<p>=========================阶段三：设计二——状态三元组更新的原子性=========================</p>
+
+<p>上一段已经阐述了如何通过状态三元组来保证双缓冲机制的原子性操作。但是又引入了新的问题：如何保证状态三元组更新的原子性？如果系统在修改状态三元组时崩溃，那么状态三元组就处于一个不一致的状态了。</p>
+
+<p>对于这种多字段的原子性更新，我想出了一种原子性的方法，它只依赖于一个假设：</p>
+
+<ul>
+    <li>NVM硬件对于单个字节的写入是原子性的</li>
+</ul>
+
+<p>这个假设的含义是，向NVM写入一个字节时，要么8个位都写入成功，要么8个位都写入失败。一般的硬件都能满足这个假设。</p>
+
+<p>在满足这个假设的基础上，我的设计是这样的：在NVM上存在两份状态三元组，命名为state[0]和state[1]，并且有一个字节，命名为vaild_state。vaild_state指示当前哪一个状态三元组是有效的。初始化时，state[0]设置为合适的值，并且vaild_state设置为0。当需要更新状态三元组组时，先将三个字段写入state[1 - vaild_state]中，然后把vaild_state赋值为1 - vaild_state。只要vaild_state修改成功，那么状态三元组就修改成功，否则就等于没修改。于是，单字节的原子性被“放大”到了多字节的原子性。妙哉～</p>
+
+<p>===========================阶段四：实现=========================</p>
+
+<p>总共有common.h、nvmflush.h、nvmbuffer.h、nvmbuffer.c、nvmbuflog.h和nvmbuflog.c这么6个文件。其中前4个文件在《<a href="../NVM缓冲日志文件libnvmbuflog（一）——环形缓冲区nvmbuffer/index.html">NVM缓冲日志文件libnvmbuflog（一）——环形缓冲区nvmbuffer</a>》中给出。</p>
+
+<p>nvmbuflog.h</p>
+
+<pre><code>
+#ifndef NVMBUFLOG_H
+#define NVMBUFLOG_H
+
+#include &lt;stdint.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;pthread.h&gt;
+#include &lt;nvmflush.h&gt;
+#include &lt;nvmbuffer.h&gt;
+#include &lt;semaphore.h&gt;
+
+// 一个nvm缓冲日志
+struct nvmbuflog
+{
+    // 磁盘文件描述符
+    int fd;
+    // 两个磁盘缓冲器
+    struct nvmbuffer buffers[2];
+    // 当前状态
+    struct nvmbuflog_state
+    {
+        // 当前文件长度
+        size_t file_len;
+        // 正在用于写入的缓冲器编号
+        int write_buf;
+        // 当前后台是否正在dump
+        int is_dumping;
+    }*
+    // 存在在NVM上，两个状态结构体，为了保证原子性
+    states[2];
+    // 当前有效的状态编号，存在在NVM上
+    uint8_t* vaild_state;
+    // NVM硬件刷入函数
+    nvmflush_t flush;
+    // 正在用于写入的缓冲器编号
+    int write_buf;
+    // 后台dump线程
+    pthread_t bg_thread;
+    // dump任务开始信号量。dump任务完成信号量
+    sem_t sem_dump_start, sem_dump_done;
+};
+
+// 初始化一个nvm缓冲日志
+//    nvmbuflog: nvmbuflog指针
+//    fd: 文件描述符
+//    nvm_buf: 分配给nvm缓冲日志使用的NVM区域
+//    nvm_capacity: nvm_buf的长度
+//    nvm_align: NVM硬件对齐长度
+//    nvm_flush: NVM硬件刷入函数
+//    reset: 是否重置缓冲器
+// 成功返回1，失败返回0
+int nvmbuflog_init(struct nvmbuflog* nvmbuflog, int fd, void* nvm_buf, size_t nvm_capacity,
+        size_t nvm_align, nvmflush_t nvm_flush, int reset);
+
+// 向nvm缓冲日志写入数据（保证数据的原子性）
+//    nvmbuflog: nvmbuflog指针
+//    data: 数据
+//    len: 数据长度
+// 成功返回1，失败返回0
+int nvmbuflog_write(struct nvmbuflog* nvmbuflog, const char* data, size_t len);
+
+// 把nvm缓冲器中的数据刷出到文件
+//    nvmbuflog: nvmbuflog指针
+// 成功返回1，失败返回0
+int nvmbuflog_flush(struct nvmbuflog* nvmbuflog);
+
+// 关闭nvm缓冲器，不刷出数据，也不关闭文件
+//    nvmbuflog: nvmbuflog指针
+// 成功返回1，失败返回0
+int nvmbuflog_close(struct nvmbuflog* nvmbuflog);
+
+#endif
+</code></pre>
+
+<p>nvmbuflog.c</p>
+
+<pre><code>
+#include &lt;common.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;nvmflush.h&gt;
+#include &lt;nvmbuflog.h&gt;
+
+// 获取当前状态
+#define CURRENT_STATE(nvmbuflog)                                \
+    ({                                                          \
+        uint8_t _vaild_state = (*((nvmbuflog)-&gt;vaild_state));   \
+        assert(_vaild_state == 0 || _vaild_state == 1);         \
+        (nvmbuflog)-&gt;states[_vaild_state];                      \
+    })
+
+// 获取前台nvmbuffer
+#define WRITE_BUFFER(nvmbuflog)                                             \
+    ({                                                                      \
+        assert((nvmbuflog)-&gt;write_buf == 0 || (nvmbuflog)-&gt;write_buf == 1); \
+        &amp;((nvmbuflog)-&gt;buffers[(nvmbuflog)-&gt;write_buf]);                    \
+    })
+
+// 获取后台nvmbuffer
+#define DUMP_BUFFER(nvmbuflog)                                              \
+    ({                                                                      \
+        assert((nvmbuflog)-&gt;write_buf == 0 || (nvmbuflog)-&gt;write_buf == 1); \
+        &amp;((nvmbuflog)-&gt;buffers[1 - (nvmbuflog)-&gt;write_buf]);                \
+    })
+
+// 原子性地设置状态三元组
+#define SET_STATE(nvmbuflog, _file_len, _write_buf, _is_dumping, fail_ret)                          \
+    ({                                                                                              \
+        uint8_t _vaild_state = (*((nvmbuflog)-&gt;vaild_state));                                       \
+        assert(_vaild_state == 0 || _vaild_state == 1);                                             \
+        uint8_t _invaild_state = 1 - _vaild_state;                                                  \
+        struct nvmbuflog_state* _state = (nvmbuflog)-&gt;states[_invaild_state];                       \
+        _state-&gt;file_len = (_file_len);                                                             \
+        _state-&gt;write_buf = (_write_buf);                                                           \
+        _state-&gt;is_dumping = (_is_dumping);                                                         \
+        NVMFLUSH_FLUSH((nvmbuflog)-&gt;flush, _state, sizeof(struct nvmbuflog_state), fail_ret);       \
+        NVMFLUSH_SET((nvmbuflog)-&gt;flush, (*(nvmbuflog-&gt;vaild_state)), _invaild_state, fail_ret);    \
+    })
+
+// 获取文件长度
+#define GET_FILE_LENGTH(fd, fail_ret)                                   \
+    ({                                                                  \
+        struct stat _stat;                                              \
+        if(fstat((fd), &amp;_stat) != 0)                                    \
+            ERROR((fail_ret), 1, "fstat(%d, &amp;_stat) failed!", (fd));    \
+        _stat.st_size;                                                  \
+    })
+
+// 将后台nvmbuffer中的内容dump到文件，并且更新状态三元组
+static int dump_buffer_to_file(struct nvmbuflog* nvmbuflog)
+{
+    assert(nvmbuflog);
+    struct nvmbuflog_state* state = CURRENT_STATE(nvmbuflog);
+    assert(!state-&gt;is_dumping);
+    struct nvmbuffer* dbuf = DUMP_BUFFER(nvmbuflog);
+    assert(dbuf - nvmbuflog-&gt;buffers == 1 - nvmbuflog-&gt;write_buf);
+    size_t file_len = state-&gt;file_len;
+    size_t data_len = nvmbuffer_written_len(dbuf);
+    size_t next_file_len = file_len + data_len;
+    if(data_len)
+    {
+        SET_STATE(nvmbuflog, file_len, nvmbuflog-&gt;write_buf, 1, 0);
+        if(!nvmbuffer_dump(dbuf, nvmbuflog-&gt;fd))
+            ERROR(0, 0, "nvmbuffer_dump(dbuf, %d) failed!", nvmbuflog-&gt;fd);
+        if(fsync(nvmbuflog-&gt;fd) != 0)
+            ERROR(0, 0, "fsync(%d) failed!", nvmbuflog-&gt;fd);
+        if(GET_FILE_LENGTH(nvmbuflog-&gt;fd, 0) != next_file_len)
+            ERROR(0, 0, "the file system may have some bugs!");
+    }
+    SET_STATE(nvmbuflog, next_file_len, nvmbuflog-&gt;write_buf, 0, 0);
+    return 1;
+}
+
+// 后台线程，如果崩溃，返回0
+static void* background_dump_thread(void* arg)
+{
+    assert(arg);
+    struct nvmbuflog* nvmbuflog = arg;
+    while(1)
+    {
+        if(sem_wait(&amp;(nvmbuflog-&gt;sem_dump_start)) != 0)
+        {
+            nvmbuflog-&gt;bg_thread = 0;
+            ERROR((void*)0, 1, "sem_wait(&amp;(nvmbuflog-&gt;sem_dump_start)) failed!");
+        }
+        if(!dump_buffer_to_file(nvmbuflog))
+        {
+            nvmbuflog-&gt;bg_thread = 0;
+            ERROR((void*)0, 0, "dump_buffer_to_file(nvmbuflog) failed!");
+        }
+        if(sem_post(&amp;(nvmbuflog-&gt;sem_dump_done)) != 0)
+        {
+            nvmbuflog-&gt;bg_thread = 0;
+            ERROR((void*)0, 1, "sem_post(&amp;(nvmbuflog-&gt;sem_dump_done)) failed!");
+        }
+    }
+}
+
+// 启动后台任务
+static int launch_background_dump(struct nvmbuflog* nvmbuflog)
+{
+    assert(nvmbuflog);
+    if(sem_wait(&amp;(nvmbuflog-&gt;sem_dump_done)) != 0)
+        ERROR(0, 1, "sem_wait(&amp;(nvmbuflog-&gt;sem_dump_done)) failed!");
+    if(sem_post(&amp;(nvmbuflog-&gt;sem_dump_start)) != 0)
+        ERROR(0, 1, "sem_post(&amp;(nvmbuflog-&gt;sem_dump_start)) failed!");
+    return 1;
+}
+
+// 获取p的倍数n，使得n &gt;= min
+#define MULTI_NO_LESS_THAN(p, min) (((((min) - 1) / (p)) + 1) * (p))
+
+int nvmbuflog_init(struct nvmbuflog* nvmbuflog, int fd, void* nvm_buf, size_t nvm_capacity,
+        size_t nvm_align, nvmflush_t nvm_flush, int reset)
+{
+    assert(nvmbuflog);
+    assert(fd &gt;= 0);
+    assert(nvm_buf);
+    if(nvm_align == 0)
+        ERROR(0, 0, "invaild param &lt;nvm_align = 0&gt;!");
+    if((size_t)nvm_buf % nvm_align != 0)
+        ERROR(0, 0, "param &lt;nvm_buf = %p&gt; is not aligned by param &lt;nvm_align = %lu&gt;!", nvm_buf, nvm_align);
+    size_t header_size = 2 * sizeof(struct nvmbuflog_state) + sizeof(uint8_t);
+    header_size = MULTI_NO_LESS_THAN(nvm_align, header_size);
+    if(nvm_capacity &lt;= header_size)
+        ERROR(0, 0, "param &lt;nvm_capacity = %lu&gt; is too small!", nvm_capacity);
+    size_t file_len = GET_FILE_LENGTH(fd, 0);
+    nvmbuflog-&gt;fd = fd;
+    nvmbuflog-&gt;states[0] = nvm_buf;
+    nvmbuflog-&gt;states[1] = (void*)((char*)nvm_buf + sizeof(struct nvmbuflog_state));
+    nvmbuflog-&gt;vaild_state = (void*)((char*)nvm_buf + 2 * sizeof(struct nvmbuflog_state));
+    nvmbuflog-&gt;flush = nvm_flush;
+    size_t buf_capacity = ((nvm_capacity - header_size) / 2 / nvm_align) * nvm_align;
+    char* buf0_addr = (char*)nvm_buf + header_size;
+    char* buf1_addr = buf0_addr + buf_capacity;
+    if(!nvmbuffer_init(&amp;(nvmbuflog-&gt;buffers[0]), buf0_addr, buf_capacity, nvm_align, nvm_flush, reset))
+        ERROR(0, 0, "nvmbuffer_init(&amp;(nvmbuflog-&gt;buffers[0]), %p, %lu, %lu, nvm_flush, %d) failed!",
+                buf0_addr, buf_capacity, nvm_align, reset);
+    if(!nvmbuffer_init(&amp;(nvmbuflog-&gt;buffers[1]), buf1_addr, buf_capacity, nvm_align, nvm_flush, reset))
+        ERROR(0, 0, "nvmbuffer_init(&amp;(nvmbuflog-&gt;buffers[1]), %p, %lu, %lu, nvm_flush, %d) failed!",
+                buf1_addr, buf_capacity, nvm_align, reset);
+    if(sem_init(&amp;(nvmbuflog-&gt;sem_dump_start), 0, 0) != 0)
+        ERROR(0, 1, "sem_init(&amp;(nvmbuflog-&gt;sem_dump_start), 0, 0) failed!");
+    if(sem_init(&amp;(nvmbuflog-&gt;sem_dump_done), 0, 1) != 0)
+        ERROR(0, 1, "sem_init(&amp;(nvmbuflog-&gt;sem_dump_done), 0, 1) failed!");
+    if(pthread_create(&amp;(nvmbuflog-&gt;bg_thread), 0, background_dump_thread, nvmbuflog) != 0)
+        ERROR(0, 1, "pthread_create(&amp;(nvmbuflog-&gt;bg_thread), 0, background_dump_thread, nvmbuflog) failed!");
+    assert(nvmbuflog-&gt;bg_thread != 0);
+    struct nvmbuflog_state* state;
+    if(reset)
+    {
+        state = nvmbuflog-&gt;states[0];
+        state-&gt;file_len = file_len;
+        state-&gt;write_buf = 0;
+        state-&gt;is_dumping = 0;
+        NVMFLUSH_FLUSH(nvm_flush, state, sizeof(struct nvmbuflog_state), 0);
+        NVMFLUSH_SET(nvm_flush, (*(nvmbuflog-&gt;vaild_state)), 0, 0);
+        nvmbuflog-&gt;write_buf = 0;
+        return 1;
+    }
+    state = CURRENT_STATE(nvmbuflog);
+    assert(state-&gt;write_buf == 0 || state-&gt;write_buf == 1);
+    nvmbuflog-&gt;write_buf = state-&gt;write_buf;
+    if(file_len &lt; state-&gt;file_len)
+        ERROR(0, 0, "the file is broken!");
+    if(!state-&gt;is_dumping)
+    {
+        if(file_len != state-&gt;file_len)
+            ERROR(0, 0, "the file is broken!");
+    }
+    else
+    {
+        if(ftruncate(fd, state-&gt;file_len) != 0 || GET_FILE_LENGTH(fd, 0) != state-&gt;file_len)
+            ERROR(0, 1, "ftruncate(%d, %lu) failed!", fd, state-&gt;file_len);
+        if(!dump_buffer_to_file(nvmbuflog))
+            ERROR(0, 0, "dump_buffer_to_file(nvmbuflog) failed!");
+    }
+    return 1;
+}
+
+#define CHECK_BACKGROUND_TRHEAD(nvmbuflog, fail_ret)                    \
+    ({                                                                  \
+        if((nvmbuflog)-&gt;bg_thread == 0)                                 \
+            ERROR((fail_ret), 0, "background thread has broken!");      \
+    })
+
+int nvmbuflog_write(struct nvmbuflog* nvmbuflog, const char* data, size_t len)
+{
+    assert(nvmbuflog);
+    assert(data);
+    CHECK_BACKGROUND_TRHEAD(nvmbuflog, 0);
+    if(len == 0)
+        return 1;
+    struct nvmbuffer* wbuf = WRITE_BUFFER(nvmbuflog);
+    if(len &gt; nvmbuffer_writable_len(wbuf))
+    {
+        if(len &gt; nvmbuffer_max_data_len(wbuf))
+            ERROR(0, 0, "param &lt;len = %lu&gt; is too big!", len);
+        nvmbuflog-&gt;write_buf = 1 - nvmbuflog-&gt;write_buf;
+        if(!launch_background_dump(nvmbuflog))
+            ERROR(0, 0, "launch_background_dump(nvmbuflog) failed!");
+        wbuf = WRITE_BUFFER(nvmbuflog);
+        if(nvmbuffer_written_len(wbuf) != 0 &amp;&amp; !nvmbuffer_reuse(wbuf))
+            ERROR(0, 0, "nvmbuffer_reuse(wbuf) failed!");
+    }
+    if(!nvmbuffer_write(wbuf, data, len))
+        ERROR(0, 0, "nvmbuffer_write(buffer[%d], data, %lu) failed!", nvmbuflog-&gt;write_buf, len);
+    return 1;
+}
+
+int nvmbuflog_flush(struct nvmbuflog* nvmbuflog)
+{
+    assert(nvmbuflog);
+    CHECK_BACKGROUND_TRHEAD(nvmbuflog, 0);
+    struct nvmbuffer* wbuf = WRITE_BUFFER(nvmbuflog);
+    if(nvmbuffer_written_len(wbuf) == 0)
+        return 1;
+    if(sem_wait(&amp;(nvmbuflog-&gt;sem_dump_done)) != 0)
+        ERROR(0, 1, "sem_wait(&amp;(nvmbuflog-&gt;sem_dump_done)) failed!");
+    nvmbuflog-&gt;write_buf = 1 - nvmbuflog-&gt;write_buf;
+    if(!dump_buffer_to_file(nvmbuflog))
+        ERROR(0, 0, "dump_buffer_to_file(nvmbuflog) failed!");
+    wbuf = WRITE_BUFFER(nvmbuflog);
+    if(nvmbuffer_written_len(wbuf) != 0 &amp;&amp; !nvmbuffer_reuse(wbuf))
+        ERROR(0, 0, "nvmbuffer_reuse(wbuf) failed!");
+    if(sem_post(&amp;(nvmbuflog-&gt;sem_dump_done)) != 0)
+        ERROR(0, 1, "sem_post(&amp;(nvmbuflog-&gt;sem_dump_done)) failed!");
+    return 1;
+}
+
+int nvmbuflog_close(struct nvmbuflog* nvmbuflog)
+{
+    assert(nvmbuflog);
+    if(pthread_cancel(nvmbuflog-&gt;bg_thread) != 0)
+        ERROR(0, 1, "pthread_cancel(%lu) failed!", nvmbuflog-&gt;bg_thread);
+    void* ret_val;
+    if(pthread_join(nvmbuflog-&gt;bg_thread, &amp;ret_val) != 0)
+        ERROR(0, 1, "pthread_join(%lu, &amp;ret_val) failed!", nvmbuflog-&gt;bg_thread);
+    if(ret_val != (void*)(-1))
+        ERROR(0, 1, "wrong exit code (%p) of background thread!", ret_val);
+    return 1;  
+}
+</code></pre>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
