@@ -1,0 +1,142 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>libmallocat——让任意内存分配器支持mallc_at()操作</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">libmallocat——让任意内存分配器支持mallc_at()操作</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>前面在《<a href="../面向非易失存储器（NVM）的内存分配器——libnvmalloc/index.html">面向非易失存储器（NVM）的内存分配器——libnvmalloc</a>》中我已经阐述了malloc_at()操作的意义，而且自己设计了一套NVM内存分配器——libnvmalloc。不过呢，没有人相信我一个还没毕业的实习生能够写出工业级的代码呀。既然不敢用，那么就基于一些已有的内存分配器，来增加一些功能吧。这种问题再一次没有难倒机智的我呀，于是我想出了一种能够让任意内存分配器支持malloc_at()操作的方法，将其封装为libmallocat。嘛，功能棒棒哒，性能还凑合～</p>
+
+<p>先来阐述一下原理吧。</p>
+
+<p>首先，既然能支持任意内存分配器，那么肯定必须把内存分配器看作一个黑盒——我们只知道它提供了C库风格的malloc()操作和free()操作。为了简便起见，calloc()、realloc()等函数暂时忽略，等看了原理会发现和malloc()没有区别～</p>
+
+<p>在这个分配器之上，存在额外的一层，这一层就是libmallocat的重点。逻辑上可以把这一层看作一个集合，集合中的每一个元素都是一个通过malloc_at()操作分配的内存对象。一个由malloc_at()操作分配的内存对象由三要素构成：起始地址、长度、挂起链表，可以表示为三元组：</p>
+
+<pre>
+object = (addr, size, paddings)
+</pre>
+
+<p>其中的挂起链表paddings暂时可以忽略。刚开始时，这个集合是空集。当用户调用</p>
+
+<pre>
+malloc_at(0x12340000, 50)
+</pre>
+
+<p>后，集合变成了：</p>
+
+<pre>
+{
+    (0x12340000, 50, []),
+}
+</pre>
+
+<p>当用户又调用了</p>
+
+<pre>
+malloc_at(0x12341000, 80)
+</pre>
+
+<p>后，集合变成了：</p>
+
+<pre>
+{
+    (0x12340000, 50, []),
+    (0x12341000, 80, []),
+}
+</pre>
+
+<p>当然，需要确保集合中的内存对象是不存在地址上的重叠的。如果用户调用</p>
+
+<pre>
+malloc_at(0x12341010, 100)
+</pre>
+
+<p>那么检测到试图新增的(0x12341010, 100)与集合中已经存在的(0x12341000, 80)存在重叠的区域，也就是产生冲突，因此需要拒绝用户的操作。如果用户继而调用</p>
+
+<pre>
+malloc_at(0x12345000, 90)
+</pre>
+
+<p>那么此时集合中就有了三个内存对象：</p>
+
+<pre>
+{
+    (0x12340000, 50, []),
+    (0x12341000, 80, []),
+    (0x12345000, 90, []),
+}
+</pre>
+
+<p>一般的应用场景下，应用程序在初始化时调用一系列malloc_at()，把之前在使用的内存空间都分配好。然后进入了正式的运行阶段，这个阶段中，应用程序就只会调用malloc()了。假设应用程序接下来调用</p>
+
+<pre>
+malloc(66)
+</pre>
+
+<p>那么首先，libmallocat会去调用底层那个看作黑盒的内存分配器的malloc()操作。假设底层的malloc()返回了地址0x12330000，那么可以发现(0x12330000, 66)与之前集合中的对象都没有重叠，于是将0x12330000返回给用户，操作完成。</p>
+
+<p>假设接下来用户调用了</p>
+
+<pre>
+malloc(10)
+</pre>
+
+<p>底层的malloc()返回了0x12340020，那么发现(0x12340020, 10)与集合中的(0x12340000, 50)有重叠部分了，于是不能把0x12340020返回给用户。接下来就重新调用底层的malloc()，假设返回了0x12340030，结果发现(0x12340030, 10)与集合中的(0x12340000, 50)也有重叠，那么依旧不能返回给用户。那么继续调用底层的malloc()，假设返回了0x12346000，于是发现(0x12346000, 10)与集合中任何对象都不冲突，那么就把0x123460000返回给用户。</p>
+
+<p>那么，之前尝试得到的0x12340020和0x12340030怎么处理呢？首先，这两个地址不能释放，因为释放的话，以后极有可能又分配在这个地址，那么又会冲突。其次，这两个地址也不能放任不管（直接忽视），不然就造成了内存泄漏。于是，挂起链表（paddings)发挥作用了。既然0x12340020和0x12340030是因为与(0x12340000, 50)冲突而“丢弃”，那么就把它俩加入(0x12340000, 50)的paddings，于是集合变成了：</p>
+
+<pre>
+{
+    (0x12340000, 50, [0x12340020, 0x12340030]),
+    (0x12341000, 80, []),
+    (0x12345000, 90, []),
+}
+</pre>
+
+<p>假设此时用户要释放最后分配的0x12346000</p>
+
+<pre>
+free(0x12346000)
+</pre>
+
+<p>那么libmallocat先在集合中查找，发现没有这个地址，那么就直接交由底层的free()处理，操作结束。假设接着用户又要释放最初用malloc_at()申请的0x12340000，即</p>
+
+<pre>
+free(0x12340000)
+</pre>
+
+<p>libmallocat发现该地址在集合中，那么就获取该元素的挂起链表paddings，依次释放链表中指针，即调用底层的free()，执行free(0x12340020)和free(0x12340030)。最后把0x12340000那个元素从集合中删除。此时集合变成了</p>
+
+<pre>
+{
+    (0x12341000, 80, []),
+    (0x12345000, 90, []),
+}
+</pre>
+
+<p>这就是libmallocat的原理——把malloc_at()分配的对象放入集合，如果malloc()分配的区域与集合中的对象冲突，那么重新分配，直到不冲突。</p>
+
+<p>在实际的实现中，这种既要快速插入删除，又要快速查找的集合，只能由AVL树胜任咯～不过，由于检测到冲突时需要取消插入操作，所以我对AVL树进行了增强，于是就有了《<a href='../../2017/C语言实现通用版AVL树/index.html'>C语言实现通用版AVL树</a>》后面的更新部分。代码总共有common.h、avl.h、avl.c、existed.h、existed.c、mallocat.h和mallocat.c七个文件。其中common.h可以在《<a href='../NVM缓冲日志文件libnvmbuflog（一）——环形缓冲区nvmbuffer/index.html'>NVM缓冲日志文件libnvmbuflog（一）——环形缓冲区nvmbuffer</a>》中得到，avl.h和avl.c可以在《<a href='../../2017/C语言实现通用版AVL树/index.html'>C语言实现通用版AVL树</a>》后面的更新部分中得到。</p>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>

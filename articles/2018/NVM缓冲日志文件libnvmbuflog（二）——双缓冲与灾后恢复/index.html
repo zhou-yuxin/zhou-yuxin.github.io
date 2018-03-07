@@ -3,9 +3,6 @@
         <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
         <title>NVM缓冲日志文件libnvmbuflog（二）——双缓冲与灾后恢复</title>
         <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-        <link rel="stylesheet" href="../../../highlight.css">
-        <script src="../../../highlight.js"></script>
-        <script>hljs.initHighlightingOnLoad();</script>
     </head>
     <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
         <div id="page" class="hfeed">
@@ -78,7 +75,7 @@
 
 <p>nvmbuflog.h</p>
 
-<pre><code>
+<pre>
 #ifndef NVMBUFLOG_H
 #define NVMBUFLOG_H
 
@@ -150,11 +147,11 @@ int nvmbuflog_flush(struct nvmbuflog* nvmbuflog);
 int nvmbuflog_close(struct nvmbuflog* nvmbuflog);
 
 #endif
-</code></pre>
+</pre>
 
 <p>nvmbuflog.c</p>
 
-<pre><code>
+<pre>
 #include &lt;common.h&gt;
 #include &lt;unistd.h&gt;
 #include &lt;sys/stat.h&gt;
@@ -400,7 +397,7 @@ int nvmbuflog_close(struct nvmbuflog* nvmbuflog)
         ERROR(0, 1, "wrong exit code (%p) of background thread!", ret_val);
     return 1;  
 }
-</code></pre>
+</pre>
 
                             </div>
                         </article>

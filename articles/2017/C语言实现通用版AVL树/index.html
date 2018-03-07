@@ -15,6 +15,10 @@
                             </header>
                             <div class="entry-content">
 
+<p>！！！！！！！！！！2018年03月06日有重要更新！！！！！！！！！！！！！，以下为原文：</p>
+
+<p>=========================原文=======================</p>
+
 <p>最近工作中需要用到AVL树，而且需要C语言实现。我在GitHub上找到了一个C++版的，<a href="https://github.com/jonnyhsy/AVL">点这里</a>。由于C++的类可以进行运算符重载，重载&lt;和=运算符，所以就是通用的了。C语言没有这么多语法特性，但是有啥是C语言做不到的呢？！我就把这个C++实现改成了C语言实现，而且实现了通用的AVL树。</p>
 
 <p>这里就记录一下，以后可以直接复制粘贴了。</p>
@@ -310,7 +314,308 @@ int main()
 
 <p>输出"bra"，所以就知道AVL确实发生了旋转~</p>
 
-      ﻿                        </div>
+<p>==============================2018年03月06日更新=================================</p>
+
+<P>最近的工作中，遇到这样一个需求：当把一个数据插入AVL树中时，可能需要取消插入动作。举个简单的例子：如果需要保证AVL树中元素不重复，那么当插入一个新元素时，在比较器中可能会发现两个元素相等，那么就需要向AVL树报告，取消这次插入动作。</P>
+
+<p>因此需要两个要素：</p>
+
+<ul>
+    <li>比较器能够向AVL报告取消动作</li>
+    <li>调用者需要能得知动作是完成了还是取消了</li>
+</ul>
+
+<p>代码的改动很简单，与上文代码中的区别我将用红色字体标出。</p>
+
+<p>avl.h</p>
+
+<pre>
+#ifndef AVL_H
+#define AVL_H
+
+#include &lt;stdlib.h&gt;
+
+<font color='red'>// 如果比较器返回该结果，那么取消动作
+#define AVL_CANCEL ((int)123456789)</font>
+
+// AVL树节点
+struct avl_node
+{
+    void* val;
+    ssize_t height;
+    struct avl_node* left;
+    struct avl_node* right;
+};
+
+// 向AVL树插入一个值，使用指定函数进行值与值之间的比较
+//   root: AVL树根节点
+//   val: 待插入的值
+//   comparator: 自定义比较函数：如果v1&lt;v2，返回-1；如果v1=v2，返回0；如果v1&gt;v2，返回1,
+//          如果返回AVL_CANCEL，那么取消插入
+//   cancelled: 是否被取消（应事先置为0）
+//   返回：新的AVL树根节点
+struct avl_node* avl_insert(struct avl_node* root, void* val,
+    int (*comparator)(const void* v1, const void* v2), <font color='red'>int* cancelled</font>);
+
+// 从AVL树中删除一个值，使用指定函数进行值与值之间的比较
+//   root: AVL树根节点
+//   val: 待删除的值
+//   comparator: 自定义比较函数：如果v1&lt;v2，返回-1；如果v1=v2，返回0；如果v1&gt;v2，返回1,
+//          如果返回AVL_CANCEL，那么取消插入
+//   cancelled: 是否被取消（应事先置为0）
+//   found: 如果找到，则置为1（应事先置为0）
+//   返回：新的AVL树根节点
+struct avl_node* avl_delete(struct avl_node* root, void* val,
+    int (*comparator)(const void* v1, const void* v2), <font color='red'>int* cancelled</font>, int* found);
+
+// get 在AVL树中搜索指定值，使用指定函数进行值与值之间的比较
+//   root: AVL树根节点
+//   val: 待插入的值
+//   comparator: 自定义比较函数：如果v1&lt;v2，返回-1；如果v1=v2，返回0；如果v1&gt;v2，返回1。
+//   返回：如果站到该值，则返回包含该值的树节点，否则返回0
+struct avl_node* avl_search(struct avl_node* root, void* val,
+    int (*comparator)(const void* v1, const void* v2));
+
+// 获取指定AVL树中节点总数
+//   root: AVL树根节点
+size_t avl_node_count(struct avl_node* root);
+
+#endif
+</pre>
+
+<p>avl.c</p>
+
+<pre>
+#include &lt;avl.h&gt;
+#include &lt;assert.h&gt;
+
+#define get_height(node) (((node)==0)?(-1):((node)-&gt;height))
+
+#define max(a,b) ((a)&gt;(b)?(a):(b))
+
+/* RR(Y rotates to the right):
+        k2                 k1
+        / \                / \
+        k1  Z     ======   X  k2
+        / \                    / \
+    X   Y                  Y   Z
+*/
+/*
+    Return which the root pointer(at a higher level) should point to
+    */
+static struct avl_node* rr_rotate(struct avl_node* k2)
+{
+    assert(k2 != 0);
+
+    struct avl_node* k1 = k2 -&gt; left;
+    k2 -&gt; left = k1 -&gt; right;
+    k1 -&gt; right = k2;
+    k2 -&gt; height = max(get_height(k2 -&gt; left), get_height(k2 -&gt; right)) + 1;
+    k1 -&gt; height = max(get_height(k1 -&gt; left), k2 -&gt; height) + 1;
+    return k1;
+}
+
+/* LL(Y rotates to the left):
+        k2                     k1
+        / \                    / \
+        X  k1       ======     k2  Z
+        / \                 / \
+        Y  Z               X   Y
+    */
+static struct avl_node* ll_rotate(struct avl_node* k2)
+{
+    assert(k2 != 0);
+
+    struct avl_node* k1 = k2 -&gt; right;
+    k2 -&gt; right = k1 -&gt; left;
+    k1 -&gt; left = k2;
+    k2 -&gt; height = max(get_height(k2 -&gt; left), get_height(k2 -&gt; right)) +1;
+    k1 -&gt; height = max(get_height(k1 -&gt; right), k2 -&gt; height) +1;
+    return k1;
+}
+
+/* LR(B rotates to the left, then C rotates to the right):
+        k3                       k3                    k2
+        / \                      / \                   / \
+    k1  D                    k2  D                k1   k3
+    / \      ======          / \     ======        / \  / \
+    A   k2                   k1  C                 A  B C   D
+        / \                 / \
+        B  C                A   B
+*/
+/*
+    Return which the root pointer should point to
+    */
+static struct avl_node* lr_rotate(struct avl_node* k3)
+{
+    assert(k3 != 0);
+
+    k3 -&gt; left = ll_rotate(k3 -&gt; left);
+    return rr_rotate(k3);
+}
+
+/* RL(D rotates to the right, then C rotates to the left):
+        k3                      k3                       k2
+        / \                     / \                      / \
+        A  k1                   A   k2                   k3  k1 
+        / \      ======          / \        ======    / \ / \
+        k2  B                    C   k1               A  C D  B
+        / \                         / \
+        C   D                       D   B 
+    */
+static struct avl_node* rl_rotate(struct avl_node* k3)
+{
+    assert(k3 != 0);
+
+    k3 -&gt; right = rr_rotate(k3 -&gt; right);
+    return ll_rotate(k3);
+}
+
+/* return which the root pointer(at an outer/higher level) should point to,
+    the root_node of AVL tree may change frequently during delete/insert,
+    so the Root pointer should point to the REAL root node.
+    */
+struct avl_node* avl_insert(struct avl_node* root, void* val,
+    int (*comparator)(const void* v1, const void* v2), <font color='red'>int* cancelled</font>)
+{
+    assert(comparator != 0);
+    
+    if(root == 0)
+    {
+        root = malloc(sizeof(struct avl_node));
+        root -&gt; val = val;
+        root -&gt; left = 0;
+        root -&gt; right = 0;
+        root -&gt; height = 0;
+        return root;
+    }
+
+    <font color='red'>int comp = comparator(val , root -&gt; val);
+    if(comp == AVL_CANCEL)
+    {
+        if(cancelled)
+            (*cancelled) = 1;
+        return root;
+    }</font>
+    else if(comp &lt; 0)
+        root -&gt; left = avl_insert(root -&gt; left, val, comparator, cancelled);
+    else
+        root -&gt; right = avl_insert(root -&gt; right, val, comparator, cancelled);
+
+    root -&gt; height = max(get_height(root -&gt; left), get_height(root -&gt; right)) + 1;
+
+    ssize_t height_delta= get_height(root -&gt; left) - get_height(root -&gt; right);
+    if(height_delta == 2)
+    {
+        if(comparator(val, root -&gt; left -&gt; val) &lt; 0)
+            root = rr_rotate(root);
+        else
+            root = lr_rotate(root);
+    }
+    else if(height_delta == -2)
+    {
+        if(comparator(val, root -&gt; right -&gt; val) &lt; 0)
+            root = rl_rotate(root);
+        else
+            root = ll_rotate(root);
+    }
+    return root;
+}
+
+/* return which the root pointer(at an outer/higher level) should pointer to,
+    cause the root_node of AVL tree may change frequently during delete/insert,
+    so the Root pointer should point to the REAL root node.
+    */
+struct avl_node* avl_delete(struct avl_node* root, void* val,
+    int (*comparator)(const void* v1, const void* v2), <font color='red'>int* cancelled</font>, int* found)
+{
+    assert(comparator != 0);
+    
+    if(root == 0)
+        return 0;
+
+    int comp = comparator(val, root -&gt; val);
+    <font color='red'>if(comp == AVL_CANCEL)
+    {
+        if(cancelled)
+            (*cancelled) = 1;
+        return root;
+    }</font>
+    else if(comp == 0)
+    {
+        if(root -&gt; right == 0)
+        {
+            struct avl_node* temp = root;
+            root = root -&gt; left;
+            free(temp);
+            if(found)
+                (*found) = 1;
+            return root;
+        }
+        else
+        {
+            struct avl_node* temp = root -&gt; right;
+            while(temp -&gt; left)
+                temp = temp -&gt; left;
+            root -&gt; val = temp -&gt; val;
+            root -&gt; right = avl_delete(root -&gt; right, temp -&gt; val, comparator, cancelled, found);
+        }
+    }
+    else if(comp &lt; 0)
+        root -&gt; left = avl_delete(root -&gt; left, val, comparator, cancelled, found);
+    else
+        root -&gt; right = avl_delete(root -&gt; right, val, comparator, cancelled, found);
+
+    root -&gt; height = max(get_height(root -&gt; left), get_height(root -&gt; right)) + 1;
+
+    ssize_t height_delta = get_height(root -&gt; left) - get_height(root -&gt; right);
+    if(height_delta == 2)
+    {
+        if(get_height(root -&gt; left -&gt; left) &gt;= get_height(root -&gt; left -&gt; right))
+            root = rr_rotate(root);
+        else
+            root = lr_rotate(root);
+    }
+    else if(height_delta == -2)
+    {
+        if(get_height(root -&gt; right -&gt; right) &gt;= get_height(root -&gt; right -&gt; left))
+            root = ll_rotate(root);
+        else
+            root = rl_rotate(root);
+    }
+    return root;
+}
+
+// get the node that contains the value that equals to the given one
+struct avl_node* avl_search(struct avl_node* root, void* val,
+    int (*comparator)(const void* v1, const void* v2))
+{
+    assert(comparator != 0);
+
+    if(root == 0)
+        return 0;
+
+    int comp = comparator(val, root -&gt; val);
+    if(comp == 0)
+        return root;
+    else if(comp &lt; 0)
+        return avl_search(root -&gt; left, val, comparator);
+    else
+        return avl_search(root -&gt; right, val, comparator);
+}
+
+// get how many nodes in the tree
+size_t avl_node_count(struct avl_node* root)
+{
+    if(root == 0)
+        return 0;
+    return 1 + avl_node_count(root -&gt; left) + avl_node_count(root -&gt; right);
+}
+</pre>
+
+<p>非常简单吧～</p>
+
+                              </div>
                         </article>
                     </div>
                 </div>

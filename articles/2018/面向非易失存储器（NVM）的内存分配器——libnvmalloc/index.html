@@ -3,9 +3,6 @@
         <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
         <title>面向非易失存储器（NVM）的内存分配器——libnvmalloc</title>
         <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-        <link rel="stylesheet" href="../../../highlight.css">
-        <script src="../../../highlight.js"></script>
-        <script>hljs.initHighlightingOnLoad();</script>
     </head>
     <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
         <div id="page" class="hfeed">
@@ -20,56 +17,56 @@
 
 <p>前面几篇《<a href="../../2017/伙伴分配器（buddy allocator）/index.html">伙伴分配器（buddy allocator）</a>》和《<a href="../高效通用bitmap（续）——bmp4k/index.html">高效通用bitmap（续）——bmp4k</a>》中我分别创造了伙伴分配器和高效的bitmap。目的就是为了这一篇中需要创造的libnvmalloc。这是一个用于NVM（包括一切持久化存储设备）的内存分配器，这个内存分配器相比于传统的用于DRAM的内存分配器，最大的区别在于，其支持形如</p>
 
-<pre><code>
+<pre>
 int malloc_at(void* addr, size_t size);
-</code></pre>
+</pre>
 
 <p>这样的操作。该操作用于分配一段内存空间，不仅指定了大小，还指定了起始地址。malloc_at()操作对于DRAM是没有意义的，因为写入其中的数据只有在当前进程中有效，当进程重启后，数据丢失。而malloc_at()操作对于NVM是必须的，因为写入NVM的数据在下一次进程启动时依旧能够访问到，所以必须告诉分配器把空间分配在哪里。事实上，由于NVM是通过mmap()操作动态挂载到虚拟地址空间中的，因此malloc_at()操作中的地址应该是数据相对于NVM硬件开头的偏移量，即：</p>
 
-<pre><code>
+<pre>
 int nvm_malloc_at(size_t addr, size_t size);
-</code></pre>
+</pre>
 
 <p>对于NVM的使用，可以用一个小例子阐述。进程启动时，挂载NVM，假设NVM被挂载到了虚拟地址空间中的0x12340000,即：
     
-<pre><code>
+<pre>
 void* nvm_base = mmap(...); // nvm_base = 0x12340000
-</code></pre>
+</pre>
 
 <p>然后使用malloc()操作在NVM上分配一段长度为256的空间，得到偏移量是0x2000：</p>
 
-<pre><code>
+<pre>
 size_t nvm_offset = nvm_malloc(256); // nvm_offset = 0x2000
-</code></pre>
+</pre>
 
 <p>那么进程中就可以使用一个指向0x12342000的指针来读写NVM上的这段空间：</p>
 
-<pre><code>
+<pre>
 void* nvm_ptr = (void*)((size_t)nvm_base + nvm_offset); // nvm_ptr = 0x12342000
-</code></pre>
+</pre>
 
 <p>比如写入一个字符串：</p>
 
-<pre><code>
+<pre>
 strcpy((char*)nvm_ptr, "hello,world!");
-</code></pre>
+</pre>
 
 <p>当进程重启后，或者在另一个进程中，虽然NVM可能会被挂载到不同的虚地址空间，但是仍然可以通过malloc_at()操作和之前分配的偏移量0x2000重新访问数据：</p>
 
-<pre><code>
+<pre>
 void* nvm_base = mmap(...); // nvm_base = 0x45670000
 size_t nvm_offset = 0x2000;
 int ret = nvm_malloc_at(nvm_offset);
 assert(ret);
 void* nvm_ptr = (void*)((size_t)nvm_base + nvm_offset); // nvm_ptr = 0x45672000
 printf("%s\n", (char*)nvm_ptr); // output: "hello,world!\n"
-</code></pre>
+</pre>
 
 <p>事实上，即使不使用nvm_malloc_at()，NVM上的数据也可以通过指针直接访问。但是，如果不使用nvm_malloc_at()告诉分配器某某地方存在数据，那么分配器很可能会把该段空间分配出去，从而导致数据被破坏。这就是malloc_at()操作对于libnvmalloc的必要性。另外从上面的示例中可以看到，该分配器处理地址都是逻辑上的偏移量，而不是虚拟地址。</p>
 
 <p>从功能上而言，《<a href="../../2017/伙伴分配器（buddy allocator）/index.html">伙伴分配器（buddy allocator）</a>》中设计的buddy allocator已经可以提供libnvmalloc需要的完整功能，因为其拥有</p>
 
-<pre><code>
+<pre>
 // 从buddy中分配一个单元
 //    buddy: 一个buddy的指针
 //    size: 单元大小
@@ -89,11 +86,11 @@ size_t buddy_allocate_at(struct buddy* buddy, size_t addr, size_t size);
 //    size: 单元大小
 // 成功返回1，失败返回0。
 int buddy_free(struct buddy* buddy, size_t addr, size_t size);
-</code></pre>
+</pre>
 
 <p>这么三个函数。换个名字就成了所要的</p>
 
-<pre><code>
+<pre>
 // 从管理空间中分配一块空闲区域
 //    nvmalloc: 一个nvmalloc指针
 //    size: 分配空间大小
@@ -112,7 +109,7 @@ size_t nvmalloc_malloc_at(struct nvmalloc* nvmalloc, size_t addr, size_t size);
 //    addr: 地址
 // 成功返回1, 失败返回0
 int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr);
-</code></pre>
+</pre>
 
 <p>但是，buddy allocator有一个不太理想的特性，就是分配的单元的大小之间必须是2的整数次幂的比例。比如说，最小的分配大小是64字节，那么下一个等级就是128字节，再往下就是256字节，以此类推。这样，在最糟糕的情况下，内存利用率接近50%，因为用户申请2^n+1字节（65, 129, 257, 513...）的空间时，实际分配的是2^(n+1)字节（128, 256, 512, 1024...）的空间。</p>
 
@@ -134,8 +131,6 @@ int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr);
     <li><font color="red">512</font></li>
     <p> ............</p>
 </ul>
-
-
 
 <p>那么最糟糕的情况下，空间利用率为80%。因此，为了提高空间利用率，单纯的buddy allocator是不够的。我的设计是：多个小尺寸的对象构成chunk，以chunk为单位向buddy allocator申请空间；而大对象则直接向buddy allocator分配。</p>
 
@@ -177,7 +172,7 @@ int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr);
 
 <p>一个chunk使用如下结构体表示：</p>
 
-<pre><code>
+<pre>
 // 一个用bitmap细分的chunk
 struct nvmalloc_chunk
 {
@@ -196,13 +191,13 @@ struct nvmalloc_chunk
     // 后一个chunk
     struct nvmalloc_chunk* next;
 };
-</code></pre>
+</pre>
 
 <p>比如一个用来管理4096个64字节单元的chunk，通过buddy_allocate()分配得到地址为0x10000000，那么addr字段就是0x10000000，len是256KB，level_index为0，item_size为64。</p>
 
 <p>每一个尺度级别都有两条链表avails和unavails，用如下结构表示：</p>
 
-<pre><code>
+<pre>
 // 同一个尺寸级别的所有chunk
 struct nvmalloc_level
 {
@@ -211,7 +206,7 @@ struct nvmalloc_level
     // 所有不可分配的chunk的双向环
     struct nvmalloc_chunk* unavails;
 };
-</code></pre>
+</pre>
 
 <p>所有使用chunk细分的尺度层级构成如下的结构：</p>
 
@@ -221,7 +216,7 @@ struct nvmalloc_level
 
 <p>一个完整的nvm分配器的数据结构如下：</p>
 
-<pre><code>
+<pre>
 // 一个nvmalloc分配器
 struct nvmalloc
 {
@@ -236,7 +231,7 @@ struct nvmalloc
     // 由地址快速得到归属chunk
     void** chunk_maps;
 };
-</code></pre>
+</pre>
 
 <p>最基础的就是一个buddy allocator。然后有一个名为levels的nvmalloc_level一维数组，最后有一个名为chunk_maps的void*的一维数组。buddy和levels字段已经阐述过了。chunk_maps[i]对应了NVM上[i*256KB， (i+1)*256KB)这么一段空间，描述该段空间的状态。具体含义如下：</p>
 
@@ -254,13 +249,13 @@ struct nvmalloc
 
 <p>对于</p>
 
-<pre><code>
+<pre>
 // 从管理空间中分配一块空闲区域
 //    nvmalloc: 一个nvmalloc指针
 //    size: 分配空间大小
 // 成功返回地址，失败返回NVMALLOC_ALLOCATE_FAILED
 size_t nvmalloc_malloc(struct nvmalloc* nvmalloc, size_t size);
-</code></pre>
+</pre>
 
 <p>步骤如下：</p>
 
@@ -285,14 +280,14 @@ size_t nvmalloc_malloc(struct nvmalloc* nvmalloc, size_t size);
 
 <p>对于</p>
 
-<pre><code>
+<pre>
 // 在管理空间的指定位置分配一块区域
 //    nvmalloc: 一个nvmalloc指针
 //    addr: 地址
 //    size: 分配空间大小
 // 成功返回地址addr，失败返回NVMALLOC_ALLOCATE_FAILED
 size_t malloc_at(size_t addr, size_t size);
-</code></pre>
+</pre>
 
 <p>单纯使用上述的数据结构还不能胜任。为此我引入额外的数据结构——chunk_maps。对于malloc_at操作，步骤如下：</p>
 
@@ -317,13 +312,13 @@ size_t malloc_at(size_t addr, size_t size);
 
 <p>对于</p>
 
-<pre><code>
+<pre>
 // 释放分配的空间
 //    nvmalloc: 一个nvmalloc指针
 //    addr: 地址
 // 成功返回1, 失败返回0
 int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr);
-</code></pre>
+</pre>
 
 <p>步骤如下：</p>
 
@@ -349,7 +344,7 @@ int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr);
 
 <p>nvmalloc.h</p>
 
-<pre><code>
+<pre>
 #ifndef NVMALLOC_H
 #define NVMALLOC_H
 
@@ -453,11 +448,11 @@ int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr);
 size_t nvmalloc_usable_size(struct nvmalloc* nvmalloc, size_t addr);
 
 #endif
-</code></pre>
+</pre>
 
 <p>nvmalloc.c</p>
 
-<pre><code>
+<pre>
 #include &lt;common.h&gt;
 #include &lt;string.h&gt;
 #include &lt;nvmalloc.h&gt;
@@ -811,11 +806,11 @@ size_t nvmalloc_usable_size(struct nvmalloc* nvmalloc, size_t addr)
     GET_ALLOCATED_ITEM_INDEX(chunk, addr, item_index, 0);
     return chunk-&gt;item_size;
 }
-</code></pre>
+</pre>
 
 <p>把common.h、avl.h、avl.c、buddy.h、buddy.c、bmp4k.h、bmp4k.c、nvmalloc.h、nvmalloc.c放在一起，然后写一个测试用例：</p>
 
-<pre><code>
+<pre>
 #include &lt;common.h&gt;
 #include &lt;nvmalloc.h&gt;
 
@@ -846,11 +841,11 @@ int main()
 
     return 0;
 }
-</code></pre>
+</pre>
 
-<pre><code>
+<pre>
 gcc -std=gnu99 *.c -o nvmalloc_test -I. -O3
-</code></pre>
+</pre>
 
 <p>关闭assert，开启-O3优化，在Intel(R) Core(TM) i5-2450M CPU @ 2.50GHz的笔记本上，测试性能如下：</p>
 

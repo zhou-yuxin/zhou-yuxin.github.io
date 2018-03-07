@@ -3,9 +3,6 @@
         <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
         <title>NVM缓冲日志文件libnvmbuflog（一）——环形缓冲区nvmbuffer</title>
         <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-        <link rel="stylesheet" href="../../../highlight.css">
-        <script src="../../../highlight.js"></script>
-        <script>hljs.initHighlightingOnLoad();</script>
     </head>
     <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
         <div id="page" class="hfeed">
@@ -32,10 +29,10 @@
 
 <p>传统的基于磁盘的日志文件，除了性能上的弊端外，还有功能上的缺陷。磁盘无法保证write()操作是原子性的。比如在执行</p>
 
-<pre><code>
+<pre>
 write(fd, 'hello,world!', 12);
 fsync(fd);
-</code></pre>
+</pre>
 
 <p>的中途，如果系统崩溃，那么可能文件末尾写入了“hell"，造成了数据的不完整。对于给人类阅读的日志文件，数据不完整还不是什么问题，但是用于数据恢复的日志文件是不容许这样的不完整性的。在过去，没有一个通用的解决办法，各个软件根据自身的业务特性提出了不同的方案。比如在Redis的AOF中，当需要记录</p>
 
@@ -159,7 +156,7 @@ nam
 
 <p>common.h</p>
 
-<pre><code>
+<pre>
 #ifndef COMMON_H
 #define COMMON_H
 
@@ -185,11 +182,11 @@ nam
 #endif
 
 #endif
-</code></pre>
+</pre>
 
 <p>nvmflush.h</p>
 
-<pre><code>
+<pre>
 #ifndef NVMFLUSH_H
 #define NVMFLUSH_H
 
@@ -210,11 +207,11 @@ typedef int (*nvmflush_t)(void* addr, size_t size);
     })
 
 #endif
-</code></pre>
+</pre>
 
 <p>nvmbuffer.h</p>
 
-<pre><code>
+<pre>
 #ifndef NVMBUFFER_H
 #define NVMBUFFER_H
 
@@ -304,11 +301,11 @@ int nvmbuffer_dump(const struct nvmbuffer* nvmbuffer, int fd);
 int nvmbuffer_reuse(struct nvmbuffer* nvmbuffer);
 
 #endif
-</code></pre>
+</pre>
 
 <p>nvmbuffer.c</p>
 
-<pre><code>
+<pre>
 #include &lt;string.h&gt;
 #include &lt;unistd.h&gt;
 #include &lt;nvmbuffer.h&gt;
@@ -601,7 +598,7 @@ int nvmbuffer_reuse(struct nvmbuffer* nvmbuffer)
     nvmbuffer-&gt;data_len = 0;
     return 1;
 }
-</code></pre>
+</pre>
 
                             </div>
                         </article>

@@ -3,9 +3,6 @@
         <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
         <title>伙伴分配器（buddy allocator）</title>
         <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-        <link rel="stylesheet" href="../../../highlight.css">
-        <script src="../../../highlight.js"></script>
-        <script>hljs.initHighlightingOnLoad();</script>
     </head>
     <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
         <div id="page" class="hfeed">
@@ -20,9 +17,9 @@
 
 <p>最近需要给NVM开发一个内存分配器，需要支持：</p>
 
-<pre><code>
+<pre>
 int malloc_at(void* addr, size_t size);
-</code></pre>
+</pre>
 
 <p>这么一个函数。也就是说，有别于一般的为DRAM设计的内存分配器，该分配器不仅要能够指定分配的大小，还要能指定分配的位置。当然，一般分配器的标准API也一样需要实现。</p>
 
@@ -50,9 +47,9 @@ int malloc_at(void* addr, size_t size);
 
 <p>上述就是malloc()的过程。那么free()就是反过来。不过这里的free()和标准的C库的free()不同，需要传入size参数，即：</p>
 
-<pre><code>
+<pre>
 int buddy_free(void* addr, size_t size);
-</code></pre>
+</pre>
 
 <p>接着上面的例子。假设此时要释放倒数第二次申请的(addr = 16, size = 8)这一块空间。既然size=8，那么就得知对应的层是layer[1]，并且是第16 / 8 = 2块。所以把2放入layer[1]中。过程如下：</p>
 
@@ -66,7 +63,7 @@ int buddy_free(void* addr, size_t size);
 
 <p>common.h</p>
 
-<pre><code>
+<pre>
 #ifndef COMMON_H
 #define COMMON_H
 
@@ -94,11 +91,11 @@ int buddy_free(void* addr, size_t size);
 #endif
 
 #endif
-</code></pre>
+</pre>
 
 <p>avl.h</p>
 
-<pre><code>
+<pre>
 #ifndef AVL_H
 #define AVL_H
 
@@ -143,11 +140,11 @@ struct avl_node* avl_search(struct avl_node* root, void* val,
 size_t avl_node_count(struct avl_node* root);
 
 #endif
-</code></pre>
+</pre>
 
 <p>avl.c</p>
 
-<pre><code>
+<pre>
 #include &lt;avl.h&gt;
 #include &lt;common.h&gt;
 
@@ -360,13 +357,13 @@ size_t avl_node_count(struct avl_node* root)
         return 0;
     return 1 + avl_node_count(root -&gt; left) + avl_node_count(root -&gt; right);
 }
-</code></pre>
+</pre>
 
 <p>这些都是铺垫，接下来才是重头戏！然而重头戏却很简短~</p>
 
 <p>buddy.h</p>
 
-<pre><code>
+<pre>
 #ifndef BUDDY_H
 #define BUDDY_H
 
@@ -423,11 +420,11 @@ size_t buddy_allocate_at(struct buddy* buddy, size_t addr, size_t size);
 int buddy_free(struct buddy* buddy, size_t addr, size_t size);
 
 #endif
-</code></pre>
+</pre>
 
 <p>buddy.c</p>
 
-<pre><code>
+<pre>
 #include &lt;buddy.h&gt;
 #include &lt;common.h&gt;
 #include &lt;string.h&gt;
@@ -607,11 +604,11 @@ int buddy_free(struct buddy* buddy, size_t addr, size_t size)
     free_to_layer(buddy, layer_index, item_index);
     return 1;
 }
-</code></pre>
+</pre>
 
 <p>把这五个文件放在一起，再写个test_buddy.c：</p>
 
-<pre><code>
+<pre>
 #include &lt;buddy.h&gt;
 #include &lt;stdio.h&gt;
 #include &lt;assert.h&gt;
@@ -658,14 +655,14 @@ int main()
 
     return 0;
 }
-</code></pre>
+</pre>
 
 <p>也就是让buddy管理1TB的空间，最小单元是1M，最大单元是512M。然后先通过malloc_at()分配1M个1M大小的单元，恰好耗尽所有空间，再全部释放，再用malloc()耗尽所有空间，再全部释放。</p>
 
-<pre><code>
+<pre>
 gcc -std=gnu99 -O3 *.c -o test_buddy -I.
 time ./test_buddy
-</code></pre>
+</pre>
 
 <p>在我Intel(R) Core(TM) i5-2450M CPU @ 2.50GHz的笔记本上，用时0.374s，也就是一次malloc() + malloc() + 2 * free()的组合操作，平均用时357纳秒。当然，我也做了单独的测试，如下：</p>
 
@@ -683,7 +680,7 @@ time ./test_buddy
     <tr><td>free</td><td>61ns</td></tr>
 </table>
 
-      ﻿                        </div>
+                              </div>
                         </article>
                     </div>
                 </div>

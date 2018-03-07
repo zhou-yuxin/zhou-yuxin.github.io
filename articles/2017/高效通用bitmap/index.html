@@ -3,9 +3,6 @@
         <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
         <title>高效通用bitmap</title>
         <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-        <link rel="stylesheet" href="../../../highlight.css">
-        <script src="../../../highlight.js"></script>
-        <script>hljs.initHighlightingOnLoad();</script>
     </head>
     <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
         <div id="page" class="hfeed">
@@ -32,58 +29,58 @@
 
 <p>举个例子，比如我有一个长度为64的bitmap</p>
 
-<pre><code>
+<pre>
 0000 0010 1000 0000 1100 0000 0000 1111 0000 0000 0000 0000 0000 0000 0000 0000
-</code></pre>
+</pre>
 
 <p>我用一个uint64_t来表示它：</p>
 
-<pre><code>
+<pre>
 uint64_t bitmap = 0x0280900f00000000;
-</code></pre>
+</pre>
 
 <p>首先判断bitmap != 0，那么就知道这64个bit中肯定有1。</p>
 
 <p>二分搜索嘛，肯定少不了两个索引left和right，来表示搜索区域。虽然习惯上left &lt; right，但是这里不同，规定left &gt; right。这是因为，习惯上，我们表示一串二进制时，会把高位写在左边，把低位写在右边，就像上面的那串。起始时：</p>
 
-<pre><code>
+<pre>
 size_t left = 63;
 size_t right = 0;
-</code></pre>
+</pre>
 
 <p>表示left和right中的所有bit，包括left和right所在位置的bit，是搜索区域。接下来就开始正式搜索了。</p>
 
-<pre><code>
+<pre>
 size_t mid = (left + right) / 2; // mid = 31
 uint64_t mask = ((uint64_t)1 &lt;&lt; (mid + 1)) - ((uint64_t)1 &lt;&lt; right); // mask = 0xffffffff
-</code></pre>
+</pre>
 
 <p>这个mask是怎么回事呢？我们已经得知(64: 0]这64bit中一定有1，那么我们分成(64: 32]和(32: 0]两段，并且考察低位的(32 :0]这段里有没有1。考察(a: b]这么一段，就需要把其他的位都屏蔽掉，那么mask的第0~(b-1)位是0，第b~a位是1,第(a+1)~63位是0。</p>
 
-<pre><code>
+<pre>
 ((uint64_t)1 << (a + 1)) - 1
-</code></pre>
+</pre>
 
 <p>能够产生低a位都是1、其余位都是0的掩码。</p>
 
-<pre><code>
+<pre>
 ((uint64_t)1 << b) - 1
-</code></pre>
+</pre>
         
 <p>能够产生低(b-1)位都是1、其余位都是0的掩码。那么两者相减，就能产生所要的掩码。这就是上面mask的公式的原理。</p>
 
-<pre><code>
+<pre>
 if(bitmap &amp; mask)
     left = mid;
 else
     right = mid + 1;
-</code></pre>
+</pre>
 
 <p>上面代码中，我们先考察[mid: right]这一段是否有1，如果有，那么就让left = mid，也就是接下来在低位的半段搜索了，否则就在高位的半段搜索。为啥是right = mid + 1呢？因为既然[mid: right]中没有1，那么第mid位也肯定没有1,所以有1的肯定从mid + 1开始。于是，二分迭代就建立起来了！</p>
 
 <p>bmp64.h</p>
 
-<pre><code>
+<pre>
 #ifndef BMP64_H
 #define BMP64_H
 
@@ -133,11 +130,11 @@ int bmp64_exist(struct bmp64* bmp64, int value);
 size_t bmp64_search(struct bmp64* bmp64, int value);
 
 #endif
-</code></pre>
+</pre>
 
 <p>bmp64.c</p>
 
-<pre><code>
+<pre>
 #include &lt;bmp64.h&gt;
 #include &lt;common.h&gt;
 
@@ -213,7 +210,7 @@ size_t bmp64_search(struct bmp64* bmp64, int value)
         return bmp64_search(&amp;reverse, 1);
     }
 }
-</code></pre>
+</pre>
 
 <p>其中用到的common.h与《<a href="../伙伴分配器（buddy allocator）/index.html">伙伴分配器（buddy allocator）</a>》中的一样。</p>
 
@@ -239,7 +236,7 @@ size_t bmp64_search(struct bmp64* bmp64, int value)
 
 <p>bitmap.h</p>
 
-<pre><code>
+<pre>
 #ifndef BITMAP_H
 #define BITMAP_H
 
@@ -288,11 +285,11 @@ int bitmap_exist(struct bitmap* bitmap, int value);
 size_t bitmap_search(struct bitmap* bitmap, int value);
 
 #endif
-</code></pre>
+</pre>
 
 <p>这里有个奇迹淫巧需要解释一下，就是这个struct bitmap结构。从上面那种图片中可以看到，最底层是若干个struct bmp64。所以应该是：</p>
 
-<pre><code>
+<pre>
 // 两层结构
 struct bitmap
 {
@@ -301,11 +298,11 @@ struct bitmap
     struct bmp64 bmp64_has_1;
     struct bmp64* subs;
 };
-</code></pre>
+</pre>
 
 <p>但是，如果位数超过4096呢？那么就需要三层结构，那么第二层也是struct bitmap，而不是struct bmp64，也就是这样：</p>
 
-<pre><code>
+<pre>
 // 多层(三层及以上)结构
 struct bitmap
 {
@@ -314,22 +311,22 @@ struct bitmap
     struct bmp64 bmp64_has_1;
     struct bitmap* sub;
 };
-</code></pre>
+</pre>
 
 <p>从而让struct bitmap层层嵌套。而如果位数在64位以内，那么struct bitmap就应该退化为struct bmp64，也就是</p>
 
-<pre><code>
+<pre>
 // 单层结构，退化为bmp64
 struct bitmap // struct bmp64
 {
     size_t len;
     uint64_t bits;
 };
-</code></pre>
+</pre>
 
 <p>可见，除了len字段以外，其他字段都应该可以伸缩。所以我设计了这么一个结构：</p>
 
-<pre><code>
+<pre>
 struct bitmap
 {
     // 长度
@@ -337,7 +334,7 @@ struct bitmap
     // 一个数组，每个元素是一个struct bitmap或者struct bmp64
     void* what;
 };
-</code></pre>
+</pre>
 
 <p>确保sizeof(struct bitmap) == sizeof(struct bmp64)。同时bitmap中的len的偏移量和bmp64中的偏移量相同。对于what字段的解释根据len的不同而不同：</p>
 
@@ -350,7 +347,7 @@ struct bitmap
 
 <p>bitmap.c</p>
 
-<pre><code>
+<pre>
 #include &lt;bmp64.h&gt;
 #include &lt;bitmap.h&gt;
 #include &lt;common.h&gt;
@@ -513,7 +510,7 @@ size_t bitmap_search(struct bitmap* bitmap, int value)
     // 计算逻辑上的索引
     return sub_index * sub_maxlen + index_in_sub;
 }
-</code></pre>
+</pre>
 
 <p>浓浓的递归结构啊！</p>
 
@@ -521,7 +518,7 @@ size_t bitmap_search(struct bitmap* bitmap, int value)
 
 <p>test_bitmap.c</p>
 
-<pre><code>
+<pre>
 #include &lt;bitmap.h&gt;
 #include &lt;common.h&gt;
 
@@ -563,12 +560,12 @@ int main()
 
     return 0;
 }
-</code></pre>
+</pre>
 
-<pre><code>
+<pre>
 gcc -std=gnu99 bmp64.c bitmap.c test_bitmap.c -o test_bitmap -I.
 ./test_bitmap
-</code></pre>
+</pre>
 
 <p><img src="2.png"></p>
 

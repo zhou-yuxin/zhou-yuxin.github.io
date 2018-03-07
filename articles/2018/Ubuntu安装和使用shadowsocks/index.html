@@ -3,9 +3,6 @@
         <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
         <title>Ubuntu安装和使用shadowsocks</title>
         <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-        <link rel="stylesheet" href="../../../highlight.css">
-        <script src="../../../highlight.js"></script>
-        <script>hljs.initHighlightingOnLoad();</script>
     </head>
     <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
         <div id="page" class="hfeed">
@@ -22,21 +19,21 @@
 
 <p>由于安装的是Ubuntu 16.04，所以安装shadowsocks异常容易：</p>
 
-<pre><code>
+<pre>
 sudo apt-get install shadowsocks
-</code></pre>
+</pre>
 
 <p>一句命令就能够安装完成。不过呢，这个命令安装的shadowsocks版本是2.1.0，略有点老。另外，该方法也只能在Ubunu 16.04+版本上能用。更加通用的办法是：</p>
 
-<pre><code>
+<pre>
 sudo pip install shadowsocks
-</code></pre>
+</pre>
 
 <p>因为毕竟Linux上的shadowsocks其实就是一个python软件。</p>
 
 <p>不管用什么方式安装，安装好之后，都可以使用sslocal命令来启动shadowsocks客户端。shadowsocks的配置可以通过命令行参数传入，也可以通过配置文件传入。我编辑了/etc/shadowsocks/config.json文件，内容如下：</p>
 
-<pre><code>
+<pre>
 {
     "server": "144.168.58.91",
     "server_port": 10000,
@@ -45,13 +42,13 @@ sudo pip install shadowsocks
     "local_port": 1080,
     "method": "aes-256-cfb"
 }
-</code></pre>
+</pre>
 
 <p>其中server, server_port和password都需要根据自己的情况设置。之后启动客户端：</p>
 
-<pre><code>
+<pre>
 sslocal -c /etc/shadowsocks/config.json
-</code></pre>
+</pre>
 
 <p>由于是一个用户态进程，所以不需要sudo。启动之后，shadowsocks就在localhost的1080端口接受请求了。</p>
 

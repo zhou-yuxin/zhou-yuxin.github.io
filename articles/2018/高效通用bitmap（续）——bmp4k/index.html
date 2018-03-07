@@ -3,9 +3,6 @@
         <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
         <title>高效通用bitmap（续）——bmp4k</title>
         <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-        <link rel="stylesheet" href="../../../highlight.css">
-        <script src="../../../highlight.js"></script>
-        <script>hljs.initHighlightingOnLoad();</script>
     </head>
     <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
         <div id="page" class="hfeed">
@@ -26,7 +23,7 @@
 
 <p>bmp4k.h</p>
 
-<pre><code>
+<pre>
 #ifndef BMP4K_H
 #define BMP4K_H
 
@@ -81,11 +78,11 @@ int bmp4k_exist(struct bmp4k* bmp4k, int value);
 size_t bmp4k_search(struct bmp4k* bmp4k, int value);
 
 #endif
-</code></pre>
+</pre>
 
 <p>bmp4k.c</p>
 
-<pre><code>
+<pre>
 #include &lt;bmp4k.h&gt;
 #include &lt;common.h&gt;
 #include &lt;string.h&gt;
@@ -186,13 +183,13 @@ size_t bmp4k_search(struct bmp4k* bmp4k, int value)
     assert(((bits &gt;&gt; bit_index) &amp; (uint64_t)1));
     return u64_index * 64 + bit_index;
 }
-</code></pre>
+</pre>
 
 <p>写一个测试用例：</p>
 
 <p>test_bmp4k.c</p>
 
-<pre><code>
+<pre>
 #include &lt;bmp4k.h&gt;
 #include &lt;stdio.h&gt;
 #include &lt;common.h&gt;
@@ -235,12 +232,12 @@ int main()
 
     return 0;
 }
-</code></pre>
+</pre>
 
-<pre><code>
+<pre>
 gcc -std=gnu99 -O3 *.c -o test_bmp4k -I.
 ./test_bmp4k
-</code></pre>
+</pre>
 
 <p>关闭assert，使用gcc -O3优化，在Intel(R) Xeon(R) Platinum 8180M CPU @ 2.50GHz的服务器上，各个长度级别的操作耗时如下：</p>
 
