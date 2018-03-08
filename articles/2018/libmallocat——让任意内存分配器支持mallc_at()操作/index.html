@@ -129,6 +129,501 @@ free(0x12340000)
 
 <p>在实际的实现中，这种既要快速插入删除，又要快速查找的集合，只能由AVL树胜任咯～不过，由于检测到冲突时需要取消插入操作，所以我对AVL树进行了增强，于是就有了《<a href='../../2017/C语言实现通用版AVL树/index.html'>C语言实现通用版AVL树</a>》后面的更新部分。代码总共有common.h、avl.h、avl.c、existed.h、existed.c、mallocat.h和mallocat.c七个文件。其中common.h可以在《<a href='../NVM缓冲日志文件libnvmbuflog（一）——环形缓冲区nvmbuffer/index.html'>NVM缓冲日志文件libnvmbuflog（一）——环形缓冲区nvmbuffer</a>》中得到，avl.h和avl.c可以在《<a href='../../2017/C语言实现通用版AVL树/index.html'>C语言实现通用版AVL树</a>》后面的更新部分中得到。</p>
 
+<p>existed.h</p>
+
+<pre>
+#ifndef EXISTED_H
+#define EXISTED_H
+
+#include &lt;avl.h&gt;
+#include &lt;stdlib.h&gt;
+
+// 一个事先存在的内存对象
+struct existed_obj
+{
+    // 对象起始地址
+    void* addr;
+    // 对象大小
+    size_t size;
+    // 一个悬挂链表（因该内存对象而被挂起的分配结果）
+    struct existed_padding
+    {
+        // 底层分配器的分配结果
+        void* ptr;
+        // 下一个
+        struct existed_padding* next;
+    }* paddings;
+};
+
+// 所有事先存在的内存对象的集合
+struct existed_objs
+{
+    // 用以实现集合的AVL树
+    struct avl_node* avl;
+    // 集合中事先存在对象的个数
+    size_t count;
+};
+
+/*
+初始化一个existed_objs
+    objs: 一个existed_objs指针
+成功返回1，失败返回0
+*/
+int existed_objs_init(struct existed_objs* objs);
+
+/*
+获取集合中有事先存在的对象的个数
+    objs: 一个existed_objs指针
+获取集合中有事先存在的对象的个数
+*/
+size_t existed_objs_count(const struct existed_objs* objs);
+
+/*
+向集合中增加一个事先存在的对象
+    objs: 一个existed_objs指针
+    addr: 对象起始地址
+    size: 对象大小
+成功返回新增对象的指针，失败返回0
+*/
+struct existed_obj* existed_objs_add(struct existed_objs* objs, void* addr, size_t size);
+
+/*
+从集合中删除一个事先存在的对象
+    objs: 一个existed_objs指针
+    obj: 一个existed_obj指针
+obj本身也会被释放
+成功返回1，失败返回0
+*/
+int existed_objs_remove(struct existed_objs* objs, struct existed_obj* obj);
+
+/*
+在集合中查找一个事先存在的对象
+    objs: 一个existed_objs指针
+    addr: 对象起始地址
+    size: 对象大小
+如果size != 0，那么查找一个与指定对象有碰撞的对象
+如果size == 0，那么查找一个起始地址为addr的对象
+找到返回对象指针，找不到返回0
+*/
+struct existed_obj* existed_objs_find(const struct existed_objs* objs, void* addr, size_t size);
+
+/*
+向一个事先存在的对象增加挂起的分配结果
+    obj: 一个existed_obj指针
+    ptr: 分配结果
+成功返回1，失败返回0
+*/
+int existed_obj_push_padding(struct existed_obj* obj, void* ptr);
+
+/*
+从一个事先存在的对象的挂起列表末尾弹出一个分配结果
+    obj: 一个existed_obj指针
+成功返回分配地址，失败返回0
+*/
+void* existed_obj_pop_padding(struct existed_obj* obj);
+
+#endif
+</pre>
+
+<p>existed.c</p>
+
+<pre>
+#include &lt;common.h&gt;
+#include &lt;existed.h&gt;
+
+int existed_objs_init(struct existed_objs* objs)
+{
+    assert(objs);
+    objs-&gt;avl = 0;
+    objs-&gt;count = 0;
+    return 1;
+}
+
+size_t existed_objs_count(const struct existed_objs* objs)
+{
+    assert(objs);
+    assert(objs-&gt;count == avl_node_count((void*)objs-&gt;avl));
+    return objs-&gt;count;
+}
+
+// 比较器，如果区域冲突，将失败
+static int no_collision_comparator(const void* v1, const void* v2)
+{
+    assert(v1);
+    assert(v2);
+    struct existed_obj* obj1 = (void*)v1;
+    struct existed_obj* obj2 = (void*)v2;
+    if((size_t)obj1-&gt;addr + obj1-&gt;size &lt;= (size_t)obj2-&gt;addr)
+        return -1;
+    if((size_t)obj2-&gt;addr + obj2-&gt;size &lt;= (size_t)obj1-&gt;addr)
+        return 1;
+    assert(obj1-&gt;paddings == (void*)(-1) || obj2-&gt;paddings == (void*)(-1));
+    if(obj1-&gt;paddings == (void*)(-1))
+        obj1-&gt;paddings = (void*)obj2;
+    else if(obj2-&gt;paddings == (void*)(-1))
+        obj2-&gt;paddings = (void*)obj1;
+    return AVL_CANCEL;
+}
+
+// 比较器，仅仅用起始地址进行比较
+static int only_addr_comparator(const void* v1, const void* v2)
+{
+    assert(v1);
+    assert(v2);
+    const struct existed_obj* obj1 = v1;
+    const struct existed_obj* obj2 = v2;
+    if(obj1-&gt;addr &lt; obj2-&gt;addr)
+        return -1;
+    if(obj1-&gt;addr &gt; obj2-&gt;addr)
+        return 1;
+    return 0;
+}
+
+struct existed_obj* existed_objs_add(struct existed_objs* objs, void* addr, size_t size)
+{
+    assert(objs);
+    if(!size)
+        ERROR(0, 0, "param &lt;size = 0&gt; is invaild!");
+    struct existed_obj* obj = malloc(sizeof(struct existed_obj));
+    if(!obj)
+        ERROR(0, 1, "malloc(sizeof(struct existed_obj)) failed!");
+    obj-&gt;addr = addr;
+    obj-&gt;size = size;
+    obj-&gt;paddings = (void*)(-1);
+    int cancelled = 0;
+    objs-&gt;avl = avl_insert(objs-&gt;avl, obj, no_collision_comparator, &amp;cancelled);
+    if(cancelled)
+    {
+        assert(obj-&gt;paddings != (void*)(-1));
+        struct existed_obj* collided_obj = (void*)obj-&gt;paddings;
+        free(obj);
+        ERROR(0, 0, "adding object(addr = %p, size = %lu), but it collides with object(addr = %p, size = %lu)",
+                addr, size, collided_obj-&gt;addr, collided_obj-&gt;size);
+    }
+    obj-&gt;paddings = 0;
+    objs-&gt;count++;
+    return obj;
+}
+
+int existed_objs_remove(struct existed_objs* objs, struct existed_obj* obj)
+{
+    assert(objs);
+    assert(obj);
+    if(obj-&gt;paddings)
+        ERROR(0, 0, "the object has paddings!");
+    int found = 0;
+    objs-&gt;avl = avl_delete(objs-&gt;avl, obj, only_addr_comparator, 0, &amp;found);
+    if(!found)
+        ERROR(0, 0, "object (addr = %p, size = %lu) not found!", obj-&gt;addr, obj-&gt;size);
+    free(obj);
+    assert(objs-&gt;count);
+    objs-&gt;count--;
+    return 1;
+}
+
+// 比较器，如果区域碰撞，则找到
+static int have_collision_comparator(const void* v1, const void* v2)
+{
+    assert(v1);
+    assert(v2);
+    const struct existed_obj* obj1 = v1;
+    const struct existed_obj* obj2 = v2;
+    if((size_t)obj1-&gt;addr + obj1-&gt;size &lt;= (size_t)obj2-&gt;addr)
+        return -1;
+    if((size_t)obj2-&gt;addr + obj2-&gt;size &lt;= (size_t)obj1-&gt;addr)
+        return 1;
+    return 0;
+}
+
+struct existed_obj* existed_objs_find(const struct existed_objs* objs, void* addr, size_t size)
+{
+    assert(objs);
+    struct existed_obj obj;
+    obj.addr = addr;
+    obj.size = size;
+    struct avl_node* node = avl_search((void*)objs-&gt;avl, &amp;obj,
+            size ? have_collision_comparator : only_addr_comparator);
+    return node ? node-&gt;val : 0;
+}
+
+int existed_obj_push_padding(struct existed_obj* obj, void* ptr)
+{
+    assert(obj);
+    struct existed_padding* padding = malloc(sizeof(struct existed_padding));
+    if(!padding)
+        ERROR(0, 0, "malloc(sizeof(struct existed_padding)) failed!");
+    padding-&gt;ptr = ptr;
+    padding-&gt;next = obj-&gt;paddings;
+    obj-&gt;paddings = padding;
+    return 1;
+}
+
+void* existed_obj_pop_padding(struct existed_obj* obj)
+{
+    assert(obj);
+    struct existed_padding* padding = obj-&gt;paddings;
+    if(!padding)
+        return 0;
+    void* ptr = padding-&gt;ptr;
+    obj-&gt;paddings = padding-&gt;next;
+    free(padding);
+    return ptr;
+}
+</pre>
+
+<p>mallocat.h</p>
+
+<pre>
+#ifndef MALLOCAT_H
+#define MALLOCAT_H
+
+#include &lt;stdlib.h&gt;
+#include &lt;existed.h&gt;
+
+// 一个mallocat结构体
+struct mallocat
+{
+    // 是否调用过了底层的分配器
+    int malloced;
+    // 事先存在的内存对象的集合
+    struct existed_objs objs;
+    // 底层内存分配器自定义数据
+    void* udata;
+    // 底层内存分配器malloc()操作
+    void* (*malloc)(void* udata, size_t size);
+    // 底层内存分配器free()操作
+    int (*free)(void* udata, void* ptr);
+    // 底层内存分配器usable_size()操作
+    size_t (*usable_size)(void* udata, void *ptr);
+};
+
+/*
+初始化mallocat
+    mallocat: 一个mallocat指针
+    udata: 底层分配器自定义数据
+    malloc: 底层内存分配器malloc()操作
+    free: 底层内存分配器free()操作，成功返回1，失败返回0
+    usable_size: 底层内存分配器usable_size()操作
+*/
+int mallocat_init(struct mallocat* mallocat, void* udata,
+        void* (*malloc)(void* udata, size_t size),
+        int (*free)(void* udata, void* ptr),
+        size_t (*usable_size)(void* udata, void *ptr));
+
+/*
+mallocat()操作，在指定地址分配指定大小的内存对象
+    mallocat: 一个mallocat指针
+    addr: 内存对象的起始地址
+    size: 内存对象的大小
+成功返回addr，失败返回0
+*/
+void* mallocat(struct mallocat* mallocat, void* addr, size_t size);
+
+/*
+malloc()操作，分配一段内存空间
+    mallocat: 一个mallocat指针
+    size: 空间大小
+成功返回分配空间的起始地址，失败返回0
+*/
+void* mallocat_malloc(struct mallocat* mallocat, size_t size);
+
+/*
+calloc()操作，分配一系列对象
+    mallocat: 一个mallocat指针
+    num: 对象个数
+    size: 对象大小
+成功返回分配空间的起始地址，失败返回0
+*/
+void* mallocat_calloc(struct mallocat* mallocat, size_t num, size_t size);
+
+/*
+realloc()操作，重新调整对象分配空间大小
+    mallocat: 一个mallocat指针
+    ptr: 原来分配的指针
+    new_size: 需要的新大小
+成功返回新的指针，失败返回0
+*/
+void* mallocat_realloc(struct mallocat* mallocat, void* ptr, size_t new_size);
+
+/*
+free()操作，释放分配的空间
+    mallocat: 一个mallocat指针
+    ptr: 分配的指针
+成功返回1，失败返回0
+*/
+int mallocat_free(struct mallocat* mallocat, void* ptr);
+
+/*
+usable_size()操作，查询分配的空间的大小
+    mallocat: 一个mallocat指针
+    ptr: 分配的指针
+成功返回空间大小，失败返回0
+*/
+size_t mallocat_usable_size(struct mallocat* mallocat, void *ptr);
+
+/*
+查询事先存在的对象的个数
+    mallocat: 一个mallocat指针
+返回事先存在对象的个数
+*/
+size_t mallocat_existed_objs_count(const struct mallocat* mallocat);
+
+#endif
+</pre>
+
+<p>mallocat.c</p>
+
+<pre>
+#include &lt;common.h&gt;
+#include &lt;string.h&gt;
+#include &lt;mallocat.h&gt;
+
+int mallocat_init(struct mallocat* mallocat, void* udata,
+        void* (*malloc)(void* udata, size_t size),
+        int (*free)(void* udata, void* ptr),
+        size_t (*usable_size)(void* udata, void *ptr))
+{
+    assert(mallocat);
+    mallocat-&gt;malloced = 0;
+    if(!existed_objs_init(&amp;(mallocat-&gt;objs)))
+        ERROR(0, 0, "existed_objs_init(&amp;(malloc-&gt;objs)) failed!");
+    mallocat-&gt;udata = udata;
+    mallocat-&gt;malloc = malloc;
+    mallocat-&gt;free = free;
+    mallocat-&gt;usable_size = usable_size;
+    return 1;
+}
+
+void* mallocat(struct mallocat* mallocat, void* addr, size_t size)
+{
+    assert(mallocat);
+    if(mallocat-&gt;malloced)
+        ERROR(0, 0, "mallocat_malloc_at() cannot be invoked after mallocat_malloc()!");
+    if(!existed_objs_add(&amp;(mallocat-&gt;objs), addr, size))
+        ERROR(0, 0, "existed_objs_add(&amp;(mallocat-&gt;objs), %p, %lu) failed!", addr, size);
+    return addr;
+}
+
+#define USABLE_SIZE(mallocat, ptr, default_size)                    \
+    (                                                               \
+        (mallocat)-&gt;usable_size ?                                   \
+            (mallocat)-&gt;usable_size((mallocat)-&gt;udata, (ptr)) :     \
+            (default_size)                                          \
+    )
+
+void* mallocat_malloc(struct mallocat* mallocat, size_t size)
+{
+    assert(mallocat);
+    if(!size)
+        ERROR(0, 0, "param &lt;size = 0&gt; is invaild!");
+    if(!mallocat-&gt;malloc)
+        ERROR(0, 0, "function 'malloc' not set, this operation not supported!");
+    while(1)
+    {
+        void* ptr = mallocat-&gt;malloc(mallocat-&gt;udata, size);
+        if(!ptr)
+            ERROR(0, 0, "mallocat-&gt;malloc(mallocat-&gt;udata, %lu) failed!", size);
+        mallocat-&gt;malloced = 1;
+        struct existed_obj* obj = existed_objs_find(&amp;(mallocat-&gt;objs), ptr,
+                USABLE_SIZE(mallocat, ptr, size));
+        if(!obj)
+            return ptr;
+        if(!existed_obj_push_padding(obj, ptr))
+            ERROR(0, 0, "existed_obj_push_padding(obj, %p) failed!", ptr);
+    }
+}
+
+void* mallocat_calloc(struct mallocat* mallocat, size_t num, size_t size)
+{
+    assert(mallocat);
+    if(!num)
+        ERROR(0, 0, "param &lt;num = 0&gt; is invaild!");
+    if(!size)
+        ERROR(0, 0, "param &lt;size = 0&gt; is invaild!");
+    size_t total_size = num * size;
+    void* ptr = mallocat_malloc(mallocat, total_size);
+    if(!ptr)
+        ERROR(0, 0, "mallocat_malloc(mallocat, %lu) failed!", total_size);
+    memset(ptr, 0, total_size);
+    return ptr;
+}
+
+#define MIN(a, b) ((a) &lt; (b) ? (a) : (b))
+
+void* mallocat_realloc(struct mallocat* mallocat, void* ptr, size_t new_size)
+{
+    assert(mallocat);
+    if(!new_size)
+        ERROR(0, 0, "param &lt;new_size = 0&gt; is invaild!");
+    if(!ptr)
+    {
+        if(!(ptr = mallocat_malloc(mallocat, new_size)))
+            ERROR(0, 0, "mallocat_malloc(mallocat, %lu) failed!", new_size);
+        return ptr;
+    }
+    size_t size = mallocat_usable_size(mallocat, ptr);
+    if(!size)
+        ERROR(0, 0, "mallocat_usable_size(mallocat, %p) failed!", ptr);
+    if(size / 2 &lt;= new_size &amp;&amp; new_size &lt;= size)
+        return ptr;
+    void* new_ptr = mallocat_malloc(mallocat, new_size);
+    if(!new_ptr)
+        ERROR(0, 0, "mallocat_malloc(mallocat, %lu) failed!", new_size);
+    memcpy(new_ptr, ptr, MIN(size, new_size));
+    if(!mallocat_free(mallocat, ptr))
+        ERROR(0, 0, "mallocat_free(mallocat, %p) failed!", ptr);
+    return new_ptr;
+}
+
+int mallocat_free(struct mallocat* mallocat, void* ptr)
+{
+    assert(mallocat);
+    if(!ptr)
+        return 1;
+    struct existed_obj* obj = existed_objs_find(&amp;(mallocat-&gt;objs), ptr, 0);
+    if(!obj)
+    {
+        if(!mallocat-&gt;free)
+            ERROR(0, 0, "function 'free' not set, this operation not supported!");
+        if(!mallocat-&gt;free(mallocat-&gt;udata, ptr))
+            ERROR(0, 0, "mallocat-&gt;free(%p) failed!", ptr);
+        return 1;
+    }
+    while(1)
+    {
+        void* padding_ptr = existed_obj_pop_padding(obj);
+        if(!padding_ptr)
+            break;
+        if(!mallocat-&gt;free)
+            ERROR(0, 0, "function 'free' not set, this operation not supported!");
+        if(!mallocat-&gt;free(mallocat-&gt;udata, padding_ptr))
+            ERROR(0, 0, "mallocat-&gt;free(%p) failed!", padding_ptr);
+    }
+    if(!existed_objs_remove(&amp;(mallocat-&gt;objs), obj))
+        ERROR(0, 0, "existed_objs_remove(&amp;(mallocat-&gt;objs), obj) failed!");
+    return 1;
+}
+
+size_t mallocat_usable_size(struct mallocat* mallocat, void *ptr)
+{
+    assert(mallocat);
+    if(!ptr)
+        return 0;
+    struct existed_obj* obj = existed_objs_find(&amp;(mallocat-&gt;objs), ptr, 0);
+    if(obj)
+        return obj-&gt;size;
+    if(!mallocat-&gt;usable_size)
+        ERROR(0, 0, "function 'usable_size' not set, this operation not supported!");
+    return mallocat-&gt;usable_size(mallocat-&gt;udata, ptr);
+}
+
+size_t mallocat_existed_objs_count(const struct mallocat* mallocat)
+{
+    assert(mallocat);
+    return existed_objs_count(&amp;(mallocat-&gt;objs));
+}
+</pre>
+
                             </div>
                         </article>
                     </div>
