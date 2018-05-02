@@ -415,7 +415,7 @@ struct nvmalloc
 //    nvmalloc: 一个nvmalloc指针
 //    capacity: 管理的空间大小
 // 成功返回1, 失败返回0
-size_t nvmalloc_init(struct nvmalloc* nvmalloc, size_t capacity);
+int nvmalloc_init(struct nvmalloc* nvmalloc, size_t capacity);
 
 // 销毁一个nvmalloc（但不负责struct nvmalloc本身的释放）
 //    nvmalloc: 一个nvmalloc指针
@@ -467,7 +467,7 @@ static size_t to_power(size_t n)
     return power;
 }
 
-size_t nvmalloc_init(struct nvmalloc* nvmalloc, size_t capacity)
+int nvmalloc_init(struct nvmalloc* nvmalloc, size_t capacity)
 {
     assert(nvmalloc);
     size_t min_power = to_power(NVMALLOC_MIN_ITEM_SIZE);
