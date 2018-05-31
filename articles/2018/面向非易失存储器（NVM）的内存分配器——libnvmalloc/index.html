@@ -441,6 +441,12 @@ size_t nvmalloc_malloc_at(struct nvmalloc* nvmalloc, size_t addr, size_t size);
 // 成功返回1, 失败返回0
 int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr);
 
+// 判断某个地址是否已经被分配
+//    nvmalloc: 一个nvmalloc指针
+//    addr: 地址
+// 返回某个地址是否已经被分配，出错返回-1
+int nvmalloc_is_allocated(struct nvmalloc* nvmalloc, size_t addr);
+
 // 获取分配的可用空间大小
 //    nvmalloc: 一个nvmalloc指针
 //    addr: 地址
@@ -787,6 +793,22 @@ int nvmalloc_free(struct nvmalloc* nvmalloc, size_t addr)
         ADD_CHUNK_TO_HEAD(&amp;((level)-&gt;avails), chunk);
     }
     return 1;
+}
+
+int nvmalloc_is_allocated(struct nvmalloc* nvmalloc, size_t addr)
+{
+    assert(nvmalloc);
+    struct nvmalloc_chunk* chunk;
+    MAP_ADDR_TO_CHUNK(nvmalloc, addr, chunk, 0);
+    if(!chunk)
+        return 0;
+    if((size_t)chunk % 2)
+        return 1;
+    assert(chunk-&gt;item_size);
+    size_t item_index = (addr - chunk-&gt;addr) / chunk-&gt;item_size;
+    if(addr != chunk-&gt;addr + item_index * chunk-&gt;item_size)
+        ERROR(-1, 0, "param &lt;addr = %lu&gt; is not aligned by item size %lu!", addr, chunk-&gt;item_size);
+    return bmp4k_get(&amp;(chunk-&gt;bitmap), item_index) == 0;
 }
 
 size_t nvmalloc_usable_size(struct nvmalloc* nvmalloc, size_t addr)
