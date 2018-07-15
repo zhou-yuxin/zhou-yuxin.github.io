@@ -72,7 +72,7 @@ memkind_pmem_create(kind, ops, name);                   // 用户调用它，创
     }
 </pre>
 
-<p>也就是说，新建了多个arena，并且为他们注册了pmem_chunk_hooks。而这个pmem_chunk_hooks的就是一个chunk_hooks_t结构体，定义了怎么从pmem文件申请/释放chunk：</p>
+<p>也就是说，新建了多个arena，并且为他们注册了pmem_chunk_hooks。而这个pmem_chunk_hooks就是一个chunk_hooks_t结构体，定义了怎么从pmem文件申请/释放chunk：</p>
 
 <pre>
 void *pmem_chunk_alloc(void *chunk, size_t size, size_t alignment,
