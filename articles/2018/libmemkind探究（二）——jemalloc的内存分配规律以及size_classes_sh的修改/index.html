@@ -1,0 +1,458 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>libmemkind探究（二）——jemalloc的内存分配规律以及size_classes.sh的修改</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">libmemkind探究（二）——jemalloc的内存分配规律以及size_classes.sh的修改</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>终于解开了libmemkind是如何利用jemalloc在NVM上分配内存的谜团了~那么就要开始考虑正事了：如何无侵入地（至多浅层侵入地）实现mallocat()功能。</p>
+
+<p>mallocat()功能在之前已经阐述过很多遍了。有《<a href="../面向非易失存储器（NVM）的内存分配器——libnvmalloc/index.html">面向非易失存储器（NVM）的内存分配器——libnvmalloc</a>》中诞生的独立的分配器libnvmalloc、也有《<a href="../libmallocat——让任意内存分配器支持mallc_at()操作/index.html">libmallocat——让任意内存分配器支持mallc_at()操作</a>》中诞生的低效万金油libmallocat。前者以安全为由被拒（傻X客户怎么可能相信一个实习生能够写出什么好用的代码呢？），后者则是因为效率实在太低下而被弃用。所以大半年的努力全部得重新开始。幸好这一年里我功力增进不少，如今有能力实现最初的想法了——针对jemalloc实现mallocat()。</p>
+
+<p>但这一篇博客暂时还没这么快直入主题，先来探究一下jemalloc在分配内存时有什么规律，才能解释清楚mallocat()的设计思路。</p>
+
+<p>使用的工具还是基于《<a href="../libmemkind探究（一）——让jemalloc管理指定的空间/index.html">libmemkind探究（一）——让jemalloc管理指定的空间</a>》里面的test.c，不过稍微修改了一下，增加了交互式的功能：</p>
+
+<p>test.c</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;jemalloc.h&gt;
+#include &lt;sys/mman.h&gt;
+
+#define PAGE_SIZE 4096
+
+// 待管理的空间大小
+size_t mem_size = 1 &lt;&lt; 30;
+// 待管理的空间的首地址
+void* base;
+// 已经分配出去的大小
+size_t allocated = 0;
+
+//+++++++++++++++++++++++++++++HOOK BEGIN+++++++++++++++++++++++++++++
+
+// 从这里开始定义jemalloc管理chunk的hook函数，自定义chunk管理行为
+// 可以参考jemalloc/doc/jemalloc.html中arena.&lt;i&gt;.chunk_hooks一段
+
+// 当jemalloc发现chunk不够用了，会callback此函数索要空间
+// chunk大小在编译时配置（原版jemalloc-4.0.3默认人2M，libmemkind配置为4M）
+void* my_chunk_alloc(void *chunk, size_t size, size_t alignment, bool *zero, bool *commit, unsigned arena_index)
+{
+    printf("my_chunk_alloc(chunk = %p, size = %lu, alignment = %lu)\n", chunk, size, alignment);
+    if(size % alignment)
+        return NULL;
+    if(allocated + size &gt; mem_size)
+        return NULL;
+    if(chunk &amp;&amp; chunk != base + allocated)
+        return NULL;
+    void* addr = base + allocated;
+    allocated += size;
+    return addr;
+}
+
+// 返回true表示该内存可以继续使用
+bool my_chunk_dalloc(void *chunk, size_t size, bool commited, unsigned arena_index)
+{
+    return true;
+}
+
+// 返回false表示内存充足
+bool my_chunk_commit(void *chunk, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return false;
+}
+
+// 返回true表示该内存即使释放了，也是与物理内存对应的，可以重用
+bool my_chunk_decommit(void *chunk, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return true;
+}
+
+// 返回true表示该段地址空间被重用后不会清空
+bool my_chunk_purge(void *chunk, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return true;
+}
+
+bool my_chunk_split(void *chunk, size_t size, size_t size_a, size_t size_b, bool commited, unsigned arena_index)
+{
+    return false;
+}
+
+bool my_chunk_merge(void *chunk_a, size_t size_a, void *chunk_b, size_t size_b, bool commited, unsigned arena_index)
+{
+    return false;
+}
+
+chunk_hooks_t my_chunk_hooks =
+{
+    .alloc = my_chunk_alloc,
+    .dalloc = my_chunk_dalloc,
+    .commit = my_chunk_commit,
+    .decommit = my_chunk_decommit,
+    .purge = my_chunk_purge,
+    .split = my_chunk_split,
+    .merge = my_chunk_merge,
+};
+//-----------------------------HOOK END-----------------------------
+
+int main()
+{
+    // 模拟一段NVM空间，或者任何一段用户待管理的空间（这里有1GB)
+    base = mmap(0, mem_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if(base == MAP_FAILED)
+    {
+        printf("mmap() failed!\n");
+        return 1;
+    }
+    printf("base = %p\n", base);
+
+    // 用je_mallctl('arenas.extend')命令创建一个arean，
+    // 参考jemalloc/doc/jemalloc.html中arenas.extend一段
+    unsigned arena_index;
+    size_t unsigned_size = sizeof(unsigned int);
+    if(je_mallctl("arenas.extend", (void*)&amp;arena_index, &amp;unsigned_size, NULL, 0))
+    {
+        printf("je_mallctl('arenas.extend') failed!\n");
+        return 1;
+    }
+    printf("arena_index = %u\n", arena_index);
+
+    //为这个arena绑定我们自定义的chunk hook，于是该arena就会按我们的方式去申请/释放chunk
+    // 参考jemalloc/doc/jemalloc.html中arena.&lt;i&gt;.chunk_hooks一段
+    char cmd[64];
+    sprintf(cmd, "arena.%u.chunk_hooks", arena_index);
+    if(je_mallctl(cmd, NULL, NULL, (void*)&amp;my_chunk_hooks, sizeof(chunk_hooks_t)))
+    {
+        printf("je_mallctl('%s') failed!\n", cmd);
+        return 1;
+    }
+
+    // 接着试试分配内存，使用je_mallocx()、je_callocx()等以x结尾的函数，指定MALLOCX_ARENA(arena_index)，
+    // 那么就会在我们创建的arena中分配内存
+    while(true)
+    {
+        printf("input size and count to allocate (size = 0 or count = 0 to exit): ");
+        size_t size, count;
+        if(scanf("%lu %lu", &amp;size, &amp;count) != 2)
+            continue;
+        if(!size || !count)
+            break;
+        for(size_t i = 0; i &lt; count; i++)
+        {
+            void* ptr = je_mallocx(size, MALLOCX_ARENA(arena_index));
+            if(!ptr)
+            {
+                printf("je_mallocx(%lu, MALLOCX_ARENA(%u)) failed\n", size, arena_index);
+                break;
+            }
+            assert(ptr &gt;= base);
+            // 算一算偏移量
+            size_t offset = ptr - base;
+            // 是待管理空间的第几个page
+            size_t page_id = offset / PAGE_SIZE;
+            // page内偏移多少
+            size_t offset_in_page = offset % PAGE_SIZE;
+            // 实际分配大小
+            size_t usable_size = je_malloc_usable_size(ptr);
+            printf("+++size = %lu, usable_size = %lu, offset = %lu, page_id = %lu, offset_in_page = %lu\n", 
+                size, usable_size, offset, page_id, offset_in_page);
+        }
+    }
+
+    if(munmap(base , mem_size) != 0)
+    {
+        printf("munmap() failed!\n");
+        return 1;
+    }
+    return 0;
+}
+</pre>
+
+<p>接着编译，运行：</p>
+
+<pre>
+gcc -std=gnu99 test.c -o test -I../jemalloc-4.0.3/include/jemalloc -L../jemalloc-4.0.3/lib -ljemalloc
+export LD_LIBRARY_PATH=$(cd ..; pwd)/jemalloc-4.0.3/lib
+./test
+</pre>
+
+<p>先分配一个1字节的对象，然后分配10个8字节的对象，再分配15个30字节的对象，结果如下：</p>
+
+<p><img src="1.png"></p>
+
+<p>貌似可以总结这么几条规律：</p>
+
+<p><ul>
+    <li>分配是从第13个页开始的，依次递增；</li>
+    <li>用户传入的大小，会被“标准化”到一个档位，称为标准化大小；</li>
+    <li>一个页只会分配某一种标准化大小的对象，而且这些对象紧凑排布，向后递增。</li>
+</ul></p>
+
+<p>当然，这些规律可以继续深入探究验证。我这里其实已经验证过了。接着的问题是，某种标准化大小会占用多少页呢？</p>
+
+<p>先分配一个size_1大小的对象，然后再分配1个size_2大小的对象（确保size_1和size_2不在同一个档位里），看看两个档位所占的第一页相距多少，那么这个差距就是size_1所在的标准化档位所占用的页数。</p>
+
+<p><img src="2.png"></p>
+
+<p>可以汇总一下：
+<table>
+    <tr><th>标准化大小</th><th>占用页数</th><th>对象个数</th><th>是否有碎片</th></tr>
+    <tr><td>8</td><td>14 - 13 = 1</td><td>(4096 * 1) / 8 = 512</td><td>否</td></tr>
+    <tr><td>16</td><td>15 - 14 = 1</td><td>(4096 * 1) / 16 = 256</td><td>否</td></tr>
+    <tr><td>32</td><td>16 - 15 = 1</td><td>(4096 * 1) / 32 = 128</td><td>否</td></tr>
+    <tr><td>48</td><td>19 - 16 = 3</td><td>(4096 * 3) / 48 = 256</td><td>否</td></tr>
+    <tr><td>64</td><td>20 - 19 = 1</td><td>(4096 * 1) / 64 = 64</td><td>否</td></tr>
+    <tr><td>80</td><td>25 - 20 = 5</td><td>(4096 * 5) / 80 = 256</td><td>否</td></tr>
+    <tr><td>96</td><td>28 - 25 = 3</td><td>(4096 * 3) / 96 = 128</td><td>否</td></tr>
+    <tr><td>112</td><td>35 - 28 = 7</td><td>(4096 * 7) / 112 = 256</td><td>否</td></tr>
+    <tr><td>128</td><td>36 - 35 = 1</td><td>(4096 * 1) / 128 = 32</td><td>否</td></tr>
+    <tr><td>160</td><td>41 - 36 = 5</td><td>(4096 * 5) / 160 = 128</td><td>否</td></tr>
+    <tr><td>192</td><td>44 - 41 = 3</td><td>(4096 * 3) / 192 = 64</td><td>否</td></tr>
+    <tr><td>224</td><td>51 - 44 = 7</td><td>(4096 * 7) / 224 = 128</td><td>否</td></tr>
+    <tr><td>256</td><td>52 - 51 = 1</td><td>(4096 * 1) / 256 = 16</td><td>否</td></tr>
+    <tr><td>320</td><td>57 - 52 = 5</td><td>(4096 * 5) / 320 = 64</td><td>否</td></tr>
+</table>
+用这样的方法不断的扩张下去，就能过得到更长的表：
+<table>
+    <tr><th>标准化大小</th><th>占用页数</th><th>对象个数</th><th>是否有碎片</th></tr>
+    <tr><td>384</td><td>60 - 57 = 3</td><td>(4096 * 3) / 384 = 32</td><td>否</td></tr>
+    <tr><td>448</td><td>67 - 60 = 7</td><td>(4096 * 7) / 448 = 64</td><td>否</td></tr>
+    <tr><td>512</td><td>69 - 67 = 2</td><td>(4096 * 2) / 512 = 16</td><td>否</td></tr>
+    <tr><td>640</td><td>74 - 69 = 5</td><td>(4096 * 5) / 640 = 32</td><td>否</td></tr>
+    <tr><td>768</td><td>77 - 14 = 3</td><td>(4096 * 3) / 768 = 16</td><td>否</td></tr>
+    <tr><td>896</td><td>84 - 77 = 7</td><td>(4096 * 7) / 896 = 32</td><td>否</td></tr>
+    <tr><td>1024</td><td>87 - 84 = 3</td><td>(4096 * 3) / 1024 = 12</td><td>否</td></tr>
+    <tr><td>1280</td><td>92 - 87 = 5</td><td>(4096 * 5) / 1280 = 16</td><td>否</td></tr>
+    <tr><td>1536</td><td>98 - 92 = 6</td><td>(4096 * 6) / 1536 = 16</td><td>否</td></tr>
+    <tr><td>1792</td><td>105 - 98 = 7</td><td>(4096 * 7) / 1792 = 16</td><td>否</td></tr>
+    <tr><td>2048</td><td>110 - 105 = 5</td><td>(4096 * 5) / 2048 = 10</td><td>否</td></tr>
+    <tr><td>2560</td><td>120 - 110 = 10</td><td>(4096 * 10) / 2560 = 16</td><td>否</td></tr>
+    <tr><td>3072</td><td>129 - 120 = 9</td><td>(4096 * 9) / 3072 = 12</td><td>否</td></tr>
+    <tr><td>3584</td><td>143 - 129 = 14</td><td>(4096 * 14) / 3584 = 16</td><td>否</td></tr>
+    <tr><td>4096</td><td>153 - 143 = 10</td><td>(4096 * 10) / 4096 = 10</td><td>否</td></tr>
+    <tr><td>5120</td><td>168 - 153 = 15</td><td>(4096 * 15) / 5120 = 12</td><td>否</td></tr>
+    <tr><td>6144</td><td>183 - 168 = 15</td><td>(4096 * 15) / 6144 = 10</td><td>否</td></tr>
+    <tr><td>7168</td><td>204 - 183 = 21</td><td>(4096 * 21) / 7168 = 12</td><td>否</td></tr>
+    <tr><td>8192</td><td>224 - 204 = 20</td><td>(4096 * 20) / 8192 = 10</td><td>否</td></tr>
+    <tr><td>10240</td><td>249 - 224 = 25</td><td>(4096 * 25) / 10240 = 10</td><td>否</td></tr>
+    <tr><td>12288</td><td>279 - 249 = 30</td><td>(4096 * 30) / 12288 = 10</td><td>否</td></tr>
+    <tr><td>14336</td><td>314 - 279 = 35</td><td>(4096 * 35) / 14336 = 10</td><td>否</td></tr>
+</table>
+</p>
+
+<p>有没有惊奇地发现，jemalloc对于某个标准化大小std_size，会取整数n个页，使得4096 * n能够被std_size整除。但是再具体一些：
+<ul>
+    <li>一般地，4096 * n会是4096与std_size的最小公倍数；</li>
+    <li>但是，同时，得确保4096 * n / std_size >= 10。</li>
+</ul>
+</p>
+
+<p>就在我以为我发现了世界的铁律时，打脸了：</p>
+
+<p><img src="3.png"></p>
+
+<p>16384以及之后的size，都不是以4096对齐的了！而且同是16384，页内偏移量也不同！这个问题曾经一度困扰我，直到最后才知道，原来jemalloc对于small、large以及huge对象的分配策略是不同的。这种规律性极强的“紧凑对齐分配”只适用于small对象。那么我的问题就是，如何调整small对象的个数？比如我把上限从14336提高到65536？</p>
+
+<p>中间探索的艰辛就不多言了。最后发现相当容易——修改jemalloc-4.0.3/include/jemalloc/internal/size_classes.sh文件：</p>
+
+<p><img src="4.png"></p>
+
+<p>如果log(size) &lt; log(page_size) + log(group)，那么就是使用bin来管理。也就是说，如果size &lt; page_size * group，那么就是“紧凑对齐分配”的small对象。那么算一下，当前配置下，page_size = 4096，group = 4（在每次大小翻倍之间，划分为4个档位），那么当size &lt; 4096 * 4 = 16384时，就是small对象。这与我们之前的发现一致！</p>
+
+<p>我想把small对象的分界线向上提，那么想当然地：</p>
+
+<p><img src="5.png"></p>
+
+<p>重新configure, make之后，应该分界线从16384提高到了32768了~</p>
+
+<p><img src="6.png"></p>
+
+<p>好，那么现在再来“强行发现”一条规律：</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;jemalloc.h&gt;
+#include &lt;sys/mman.h&gt;
+
+#define PAGE_SIZE 4096
+
+// 待管理的空间大小
+size_t mem_size = 1 &lt;&lt; 30;
+// 待管理的空间的首地址
+void* base;
+// 已经分配出去的大小
+size_t allocated = 0;
+
+//+++++++++++++++++++++++++++++HOOK BEGIN+++++++++++++++++++++++++++++
+
+// 从这里开始定义jemalloc管理chunk的hook函数，自定义chunk管理行为
+// 可以参考jemalloc/doc/jemalloc.html中arena.&lt;i&gt;.chunk_hooks一段
+
+// 当jemalloc发现chunk不够用了，会callback此函数索要空间
+// chunk大小在编译时配置（原版jemalloc-4.0.3默认人2M，libmemkind配置为4M）
+void* my_chunk_alloc(void *chunk, size_t size, size_t alignment, bool *zero, bool *commit, unsigned arena_index)
+{
+    printf("my_chunk_alloc(chunk = %p, size = %lu, alignment = %lu)\n", chunk, size, alignment);
+    if(size % alignment)
+        return NULL;
+    if(allocated + size &gt; mem_size)
+        return NULL;
+    if(chunk &amp;&amp; chunk != base + allocated)
+        return NULL;
+    void* addr = base + allocated;
+    allocated += size;
+    return addr;
+}
+
+// 返回true表示该内存可以继续使用
+bool my_chunk_dalloc(void *chunk, size_t size, bool commited, unsigned arena_index)
+{
+    return true;
+}
+
+// 返回false表示内存充足
+bool my_chunk_commit(void *chunk, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return false;
+}
+
+// 返回true表示该内存即使释放了，也是与物理内存对应的，可以重用
+bool my_chunk_decommit(void *chunk, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return true;
+}
+
+// 返回true表示该段地址空间被重用后不会清空
+bool my_chunk_purge(void *chunk, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return true;
+}
+
+bool my_chunk_split(void *chunk, size_t size, size_t size_a, size_t size_b, bool commited, unsigned arena_index)
+{
+    return false;
+}
+
+bool my_chunk_merge(void *chunk_a, size_t size_a, void *chunk_b, size_t size_b, bool commited, unsigned arena_index)
+{
+    return false;
+}
+
+chunk_hooks_t my_chunk_hooks =
+{
+    .alloc = my_chunk_alloc,
+    .dalloc = my_chunk_dalloc,
+    .commit = my_chunk_commit,
+    .decommit = my_chunk_decommit,
+    .purge = my_chunk_purge,
+    .split = my_chunk_split,
+    .merge = my_chunk_merge,
+};
+//-----------------------------HOOK END-----------------------------
+
+int main()
+{
+    // 模拟一段NVM空间，或者任何一段用户待管理的空间（这里有1GB)
+    base = mmap(0, mem_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if(base == MAP_FAILED)
+    {
+        printf("mmap() failed!\n");
+        return 1;
+    }
+    printf("base = %p\n", base);
+
+    // 用je_mallctl('arenas.extend')命令创建一个arean，
+    // 参考jemalloc/doc/jemalloc.html中arenas.extend一段
+    unsigned arena_index;
+    size_t unsigned_size = sizeof(unsigned int);
+    if(je_mallctl("arenas.extend", (void*)&amp;arena_index, &amp;unsigned_size, NULL, 0))
+    {
+        printf("je_mallctl('arenas.extend') failed!\n");
+        return 1;
+    }
+    printf("arena_index = %u\n", arena_index);
+
+    //为这个arena绑定我们自定义的chunk hook，于是该arena就会按我们的方式去申请/释放chunk
+    // 参考jemalloc/doc/jemalloc.html中arena.&lt;i&gt;.chunk_hooks一段
+    char cmd[64];
+    sprintf(cmd, "arena.%u.chunk_hooks", arena_index);
+    if(je_mallctl(cmd, NULL, NULL, (void*)&amp;my_chunk_hooks, sizeof(chunk_hooks_t)))
+    {
+        printf("je_mallctl('%s') failed!\n", cmd);
+        return 1;
+    }
+
+    for(int i = 0; i &lt; 4096; i++)
+    {
+        void* ptr = je_mallocx(4096, MALLOCX_ARENA(arena_index));
+        if(!ptr)
+        {
+            printf("je_mallocx(4096, MALLOCX_ARENA(%u)) failed\n", arena_index);
+            break;
+        }
+        assert(ptr &gt;= base);
+        // 算一算偏移量
+        size_t offset = ptr - base;
+        // 是待管理空间的第几个page
+        size_t page_id = offset / PAGE_SIZE;
+        // page内偏移多少
+        size_t offset_in_page = offset % PAGE_SIZE;
+        printf("size = 4096, offset = %lu, page_id = %lu, offset_in_page = %lu\n",
+            offset, page_id, offset_in_page);
+    }
+
+    if(munmap(base , mem_size) != 0)
+    {
+        printf("munmap() failed!\n");
+        return 1;
+    }
+    return 0;
+}
+</pre>
+
+<p><img src="7.png"></p>
+
+<p><img src="8.png"></p>
+
+<p><img src="9.png"></p>
+
+<p><img src="10.png"></p>
+
+<p><img src="11.png"></p>
+
+<p>惊奇地发现，第[512 * n, 512 * n + 13)页都是跳过的！</p>
+
+<p>所以总结一下：
+<ol>
+    <li>第[512 * n, 512 * n + 13)页都是跳过的；</li>
+    <li>用户传入的大小，会被“标准化”到一个档位，称为标准化大小；</li>
+    <li>一个页只会分配某一种标准化大小的small对象，而且这些small对象紧凑排布，向后递增；</li>
+    <li>一般地，标准化大小为std_size的small对象占用n页，4096 * n是4096与std_size的最小公倍数；</li>
+    <li>但是，同时，得确保4096 * n / std_size >= 10。</li>
+</ol>
+</p>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
