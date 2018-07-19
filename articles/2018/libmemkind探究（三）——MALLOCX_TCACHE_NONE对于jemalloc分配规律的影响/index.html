@@ -285,7 +285,7 @@ export LD_LIBRARY_PATH=$(cd ..; pwd)/jemalloc-4.0.3/lib
     <li>第[512 * n, 512 * n + 13)页都是跳过的；</li>
     <li>用户传入的大小，会被“标准化”到一个档位，称为标准化大小；</li>
     <li>一个页只会分配某一种标准化大小的small对象，而且这些small对象紧凑排布，向后递增；</li>
-    <li>一般地，标准化大小为std_size的small对象占用n页，4096 * n是4096与std_size的最小公倍数。</li>
+    <li>标准化大小为std_size的small对象占用n页，4096 * n是4096与std_size的最小公倍数。</li>
 </ol>
 完美！
 </p>

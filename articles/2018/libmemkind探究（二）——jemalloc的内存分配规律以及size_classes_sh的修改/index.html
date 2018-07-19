@@ -17,7 +17,7 @@
 
 <p>终于解开了libmemkind是如何利用jemalloc在NVM上分配内存的谜团了~那么就要开始考虑正事了：如何无侵入地（至多浅层侵入地）实现mallocat()功能。</p>
 
-<p>mallocat()功能在之前已经阐述过很多遍了。有《<a href="../面向非易失存储器（NVM）的内存分配器——libnvmalloc/index.html">面向非易失存储器（NVM）的内存分配器——libnvmalloc</a>》中诞生的独立的分配器libnvmalloc、也有《<a href="../libmallocat——让任意内存分配器支持mallc_at()操作/index.html">libmallocat——让任意内存分配器支持mallc_at()操作</a>》中诞生的低效万金油libmallocat。前者以安全为由被拒，后者则是因为效率实在太低下而被弃用。所以大半年的努力全部得重新开始。幸好这一年里我功力增进不少，如今有能力实现最初的想法了——针对jemalloc实现mallocat()。</p>
+<p>mallocat()功能在之前已经阐述过很多遍了。有《<a href="../面向非易失存储器（NVM）的内存分配器——libnvmalloc/index.html">面向非易失存储器（NVM）的内存分配器——libnvmalloc</a>》中诞生的独立的分配器libnvmalloc、也有《<a href="../libmallocat——让任意内存分配器支持malloc_at()操作/index.html">libmallocat——让任意内存分配器支持malloc_at()操作</a>》中诞生的低效万金油libmallocat。前者以安全为由被拒，后者则是因为效率实在太低下而被弃用。所以大半年的努力全部得重新开始。幸好这一年里我功力增进不少，如今有能力实现最初的想法了——针对jemalloc实现mallocat()。</p>
 
 <p>但这一篇博客暂时还没这么快直入主题，先来探究一下jemalloc在分配内存时有什么规律，才能解释清楚mallocat()的设计思路。</p>
 
