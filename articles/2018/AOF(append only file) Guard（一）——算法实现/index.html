@@ -71,19 +71,19 @@
 
 #define DEBUG(msgs...)                                                      \
 ({                                                                          \
-    fprintf(stderr, &quot;[&lt;%s&gt; @ %s: %d]: &quot;, __FUNCTION__, __FILE__, __LINE__); \
+    fprintf(stderr, "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
     fprintf(stderr, ##msgs);                                                \
-    printf(&quot;\n&quot;);                                                           \
+    printf("\n");                                                           \
 })
 
 #define ERROR(ret, show_errstr, msgs...)                                    \
 ({                                                                          \
-    fprintf(stderr, &quot;[&lt;%s&gt; @ %s: %d]: &quot;, __FUNCTION__, __FILE__, __LINE__); \
+    fprintf(stderr, "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
     fprintf(stderr, ##msgs);                                                \
     if(show_errstr)                                                         \
         perror(0);                                                          \
     else                                                                    \
-        printf(&quot;\n&quot;);                                                       \
+        printf("\n");                                                       \
     return (ret);                                                           \
 })
 
@@ -114,13 +114,19 @@
 #include &lt;stdlib.h&gt;
 #include &lt;sys/stat.h&gt;
 
-int syscall_access(const char* file, int mode);
+int syscall_faccessat(int dirfd, const char* file, int mode, int flags);
 
 int syscall_rename(const char* oldpath, const char* newpath);
 
+int syscall_renameat(int olddirfd, const char* oldpath, int newdirfd, const char* newpath);
+
 int syscall_unlink(const char* file);
 
+int syscall_unlinkat(int dirfd, const char* file, int flags);
+
 int syscall_open(const char* file, int flags, ...);
+
+int syscall_openat(int dirfd, const char* file, int flags, ...);
 
 ssize_t syscall_write(int fd, const void* data, size_t len);
 
@@ -142,17 +148,17 @@ int syscall_close(int fd);
 <p>syscall.c</p>
 
 <pre>
-#include &quot;common.h&quot;
-#include &quot;syscall.h&quot;
+#include "common.h"
+#include "syscall.h"
 
 #include &lt;fcntl.h&gt;
 #include &lt;stdarg.h&gt;
 #include &lt;unistd.h&gt;
 #include &lt;sys/syscall.h&gt;
 
-int syscall_access(const char* file, int mode)
+int syscall_faccessat(int dirfd, const char* file, int mode, int flags)
 {
-    return syscall(SYS_access, file, mode);
+    return syscall(SYS_faccessat, dirfd, file, mode, flags);
 }
 
 int syscall_rename(const char* oldpath, const char* newpath)
@@ -160,14 +166,29 @@ int syscall_rename(const char* oldpath, const char* newpath)
     return syscall(SYS_rename, oldpath, newpath);
 }
 
+int syscall_renameat(int olddirfd, const char* oldpath, int newdirfd, const char* newpath)
+{
+    return syscall(SYS_renameat, olddirfd, oldpath, newdirfd, newpath);
+}
+
 int syscall_unlink(const char* file)
 {
     return syscall(SYS_unlink, file);
 }
 
+int syscall_unlinkat(int dirfd, const char* file, int flags)
+{
+    return syscall(SYS_unlinkat, dirfd, file, flags);
+}
+
 int syscall_open(const char* file, int flags, ...)
 {
     return syscall(SYS_open, file, flags, GET_OPEN_MODE(flags));
+}
+
+int syscall_openat(int dirfd, const char* file, int flags, ...)
+{
+    return syscall(SYS_openat, dirfd, file, flags, GET_OPEN_MODE(flags));
 }
 
 ssize_t syscall_write(int fd, const void* data, size_t len)
@@ -250,11 +271,13 @@ struct aofguard
 /*
 初始化aofguard
     fd: 目标文件描述符
+    nvm_dir_fd: NVM文件目录
     nvm_file: 用作NVM buffer的文件
     nvm_size: nvm_file大小
+    reset: 如果NVM文件已经存在，是否重置
 成功返回1，失败返回0。
 */
-int aofguard_init(struct aofguard* aofguard, int fd, const char* nvm_file, size_t nvm_size);
+int aofguard_init(struct aofguard* aofguard, int fd, int nvm_dir_fd, const char* nvm_file, size_t nvm_size, int reset);
 
 /*
 向aofguard写入数据
@@ -263,13 +286,6 @@ int aofguard_init(struct aofguard* aofguard, int fd, const char* nvm_file, size_
 成功返回1，失败返回0。该函数保证写入的原子性。
 */
 int aofguard_write(struct aofguard* aofguard, const void* data, size_t len);
-
-/*
-重用该aofguard，为一个新的文件描述符服务
-    fd: 新的文件描述符
-成功返回1，失败返回0。
-*/
-int aofguard_reuse(struct aofguard* aofguard, int fd);
 
 /*
 销毁aofguard
@@ -283,9 +299,9 @@ int aofguard_deinit(struct aofguard* aofguard);
 <p>接着就是最终的实现，aofguard.c：</p>
 
 <pre>
-#include &quot;common.h&quot;
-#include &quot;syscall.h&quot;
-#include &quot;aofguard.h&quot;
+#include "common.h"
+#include "syscall.h"
+#include "aofguard.h"
 
 #include &lt;fcntl.h&gt;
 #include &lt;errno.h&gt;
@@ -364,89 +380,89 @@ static void* afsync_thread(void* arg)
     while(1)
     {
         if(sem_wait(&amp;(aofguard-&gt;afsync.sem_start)) != 0)
-            ERROR((void*)0, 1, &quot;sem_wait(&amp;(aofguard-&gt;afsync.sem_start)) failed: &quot;);
+            ERROR((void*)0, 1, "sem_wait(&amp;(aofguard-&gt;afsync.sem_start)) failed: ");
         if(FSYNC(aofguard-&gt;file.fd) != 0)
-            ERROR((void*)0, 1, &quot;FSYNC(%d) failed: &quot;, aofguard-&gt;file.fd);
+            ERROR((void*)0, 1, "FSYNC(%d) failed: ", aofguard-&gt;file.fd);
         if(sem_post(&amp;(aofguard-&gt;afsync.sem_done)) != 0)
-            ERROR((void*)0, 1, &quot;sem_post(&amp;(aofguard-&gt;afsync.sem_done)) failed: &quot;);
+            ERROR((void*)0, 1, "sem_post(&amp;(aofguard-&gt;afsync.sem_done)) failed: ");
     }
 }
 
-int aofguard_init(struct aofguard* aofguard, int fd, const char* nvm_file, size_t nvm_size)
+int aofguard_init(struct aofguard* aofguard, int fd, int nvm_dir_fd, const char* nvm_file, size_t nvm_size, int reset)
 {
     assert(aofguard);
     assert(nvm_file);
     if(fd &lt; 0)
-        ERROR(0, 0, &quot;param &lt;fd = %d&gt; is invaild!&quot;, fd);
+        ERROR(0, 0, "param &lt;fd = %d&gt; is invaild!", fd);
     size_t block_count = nvm_size / BLOCK_SIZE;
     if(block_count &lt; 2)
-        ERROR(0, 0, &quot;param &lt;nvm_size = %lu&gt; is too small!&quot;, nvm_size);
+        ERROR(0, 0, "param &lt;nvm_size = %lu&gt; is too small!", nvm_size);
     if(block_count &gt; 65536)
-        ERROR(0, 0, &quot;param &lt;nvm_size = %lu&gt; is too big!&quot;, nvm_size);
+        ERROR(0, 0, "param &lt;nvm_size = %lu&gt; is too big!", nvm_size);
     size_t nvm_file_size = 2 * sizeof(size_t) + block_count * BLOCK_SIZE;
-    int nvm_file_exist = syscall_access(nvm_file, F_OK) == 0;
+    int nvm_file_exist = syscall_faccessat(nvm_dir_fd, nvm_file, F_OK, 0) == 0;
     int nvm_fd;
     if(nvm_file_exist)
     {
-        if((nvm_fd = syscall_open(nvm_file, O_RDWR)) &lt; 0)
-            ERROR(0, 1, &quot;cannot open file '%s': &quot;, nvm_file);
+        if((nvm_fd = syscall_openat(nvm_dir_fd, nvm_file, O_RDWR)) &lt; 0)
+            ERROR(0, 1, "cannot open file '%s': ", nvm_file);
         struct stat stat;
         if(syscall_fstat(nvm_fd, &amp;stat) != 0)
-            ERROR(0, 1, &quot;fstat(%d, &amp;stat) failed: &quot;, nvm_fd);
+            ERROR(0, 1, "fstat(%d, &amp;stat) failed: ", nvm_fd);
         if(stat.st_size != nvm_file_size)
-            ERROR(0, 0, &quot;file '%s' is broken!&quot;, nvm_file);
+            ERROR(0, 0, "file '%s' is broken!", nvm_file);
     }
     else
     {
-        if((nvm_fd = syscall_open(nvm_file, O_CREAT | O_RDWR, 0666)) &lt; 0)
-            ERROR(0, 1, &quot;cannot create file '%s': &quot;, nvm_file);
+        if((nvm_fd = syscall_openat(nvm_dir_fd, nvm_file, O_CREAT | O_RDWR, 0666)) &lt; 0)
+            ERROR(0, 1, "cannot create file '%s': ", nvm_file);
         if(syscall_ftruncate(nvm_fd, nvm_file_size) != 0)
-            ERROR(0, 1, &quot;ftruncate(%d, %lu) failed: &quot;, nvm_fd, nvm_file_size);
+            ERROR(0, 1, "ftruncate(%d, %lu) failed: ", nvm_fd, nvm_file_size);
     }
     void* nvm_buf = syscall_mmap(0, nvm_file_size, PROT_READ | PROT_WRITE, MAP_SHARED, nvm_fd, 0);
     if(nvm_buf == MAP_FAILED)
-        ERROR(0, 1, &quot;mmap(0, %lu, PROT_READ | PROT_WRITE, MAP_SHARED, %d, 0) failed: &quot;, nvm_file_size, nvm_fd);
+        ERROR(0, 1, "mmap(0, %lu, PROT_READ | PROT_WRITE, MAP_SHARED, %d, 0) failed: ", nvm_file_size, nvm_fd);
     syscall_close(nvm_fd);
     struct stat stat;
     if(syscall_fstat(fd, &amp;stat) != 0)
-        ERROR(0, 1, &quot;fstat(%d, &amp;stat) failed: &quot;, fd);
+        ERROR(0, 1, "fstat(%d, &amp;stat) failed: ", fd);
     aofguard-&gt;file.fd = fd;
     aofguard-&gt;buffer.data = (char*)nvm_buf + 2 * sizeof(size_t);
     aofguard-&gt;buffer.capacity = block_count * BLOCK_SIZE;
     aofguard-&gt;meta.fsync_len_and_start_block = (size_t*)nvm_buf;
     aofguard-&gt;meta.buf_end = (size_t*)nvm_buf + 1;
-    if(nvm_file_exist)
+    if(nvm_file_exist &amp;&amp; !reset)
     {
         size_t mixed_meta = *(aofguard-&gt;meta.fsync_len_and_start_block);
         aofguard-&gt;file.fsync_len = GET_FSYNC_LEN(mixed_meta);
         aofguard-&gt;buffer.start = GET_BUF_START(mixed_meta);
         if(aofguard-&gt;buffer.start &gt;= aofguard-&gt;buffer.capacity)
-            ERROR(0, 0, &quot;file '%s' is broken!&quot;, nvm_file);
+            ERROR(0, 0, "file '%s' is broken!", nvm_file);
         size_t buf_end = (*aofguard-&gt;meta.buf_end);
         if(buf_end &gt;= aofguard-&gt;buffer.capacity)
-            ERROR(0, 0, &quot;file '%s' is broken!&quot;, nvm_file);
+            ERROR(0, 0, "file '%s' is broken!", nvm_file);
         if(buf_end &gt;= aofguard-&gt;buffer.start)
             aofguard-&gt;buffer.len = buf_end - aofguard-&gt;buffer.start;
         else
             aofguard-&gt;buffer.len = aofguard-&gt;buffer.capacity + buf_end - aofguard-&gt;buffer.start;
         if(stat.st_size &lt; aofguard-&gt;file.fsync_len)
-            ERROR(0, 0, &quot;file fd = %d is broken!&quot;, fd);
+            ERROR(0, 0, "file fd = %d is broken!", fd);
         if(stat.st_size &gt; aofguard-&gt;file.fsync_len &amp;&amp; syscall_ftruncate(fd, aofguard-&gt;file.fsync_len) != 0)
-            ERROR(0, 1, &quot;ftruncate(%d, %lu) failed: &quot;, fd, aofguard-&gt;file.fsync_len);
+            ERROR(0, 1, "ftruncate(%d, %lu) failed: ", fd, aofguard-&gt;file.fsync_len);
         size_t buf_start = aofguard-&gt;buffer.start, buf_len = aofguard-&gt;buffer.len;
         if(buf_start + buf_len &lt;= aofguard-&gt;buffer.capacity)
         {
             if(syscall_write(fd, aofguard-&gt;buffer.data + buf_start, buf_len) != buf_len)
-                ERROR(0, 1, &quot;write(%d, aofguard-&gt;buffer.data + %lu, %lu) failed: &quot;, fd, buf_start, buf_len);
+                ERROR(0, 1, "write(%d, aofguard-&gt;buffer.data + %lu, %lu) failed: ", fd, buf_start, buf_len);
         }
         else
         {
             size_t front_sz = aofguard-&gt;buffer.capacity - buf_start;
             if(syscall_write(fd, aofguard-&gt;buffer.data + buf_start, front_sz) != front_sz)
-                ERROR(0, 1, &quot;write(%d, aofguard-&gt;buffer.data + %lu, %lu) failed: &quot;, fd, buf_start, front_sz);
+                ERROR(0, 1, "write(%d, aofguard-&gt;buffer.data + %lu, %lu) failed: ", fd, buf_start, front_sz);
             size_t back_sz = buf_len - front_sz;
             if(syscall_write(fd, aofguard-&gt;buffer.data, back_sz) != back_sz)
-                ERROR(0, 1, &quot;write(%d, aofguard-&gt;buffer.data, %lu) failed: &quot;, fd, back_sz);
+                ERROR(0, 1, "write(%d, aofguard-&gt;buffer.data, %lu) failed: ", fd, back_sz);
         }
     }
     else
@@ -459,11 +475,11 @@ int aofguard_init(struct aofguard* aofguard, int fd, const char* nvm_file, size_
     }
     aofguard-&gt;afsync.block_count = 0;
     if(sem_init(&amp;(aofguard-&gt;afsync.sem_start), 0, 0) != 0)
-        ERROR(0, 1, &quot;sem_init(&amp;(aofguard-&gt;afsync.sem_start), 0, 0) failed: &quot;);
+        ERROR(0, 1, "sem_init(&amp;(aofguard-&gt;afsync.sem_start), 0, 0) failed: ");
     if(sem_init(&amp;(aofguard-&gt;afsync.sem_done), 0, 0) != 0)
-        ERROR(0, 1, &quot;sem_init(&amp;(aofguard-&gt;afsync.sem_done), 0, 0) failed: &quot;);
+        ERROR(0, 1, "sem_init(&amp;(aofguard-&gt;afsync.sem_done), 0, 0) failed: ");
     if(pthread_create(&amp;(aofguard-&gt;afsync.thread), 0, afsync_thread, aofguard) != 0)
-        ERROR(0, 1, &quot;pthread_create(&amp;(aofguard-&gt;afsync.thread), 0, afsync_thread, aofguard) failed!&quot;);
+        ERROR(0, 1, "pthread_create(&amp;(aofguard-&gt;afsync.thread), 0, afsync_thread, aofguard) failed!");
     return 1;
 }
 
@@ -511,14 +527,14 @@ static int handle_afsync_if_finish(struct aofguard* aofguard)
     {
         if(errno == EAGAIN)
             return 1;
-        ERROR(0, 1, &quot;sem_trywait(&amp;(aofguard-&gt;afsync.sem_done)) failed: &quot;);
+        ERROR(0, 1, "sem_trywait(&amp;(aofguard-&gt;afsync.sem_done)) failed: ");
     }
 }
 
 static int do_fsync(struct aofguard* aofguard)
 {
     if(FSYNC(aofguard-&gt;file.fd) != 0)
-        ERROR(0, 1, &quot;FSYNC(%d) failed: &quot;, aofguard-&gt;file.fd);
+        ERROR(0, 1, "FSYNC(%d) failed: ", aofguard-&gt;file.fd);
     update_after_fsync(aofguard, aofguard-&gt;buffer.len / BLOCK_SIZE);
     return 1;
 }
@@ -528,7 +544,7 @@ static int wait_afsync_done(struct aofguard* aofguard)
     if(aofguard-&gt;afsync.block_count == 0)
         return 1;
     if(sem_wait(&amp;((aofguard)-&gt;afsync.sem_done)) != 0)
-        ERROR(0, 1, &quot;sem_wait(&amp;((aofguard)-&gt;afsync.sem_done)) failed: &quot;);
+        ERROR(0, 1, "sem_wait(&amp;((aofguard)-&gt;afsync.sem_done)) failed: ");
     update_after_fsync(aofguard, aofguard-&gt;afsync.block_count);
     aofguard-&gt;afsync.block_count = 0;
     return 1;
@@ -539,19 +555,19 @@ int aofguard_write(struct aofguard* aofguard, const void* data, size_t len)
     assert(aofguard);
     assert(data);
     if(!handle_afsync_if_finish(aofguard))
-        ERROR(0, 0, &quot;handle_afsync_if_finish(aofguard) failed!&quot;);
+        ERROR(0, 0, "handle_afsync_if_finish(aofguard) failed!");
     if(aofguard-&gt;buffer.len + len &gt; aofguard-&gt;buffer.capacity)
     {
         if((aofguard-&gt;buffer.len % BLOCK_SIZE) + len &gt; aofguard-&gt;buffer.capacity)
-            ERROR(0, 1, &quot;param &lt;len = %lu&gt; is too big to write atomicly!&quot;, len);
+            ERROR(0, 1, "param &lt;len = %lu&gt; is too big to write atomicly!", len);
         if(!wait_afsync_done(aofguard))
-            ERROR(0, 0, &quot;wait_afsyc_done(aofguard) failed!&quot;);
+            ERROR(0, 0, "wait_afsyc_done(aofguard) failed!");
         if(aofguard-&gt;buffer.len + len &gt; aofguard-&gt;buffer.capacity &amp;&amp; !do_fsync(aofguard))
-            ERROR(0, 0, &quot;do_fsync(aofguard) failed!&quot;);
+            ERROR(0, 0, "do_fsync(aofguard) failed!");
     }
     assert(aofguard-&gt;buffer.len + len &lt;= aofguard-&gt;buffer.capacity);
     if(syscall_write(aofguard-&gt;file.fd, data, len) != len)
-        ERROR(0, 1, &quot;write(%d, data, %lu) failed: &quot;, aofguard-&gt;file.fd, len);
+        ERROR(0, 1, "write(%d, data, %lu) failed: ", aofguard-&gt;file.fd, len);
     size_t write_pos = RING_BUF_END(aofguard-&gt;buffer.start, aofguard-&gt;buffer.len, aofguard-&gt;buffer.capacity);
     if(write_pos + len &lt;= aofguard-&gt;buffer.capacity)
         nvm_memcpy(aofguard-&gt;buffer.data + write_pos, data, len);
@@ -570,37 +586,8 @@ int aofguard_write(struct aofguard* aofguard, const void* data, size_t len)
     {
         aofguard-&gt;afsync.block_count = aofguard-&gt;buffer.len / BLOCK_SIZE;
         if(sem_post(&amp;(aofguard-&gt;afsync.sem_start)) != 0)
-            ERROR(0, 1, &quot;sem_post(&amp;(aofguard-&gt;afsync.sem_start)) failed: &quot;);
+            ERROR(0, 1, "sem_post(&amp;(aofguard-&gt;afsync.sem_start)) failed: ");
     }
-    return 1;
-}
-
-int aofguard_reuse(struct aofguard* aofguard, int fd)
-{
-    assert(aofguard);
-    assert(fd &gt;= 0);
-    if(pthread_cancel(aofguard-&gt;afsync.thread) != 0)
-        ERROR(0, 1, &quot;pthread_cancel(%lu) failed: &quot;, aofguard-&gt;afsync.thread);
-    void* ret_val;
-    if(pthread_join(aofguard-&gt;afsync.thread, &amp;ret_val) != 0)
-        ERROR(0, 1, &quot;pthread_join(%lu, &amp;ret_val) failed: &quot;, aofguard-&gt;afsync.thread);
-    assert(ret_val == PTHREAD_CANCELED);
-    struct stat stat;
-    if(syscall_fstat(fd, &amp;stat) != 0)
-        ERROR(0, 1, &quot;fstat(%d, &amp;stat) failed: &quot;, fd);
-    aofguard-&gt;file.fd = fd;
-    aofguard-&gt;file.fsync_len = stat.st_size;
-    aofguard-&gt;buffer.start = 0;
-    aofguard-&gt;buffer.len = 0;
-    nvm_set_64(aofguard-&gt;meta.fsync_len_and_start_block, aofguard-&gt;file.fsync_len);
-    nvm_set_64(aofguard-&gt;meta.buf_end, 0);
-    aofguard-&gt;afsync.block_count = 0;
-    if(sem_init(&amp;(aofguard-&gt;afsync.sem_start), 0, 0) != 0)
-        ERROR(0, 1, &quot;sem_init(&amp;(aofguard-&gt;afsync.sem_start), 0, 0) failed: &quot;);
-    if(sem_init(&amp;(aofguard-&gt;afsync.sem_done), 0, 0) != 0)
-        ERROR(0, 1, &quot;sem_init(&amp;(aofguard-&gt;afsync.sem_done), 0, 0) failed: &quot;);
-    if(pthread_create(&amp;(aofguard-&gt;afsync.thread), 0, afsync_thread, aofguard) != 0)
-        ERROR(0, 1, &quot;pthread_create(&amp;(aofguard-&gt;afsync.thread), 0, afsync_thread, aofguard) failed!&quot;);
     return 1;
 }
 
@@ -608,15 +595,15 @@ int aofguard_deinit(struct aofguard* aofguard)
 {
     assert(aofguard);
     if(pthread_cancel(aofguard-&gt;afsync.thread) != 0)
-        ERROR(0, 1, &quot;pthread_cancel(%lu) failed: &quot;, aofguard-&gt;afsync.thread);
+        ERROR(0, 1, "pthread_cancel(%lu) failed: ", aofguard-&gt;afsync.thread);
     void* ret_val;
     if(pthread_join(aofguard-&gt;afsync.thread, &amp;ret_val) != 0)
-        ERROR(0, 1, &quot;pthread_join(%lu, &amp;ret_val) failed: &quot;, aofguard-&gt;afsync.thread);
+        ERROR(0, 1, "pthread_join(%lu, &amp;ret_val) failed: ", aofguard-&gt;afsync.thread);
     assert(ret_val == PTHREAD_CANCELED);
     void* map_addr = aofguard-&gt;meta.fsync_len_and_start_block;
     size_t map_size = aofguard-&gt;buffer.capacity + 2 * sizeof(size_t);
     if(munmap(map_addr, map_size) != 0)
-        ERROR(0, 1, &quot;munmap(%p, %lu) failed: &quot;, map_addr, map_size);
+        ERROR(0, 1, "munmap(%p, %lu) failed: ", map_addr, map_size);
     return 1;
 }
 </pre>

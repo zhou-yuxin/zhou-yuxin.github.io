@@ -1,0 +1,443 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>AOF(append only file) Guard（二）——动态注入</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">AOF(append only file) Guard（二）——动态注入</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>aofguard实现了以后，我依旧觉得不完美。用户要使用aofguard，还需要修改代码，来调用我的什么aofguard_init()、aofguard_write()等接口。能不能让用户不需要修改代码就能直接从NVM中受益呢？我就想到了，能不能动态地替换open()、write()、close()这些函数，变成我自己实现的open()、write()和close()等。那么就需要进行一系列的设计。</p>
+
+<p>第一个问题是，如何进行函数的替换？</p>
+
+<p>如果一个函数的地址是在编译时就确定的，使用静态编译的方式把地址替换到了各个调用处，那么就没法替换了（如果你足够hack，启动后遍历代码段，去修改call的地址，那我服）。如果函数的实现是在别的动态链接库里的话，那么可以使用LD_PRELOAD环境变量进行overwrite。open()、write()和close()等系统调用，都是syscall的C wrapper。就是说，这些函数本身是实现在libc里面的，尽管在里面直接就使用syscall()进行系统调用了。绝大多数情况下，应用程序都是在运行时动态链接libc的，没几个人会把libc给静态编译进程序里。。。这就给了我“可乘之机”——我在一个动态链接库，比如叫做libaofguard_inject.so，里面实现一系列名为open()、write()和close()的函数，然后：</p>
+
+<pre>
+export LD_PRELOAD=/path/to/libaofguard_inject.so
+./run_your_application
+</pre>
+
+<p>那么就能够把libc里面的那些函数给顶替掉！</p>
+
+<p>第二个问题是，自定义的open()、write()和close()里面做些什么？</p>
+
+<p>从用户的角度看，open()返回一个int作为文件描述符fd，之后使用这个fd，调用write()和close()。要使用aofguard，首先得在open()里面创建aofguard，并且建立起fd与该aofguard之间的对应关系。这样，当用户继而调用write()时，我就能找到该fd对应的aofguard，然后操作该aofguard。因此，我需要一个全局的映射表，即map: fd -&gt; aofguard。考虑到fd的实质就是一个文件描述符数组的索引，所以我就直接用一个数组fd_table即可。fd_table[fd]就是我想要的aofguard（当然，可能为空）。</p>
+
+<p>第三个问题是，哪些文件需要使用aofguard？</p>
+
+<p>并不是所有用open()打开的文件都需要使用aofguard，有些文件可能只读，有些可能需要随机写，有些还可能通过mmap()以后当作内存写。从库的层面是没法做出判断的，因此需要由用户自行进行配置，或者说筛选。我的想法是，用户可以指定一个正则表达式，如果open()时的文件名符合该regex，那么就使用aofguard。</p>
+
+<p>第四个问题是，aofguard需要指定一个NVM文件用作NVM空间，那么open()时文件名与对应的NVM文件名如何关联？</p>
+
+<p>所有的NVM文件都会在某个指定的目录下（这个目录在NVM-aware file system)上。为了确保不同的文件对应唯一的NVM文件，我的设计是对文件名进行SHA1摘要算法。 比如如果要对hello.txt使用aofguard，那么其对应的NVM文件就是/mnt/pmem/3857b672471862eab426eba0622e44bd2cedbd5d.ag，其中/mnt/pmem是NVVM目录，.ag是aofguard文件的后缀名，而3857b672471862eab426eba0622e44bd2cedbd5d就是"hello.txt"的SHA1结果。这样的一个问题就是，可能不同的Link指向同一个文件。这个是个棘手的问题，只能寄希望于用户的配置能够正确。</p>
+
+<p>第五个问题是，如果用户调用rename对文件重命名，那么aofguard要如果做对应的变化？</p>
+
+<p>这个确实曾让我绞尽脑汁。不过想明白了感觉也不是很复杂，尽管确实是所有函数里最复杂的。。。首先，fd_table不只是一个aofguard，而是一个</p>
+
+<pre>
+struct filedes
+{
+    char* name;
+    struct aofguard* aofguard;
+};
+</pre>
+
+<p>在文件被open()时，如果是普通文件，那么fd_table[fd]的name就会被填充成打开时的文件名。如果文件名符合正则表达式，那么就创建aofguard，否则aofguard字段为空。当文件被rename时，那么首先调用系统调用的rename。成功之后：
+
+<ul>
+    <li>如果原文件名不符合regex，且新文件名也不符合regex，那么什么都不做；</li>
+    <li>如果原文件名不符合regex，但新文件名符合regex，那么在fd_table中遍历所有name为原文件名的项，为它新建aofguard；</li>
+    <li>如果原文件名符合regex，但新文件名不符合regex，那么在fd_table中遍历所有name为原文件名的项，把他的aofguard关闭、移除，然后删除.ag文件；</li>
+    <li>如果原文件名符合regex，且新的文件名也符合regex，那么：
+        <ul>
+            <li>如果原文件名对应的.ag文件存在，那么则把它重命名为新文件名对应的.ag文件；</li>
+            <li>否则，如果新文件名对应的.ag文件存在，则删除之；</li>
+        </ul>
+    </li> 
+</ul>
+
+最后，遍历fd_table，把所有name为原文件名的项的name改为新文件名。</p>
+
+<p>OK，所有问题已经有了解决方案，上代码~</p>
+
+<p>需要用到的sha1.h和sha1.c在《<a href="../C语言实现SHA1摘要算法/index.html">C语言实现SHA1摘要算法</a>》中已经给出。</p>
+
+<p>inject.c</p>
+
+<pre>
+#include "sha1.h"
+#include "common.h"
+#include "syscall.h"
+#include "aofguard.h"
+
+#include &lt;fcntl.h&gt;
+#include &lt;regex.h&gt;
+#include &lt;limits.h&gt;
+#include &lt;stdarg.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/stat.h&gt;
+
+#define FD_TABLE_INIT_CAPACITY  16
+#define NVM_SIZE_DEFAULT        (64 &lt;&lt; 20)
+
+struct filedes
+{
+    char* name;
+    struct aofguard* aofguard;
+};
+
+static int debug;
+static int disable_sync;
+static int nvm_dir_fd;
+static size_t nvm_size;
+static regex_t fname_regex;
+static struct filedes* fd_table;
+static size_t fd_table_capacity;
+
+static int init()
+{
+    const char* dbg = getenv("AOFGUARD_DEBUG");
+    debug = dbg &amp;&amp; strcmp(dbg, "yes") == 0;
+    const char* dis_sync = getenv("AOFGUARD_DISABLE_SYNC");
+    disable_sync = dis_sync &amp;&amp; strcmp(dis_sync, "yes") == 0;
+    const char* nvm_dir = getenv("AOFGUARD_NVM_DIR");
+    if(!nvm_dir)
+        nvm_dir = ".";
+    if((nvm_dir_fd = syscall_open(nvm_dir, O_DIRECTORY)) &lt; 0)
+        ERROR(0, 0, "wrong AOFGUARD_NVM_DIR = '%s'!", nvm_dir);
+    const char* nvm_size_mb = getenv("AOFGUARD_NVM_SIZE_MB");
+    if(!nvm_size_mb)
+        nvm_size = NVM_SIZE_DEFAULT;
+    else
+    {
+        if(sscanf(nvm_size_mb, "%lu", &amp;nvm_size) != 1)
+            ERROR(0, 0, "wrong AOFGUARD_NVM_SIZE_MB = '%s'!", nvm_size_mb);
+        nvm_size &lt;&lt;= 20;
+    }
+    const char *pattern = getenv("AOFGUARD_FILENAME_PATTERN");
+    if(!pattern)
+        pattern = ".*";
+    if(regcomp(&amp;fname_regex, pattern, REG_EXTENDED | REG_NOSUB) != 0)
+        ERROR(0, 0, "wrong AOFGUARD_FILENAME_PATTERN = '%s'!", pattern);
+    fd_table_capacity = FD_TABLE_INIT_CAPACITY;
+    if(!(fd_table = calloc(fd_table_capacity, sizeof(struct filedes))))
+        ERROR(0, 1, "calloc(%lu, sizeof(struct filedes)) failed: ", fd_table_capacity);
+    return 1;
+}
+
+static void __attribute__((constructor)) constructor()
+{
+    if(!init())
+        exit(1);
+}
+
+static void get_nvm_file_name(char* buffer, const char* file)
+{
+    uint8_t digest[20];
+    struct sha1_context sha1;
+    sha1_init(&amp;sha1);
+    sha1_update(&amp;sha1, (const uint8_t*)file, strlen(file));
+    sha1_final(&amp;sha1, digest);
+    for(int i = 0; i &lt; 20; i++)
+        sprintf(buffer + i * 2, "%02x", digest[i]);
+    strcpy(buffer + 40, ".ag");
+}
+
+static int handle_open(const char* file, int fd)
+{
+    if(fd &lt; 0)
+        return 1;
+    struct stat stat;
+    if(syscall_fstat(fd, &amp;stat) != 0)
+        ERROR(0, 1, "fstat(%d, &amp;stat) failed: ", fd);
+    if(!S_ISREG(stat.st_mode))
+        return 1;
+    struct aofguard* aofguard = 0;
+    if(regexec(&amp;fname_regex, file, 0, 0, 0) == 0)
+    {
+        if(!(aofguard = malloc(sizeof(struct aofguard))))
+            ERROR(0, 1, "malloc(sizeof(struct aofguard)) failed: ");
+        char nvm_file[PATH_MAX];
+        get_nvm_file_name(nvm_file, file);
+        if(!aofguard_init(aofguard, fd, nvm_dir_fd, nvm_file, nvm_size, 0))
+            ERROR(0, 0, "aofguard_init(aofguard, %d, %d, '%s', %lu, 0) failed!", fd, nvm_dir_fd, nvm_file, nvm_size);
+    }
+    if(fd &gt;= fd_table_capacity)
+    {
+        size_t new_capacity = fd_table_capacity;
+        while(new_capacity &lt;= fd)
+            new_capacity *= 2;
+        if(!(fd_table = realloc(fd_table, new_capacity * sizeof(struct filedes))))
+            ERROR(0, 1, "realloc(%p, %lu * sizeof(struct filedes)) failed: ", fd_table, new_capacity);
+        memset(fd_table + fd_table_capacity, 0, (new_capacity - fd_table_capacity) * sizeof(struct filedes));
+        fd_table_capacity = new_capacity;
+    }
+    assert(fd &lt; fd_table_capacity);
+    struct filedes* filedes = fd_table + fd;
+    if(filedes-&gt;name)
+        free(filedes-&gt;name);
+    if(!(filedes-&gt;name = strdup(file)))
+        ERROR(0, 1, "strdup('%s') failed: ", file);
+    if(filedes-&gt;aofguard)
+    {
+        if(!aofguard_deinit(filedes-&gt;aofguard))
+            ERROR(0, 0, "aofguard_deinit(filedes-&gt;aofguard) failed!");
+        free(filedes-&gt;aofguard);
+    }
+    filedes-&gt;aofguard = aofguard;
+    return 1;
+}
+
+int open(const char* file, int flags, ...)
+{
+    if(debug)
+        DEBUG("open('%s')", file);
+    int fd = syscall_open(file, flags, GET_OPEN_MODE(flags));
+    if(handle_open(file, fd))
+        return fd;
+    if(fd &gt;= 0)
+        syscall_close(fd);
+    ERROR(-1, 0, "handle_open('%s', %d) failed!", file, fd);
+}
+
+int open64(const char* file, int flags, ...)
+{
+    if(debug)
+        DEBUG("open64('%s')", file);
+    int fd = syscall_open(file, flags, GET_OPEN_MODE(flags));
+    if(handle_open(file, fd))
+        return fd;
+    if(fd &gt;= 0)
+        syscall_close(fd);
+    ERROR(-1, 0, "handle_open('%s', %d) failed!", file, fd);
+}
+
+int openat(int dirfd, const char* file, int flags, ...)
+{
+    if(debug)
+        DEBUG("openat(%d, '%s')", dirfd, file);
+    int fd = syscall_openat(dirfd, file, flags, GET_OPEN_MODE(flags));
+    if(handle_open(file, fd))
+        return fd;
+    if(fd &gt;= 0)
+        syscall_close(fd);
+    ERROR(-1, 0, "handle_open('%s', %d) failed!", file, fd);
+}
+
+int openat64(int dirfd, const char* file, int flags, ...)
+{
+    if(debug)
+        DEBUG("openat64(%d, '%s')", dirfd, file);
+    int fd = syscall_openat(dirfd, file, flags, GET_OPEN_MODE(flags));
+    if(handle_open(file, fd))
+        return fd;
+    if(fd &gt;= 0)
+        syscall_close(fd);
+    ERROR(-1, 0, "handle_open('%s', %d) failed!", file, fd);
+}
+
+ssize_t write(int fd, const void* data, size_t len)
+{
+    if(debug)
+        DEBUG("write(%d, data, %lu)", fd, len);
+    if(!data || len == 0)
+        return 0;
+    if(0 &lt;= fd &amp;&amp; fd &lt; fd_table_capacity)
+    {
+        struct aofguard* aofguard = fd_table[fd].aofguard;
+        if(aofguard)
+        {
+            if(aofguard_write(aofguard, data, len))
+                return len;
+            else
+                ERROR(-1, 0, "aofguard_write(aofguard, data, %lu) failed!", len);
+        }
+    }
+    return syscall_write(fd, data, len);
+}
+
+int fsync(int fd)
+{
+    if(debug)
+        DEBUG("fsync(%d)", fd);
+    if(disable_sync)
+    {
+        if(0 &lt;= fd &amp;&amp; fd &lt; fd_table_capacity)
+        {
+            struct aofguard* aofguard = fd_table[fd].aofguard;
+            if(aofguard)
+                return 0;
+        }
+    }
+    return syscall_fsync(fd);
+}
+
+int fdatasync(int fd)
+{
+    if(debug)
+        DEBUG("fdatasync(%d)", fd);
+    if(disable_sync)
+    {
+        if(0 &lt;= fd &amp;&amp; fd &lt; fd_table_capacity)
+        {
+            struct aofguard* aofguard = fd_table[fd].aofguard;
+            if(aofguard)
+                return 0;
+        }
+    }
+    return syscall_fdatasync(fd);
+}
+
+int close(int fd)
+{
+    if(debug)
+        DEBUG("close(%d)", fd);
+    if(0 &lt;= fd &amp;&amp; fd &lt; fd_table_capacity)
+    {
+        struct filedes* filedes = fd_table + fd;
+        if(filedes-&gt;name)
+        {
+            free(filedes-&gt;name);
+            filedes-&gt;name = 0;
+        }
+        if(filedes-&gt;aofguard)
+        {
+            if(!aofguard_deinit(filedes-&gt;aofguard))
+                ERROR(-1, 0, "aofguard_deinit(filedes-&gt;aofguard) failed!");
+            free(filedes-&gt;aofguard);
+            filedes-&gt;aofguard = 0;
+        }
+    }
+    return syscall_close(fd);
+}
+
+int unlink(const char* file)
+{
+    if(debug)
+        DEBUG("unlink('%s')", file);
+    if(syscall_unlink(file) == 0)
+    {
+        if(regexec(&amp;fname_regex, file, 0, 0, 0) == 0)
+        {
+            char nvm_file[PATH_MAX];
+            get_nvm_file_name(nvm_file, file);
+            if(syscall_faccessat(nvm_dir_fd, nvm_file, F_OK, 0) == 0)
+            {
+                if(syscall_unlinkat(nvm_dir_fd, nvm_file, 0) != 0)
+                    ERROR(-1, 1, "unlinkat(%d, '%s') failed: ", nvm_dir_fd, nvm_file);
+            }
+        }
+        return 0;
+    }
+    return -1;
+}
+
+int rename(const char* oldpath, const char* newpath)
+{
+    if(debug)
+        DEBUG("rename('%s', '%s')", oldpath, newpath);
+    if(syscall_rename(oldpath, newpath) == 0)
+    {
+        int oldpath_need_nvm = regexec(&amp;fname_regex, oldpath, 0, 0, 0) == 0;
+        int newpath_need_nvm = regexec(&amp;fname_regex, newpath, 0, 0, 0) == 0;
+        char nvm_file_old[PATH_MAX];
+        char nvm_file_new[PATH_MAX];
+        if(oldpath_need_nvm)
+            get_nvm_file_name(nvm_file_old, oldpath);
+        if(newpath_need_nvm)
+            get_nvm_file_name(nvm_file_new, newpath);
+        if(newpath_need_nvm)
+        {
+            if(oldpath_need_nvm)
+            {
+                if(syscall_faccessat(nvm_dir_fd, nvm_file_old, F_OK, 0) == 0)
+                {
+                    if(syscall_renameat(nvm_dir_fd, nvm_file_old, nvm_dir_fd, nvm_file_new) != 0)
+                        ERROR(-1, 1, "remameat(%d, '%s', %d, '%s') failed: ", nvm_dir_fd, nvm_file_old, nvm_dir_fd, nvm_file_new);
+                }
+                else if(syscall_faccessat(nvm_dir_fd, nvm_file_new, F_OK, 0) == 0)
+                {
+                    if(syscall_unlinkat(nvm_dir_fd, nvm_file_new, 0) != 0)
+                        ERROR(-1, 1, "unlinkat(%d, '%s', 0) failed: ", nvm_dir_fd, nvm_file_new);
+                }
+            }
+            else
+            {
+                for(size_t i = 0; i &lt; fd_table_capacity; i++)
+                {
+                    struct filedes* filedes = fd_table + i;
+                    if(filedes-&gt;name &amp;&amp; strcmp(filedes-&gt;name, oldpath) == 0)
+                    {
+                        assert(!filedes-&gt;aofguard);
+                        if(!(filedes-&gt;aofguard = malloc(sizeof(struct aofguard))))
+                            ERROR(0, 1, "malloc(sizeof(struct aofguard)) failed: ");
+                        if(!aofguard_init(filedes-&gt;aofguard, i, nvm_dir_fd, nvm_file_new, nvm_size, 1))
+                            ERROR(0, 0, "aofguard_init(fildes-&gt;aofguard, %lu, %d, '%s', %lu, 1) failed!", i, nvm_dir_fd, nvm_file_new, nvm_size);
+                    }
+                }
+            }
+        }
+        else if(oldpath_need_nvm)
+        {
+            if(syscall_faccessat(nvm_dir_fd, nvm_file_old, F_OK, 0) == 0)
+            {
+                if(syscall_unlinkat(nvm_dir_fd, nvm_file_old, 0) != 0)
+                    ERROR(-1, 1, "unlink(%d, '%s', 0) failed: ", nvm_dir_fd, nvm_file_old);
+                for(size_t i = 0; i &lt; fd_table_capacity; i++)
+                {
+                    struct filedes* filedes = fd_table + i;
+                    if(filedes-&gt;name &amp;&amp; strcmp(filedes-&gt;name, oldpath) == 0)
+                    {
+                        assert(filedes-&gt;aofguard);
+                        if(!aofguard_deinit(filedes-&gt;aofguard))
+                            ERROR(-1, 0, "aofguard_deinit(filedes-&gt;aofguard) failed!");
+                        free(filedes-&gt;aofguard);
+                        filedes-&gt;aofguard = 0;
+                    }
+                }
+            }
+        }
+        for(size_t i = 0; i &lt; fd_table_capacity; i++)
+        {
+            struct filedes* filedes = fd_table + i;
+            if(filedes-&gt;name &amp;&amp; strcmp(filedes-&gt;name, oldpath) == 0)
+            {
+                free(filedes-&gt;name);
+                if(!(filedes-&gt;name = strdup(newpath)))
+                    ERROR(-1, 1, "strdup('%s') failed: ", newpath);
+            }
+        }
+        return 0;
+    }
+    return -1;
+}
+</pre>
+
+<p>把所有的代码放在src目录，再创建一个lib目录，之后使用命令编译成动态链接库：</p>
+
+<pre>
+gcc -std=gnu99 src/syscall.c src/sha1.c src/aofguard.c src/inject.c -o lib/libaofguard_inject.so -fPIC -shared -lpthread -Wall
+</pre>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
