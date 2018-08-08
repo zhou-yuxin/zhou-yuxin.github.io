@@ -1,0 +1,114 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>AOF(append only file) Guard（三）——应用与测试</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">AOF(append only file) Guard（三）——应用与测试</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>那么libaofguard_inject.so怎么用呢？</p>
+
+<p>首先，我们来写一个非常简单的小程序：</p>
+
+<p>benchmark.c</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+
+int main(int argc, char* argv[])
+{
+    size_t loop, data_sz;
+    if(argc != 3 || sscanf(argv[1], "%lu", &amp;loop) != 1 || sscanf(argv[2], "%lu", &amp;data_sz) != 1)
+    {
+        printf("USAGE: %s &lt;loop&gt; &lt;data_sz&gt;\n", argv[0]);
+        return 1;
+    }
+
+    int fd = open("hello.txt", O_CREAT | O_TRUNC | O_WRONLY, 0666);
+    assert(fd &gt; 0);
+
+    char* data = malloc(data_sz);
+    assert(data);
+    memset(data, 'a', data_sz);
+
+    for(size_t i = 0; i &lt; loop; i++)
+    {
+        ssize_t len = write(fd, data, data_sz);
+        assert(len == data_sz);
+        int ret = fdatasync(fd);
+        assert(ret == 0);
+    }
+
+    int ret = close(fd);
+    assert(ret == 0);
+
+    return 1;
+}    
+</pre>
+
+<p>然后编译：</p>
+
+<pre>
+gcc -std=gnu99 benchmark.c -o benchmark
+</pre>
+
+<p>然后直接运行：</p>
+
+<pre>
+time taskset -c 0 ./benchmark 1000 1024
+
+real    0m21.709s
+user    0m0.004s
+sys     0m2.935s
+</pre>
+
+<p>也就是每次write-and-fsync 1K的数据需要21.7ms。如果先配置aofguard：</p>
+
+<pre>
+export LD_PRELOAD=$(pwd)/lib/libaofguard_inject.so
+export AOFGUARD_FILENAME_PATTERN=^hello.txt$
+export AOFGUARD_NVM_DIR=/mnt/pmem8
+export AOFGUARD_NVM_SIZE_MB=64
+export AOFGUARD_DISABLE_SYNC=yes
+export AOFGUARD_DEBUG=no
+rm -f /mnt/pmem8/*.ag
+time taskset -c 0 ./benchmark 1000000 1024
+
+real    0m8.683s
+user    0m0.462s
+sys     0m2.917s
+</pre>
+
+<p>每次写1K只要8.6us！！一下子性能提升了2523倍！当然，磁盘越差，data size越小，这种优越性越明显~</p>
+
+<p>再来些实际的测试数据吧。我以Redis为例，分别测试了volatile、AOF everysec、AOF always和使用aofguard的AOF四种模式下的吞吐量：</p>
+
+<p><img src="1.png"></p>
+
+<p>可以看到，用了aofguard以后，AOF可以做到always的功能 + everysec的性能~</p>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
