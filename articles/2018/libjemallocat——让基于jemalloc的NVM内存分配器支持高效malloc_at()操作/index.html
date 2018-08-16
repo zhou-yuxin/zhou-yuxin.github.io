@@ -388,6 +388,8 @@ static int get_page_bitmap(struct page* page, size_t item_count, size_t item_ind
         return (page-&gt;bitmap64 &gt;&gt; item_index) &amp; 1;
     else
     {
+        if(!page-&gt;bitmap)
+            return 0;
         assert(page-&gt;bitmap);
         size_t byte_index = item_index / 8;
         size_t bit_index = item_index % 8;
@@ -429,7 +431,7 @@ int jemallocat_finish(struct jemallocat* jemallocat)
         size_t item_base_offset = page_id * jemallocat-&gt;page_size + page-&gt;bias;
         /* 该页可分配的对象个数 */
         size_t item_count = get_item_count(page, jemallocat-&gt;page_size);
-        for(size_t item_index = 0; item_count &lt; item_count; item_index++)
+        for(size_t item_index = 0; item_index &lt; item_count; item_index++)
         {
             /* 依次分配 */
             void* ptr = jemallocat-&gt;malloc(jemallocat-&gt;udata, page-&gt;std_size);
@@ -457,7 +459,7 @@ int jemallocat_finish(struct jemallocat* jemallocat)
         size_t item_base_offset = page_id * jemallocat-&gt;page_size + page-&gt;bias;
         /* 该页可分配的对象个数 */
         size_t item_count = get_item_count(page, jemallocat-&gt;page_size);
-        for(size_t item_index = 0; item_count &lt; item_count; item_index++)
+        for(size_t item_index = 0; item_index &lt; item_count; item_index++)
         {
             /* 如果该对象不需要，则释放之 */
             if(!get_page_bitmap(page, item_count, item_index))
@@ -468,23 +470,13 @@ int jemallocat_finish(struct jemallocat* jemallocat)
             }
         }
         /* 如果bitmap是动态分配的，释放之 */
-        if(item_count &gt; 64)
+        if(item_count &gt; 64 &amp;&amp; page-&gt;bitmap)
             free(page-&gt;bitmap);
     }
     free(jemallocat-&gt;pages);
     return 1;
 }
 </pre>
-
-<p>这里有完整的代码包<a href="./jemallocat.tar.gz">jemallocat.tar.gz</a>，还附带Makefile和测试哦~解压后：</p>
-
-<pre>
-make
-cd tests
-bash ./infinite_tests.sh
-</pre>
-
-<p>于是gen_test_case就会不断产生测试用例，丢给do_test_case去执行。</p>
 
                             </div>
                         </article>
