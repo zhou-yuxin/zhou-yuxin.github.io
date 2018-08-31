@@ -1,0 +1,71 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>使用rdtsc指令进行时钟周期级测量</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">使用rdtsc指令进行时钟周期级测量</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>最近在进行页热度测量方面的试验，里面需要测定一些函数、流程所花费的时间。</p>
+
+<p>Linux提供的API——gettimeofday()可以获取微秒级的精度。但是，首先它不能提供纳秒级精度，其次，他是一个库函数（可能不是系统调用），自身就有一定的开销，当我需要纳秒级精度时，误差会很大。</p>
+
+<p>而且，我测定函数的性能，以时钟周期为单位比纳秒更加合理。当不同型号的CPU的频率不同时，运行时间可能差很多，但是时钟周期应该差不了多少（如果指令集一样的话）。</p>
+
+<p>那么怎么测定时钟周期呢？x86处理器为我们提供了rdtsc指令。从pentium开始，很多x86处理器都引入了TSC(Time Stamp Counter)，一个64位的寄存器，每个CPU时钟周期其值加一。它记录了CPU从上电开始总共经历的时钟周期数。一个2.5GHz的CPU如果全速运行的话，那么其TSC就会在一秒内增加2,500,000,000。在使用过程中，不用担心TSC会溢出，因此64位整数可以“应付”一个2.5GHz的CPU运行217年！</p>
+
+<p>rdtsc指令把TSC的低32位存放在EAX寄存器中，把TSC的高32位存放在EDX寄存器中。该指令可以在用户态执行。可以使用GCC内嵌汇编实现在用户态获取时钟周期：</p>
+
+<pre>
+uint64_t current_cycles()
+{
+    uint32_t low, high;
+    asm volatile("rdtsc" : "=a"(low), "=d"(high));
+    return ((uint64_t)low) | ((uint64_t)high &lt;&lt; 32);
+}
+</pre>
+
+<p>测量时的方式就是：</p>
+
+<pre>
+uint64_t start, end;
+start = current_cycles();
+// do something
+end = current_cycles();
+</pre>
+
+<p>
+但是该函数自身肯定也会带来开销，end - start的值不仅是“do something”的开销，也含有一次current_cycles()调用的开销。那么该函数自身的开销是多少呢？
+</p>
+
+<p>经过测定，在不同CPU上开销还有较大差异：</p>
+
+<table>
+    <tr><td>Intel(R) Xeon(R) Platinum 8180M CPU @ 2.50GHz</td><td>20</td></tr>
+    <tr><td>Intel(R) Xeon(R) Gold 5117 CPU @ 2.00GHz</td><td>50</td></tr>
+    <tr><td>Intel(R) Xeon(R) CPU E5-2620 v4 @ 2.10GHz</td><td>63</td></tr>
+    <tr><td>Intel(R) Core(TM) i5-4250U CPU @ 1.30Ghz</td><td>66</td></tr>
+</table>
+
+<p>当然，rdtsc也有很多坑，最大的问题还是在多核环境下，不同的CPU core的TSC值很可能是不同的。因此该方法仅能用于Debug环境！详见《<a href="http://oliveryang.net/2015/09/pitfalls-of-TSC-usage/">Pitfalls of TSC usage</a>》。</p>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
