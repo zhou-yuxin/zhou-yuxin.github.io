@@ -1,0 +1,246 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>混合内存系统hybridmem（一）——使用mmap与page fault为应用程序分配内存</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">混合内存系统hybridmem（一）——使用mmap与page fault为应用程序分配内存</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>Intel的基于3DX point的NVM技术真的要开启一场技术革命啊。基于该技术的内存条更是不得了，既有相近于DRAM的性能、非常大的容量、低廉的价格，而且还有持久化的特性。我前面很多博客中研究的技术，比如《<a href="../AOF(append only file) Guard（一）——算法实现/index.html">AOF(append only file) Guard（一）——算法实现</a>》、《<a href="../libjemallocat——让基于jemalloc的NVM内存分配器支持高效malloc_at()操作/index.html">libjemallocat——让基于jemalloc的NVM内存分配器支持高效malloc_at()操作</a>》都是在利用NVM持久化的特性。不过最近要研究的这个系统——hybridmem——则是用在volatile场景下，使得NVM作为DRAM的一个廉价替代品，从而降低内存的硬件成本。</p>
+
+<p>一种最原始的想法是，让应用程序的数据全都放在NVM上。根据程序局部性原理，有些数据是被频繁访问的，而有些数据则是很少被访问的。前者称为热数据，后者称为冷数据。NVM在访问的性能上毕竟不如DRAM，而且对NVM的频繁写入对其寿命有较大影响。因此，把数据全部放在NVM上，不仅会明显降低性能，而且还会让NVM硬件快速折寿。</p>
+
+<p>因此，一种兼顾性能与成本的方案是，将热数据存放在DRAM上，而将冷数据放在NVM上。由于在现代操作系统中，内存都是以页进行管理的，因此具体而言，就是将热页放在DRAM上，将冷页放在NVM上。</p>
+
+<p>于是乎，这个hybridmem需要解决这么三个主要的技术问题：
+<ul>
+    <li>让应用程序通过hybridmem分配内存；</li>
+    <li>统计每一个页访问的频率（如果能够分别统计读、写的频率则更佳）；</li>
+    <li>能够将任意一页移动到DRAM上或者NVM上。</li>
+</ul>
+</p>
+
+<p>这三个问题都涉及到内存管理，而且这么hack，只能在kernel中做。可是，不到万不得已时，不应该修改kernel源码。于是最佳的方案就是写一个内核模块，以驱动程序的形式插入kernel中，然后提供/dev/hybridmem设备节点，让应用程序操作该设备节点来获取内存。</p>
+
+<p>以Redis为例，它使用jemalloc管理内存。而jemalloc底层则是用mmap()向系统批量索要内存页。事实上，大部分的内存分配器都是通过mmap()向系统索要内存页，只不过都是使用匿名映射，形如下面的代码：</p>
+
+<pre>
+void* block = mmap(NULL, size, PRTO_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+</pre>
+
+<p>如果先打开我的设备文件/dev/hybridmem，得到一个文件描述符fd：</p>
+
+<pre>
+int fd = open("/dev/hybridmem", O_RDWR);
+</pre>
+
+<p>之后所有的mmap()调用都把倒数第二个参数换成fd，倒数第三个参数换成MAP_SHARED：</p>
+
+<pre>
+void* block = mmap(NULL, size, PRTO_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+</pre>
+
+<p>于是mmap()就会交由我的驱动程序执行，于是我就有机会控制内存的分配。</p>
+
+<p>在应用程序调用mmap()后，kernel会做很多工作，最重要的就是确定分配的虚拟地址空间。当这些都确定好了之后，才会调用驱动程序提供的mmap()（如果提供了的话）。在驱动程序中，可以使用remap_pfn_range()立即建立虚拟地址与物理地址的线性映射（一般用于IO区域的映射），也可以注册一个vm_operations，告知kernel，该区域中如果发生page fault，那么如何处理。由于我们是真的要分配内存，而不是做IO映射，因此使用后一种方式。</p>
+
+<p>代码很简单，看hybridmem.c：</p>
+
+<pre>
+#include &lt;linux/fs.h&gt;
+#include &lt;linux/mm.h&gt;
+#include &lt;linux/sched.h&gt;
+#include &lt;linux/module.h&gt;
+
+#define MODULE_MAJOR            224
+#define MODULE_NAME             &quot;hybridmem&quot;
+
+MODULE_LICENSE(&quot;Dual BSD/GPL&quot;);
+
+static int vma_fault(struct vm_fault* vmf)
+{
+    struct page* page = <font color="red">alloc_page(GFP_HIGHUSER_MOVABLE | __GFP_ZERO)</font>;
+    if(!page)
+        return VM_FAULT_SIGBUS;
+    vmf-&gt;page = page;
+    printk(&quot;fault, is_write = %d, vaddr = %lx, paddr = %lx\n&quot;,
+        vmf-&gt;flags &amp; FAULT_FLAG_WRITE, vmf-&gt;address, (size_t)virt_to_phys(page_address(page)));
+    return 0;
+}
+
+static struct vm_operations_struct vma_ops =
+{
+    .fault = vma_fault,
+};
+
+static int mmap(struct file* file, struct vm_area_struct* vma)
+{
+    printk(&quot;mmap, start = %lx, end = %lx\n&quot;, vma-&gt;vm_start, vma-&gt;vm_end);
+    vma-&gt;vm_ops = &amp;vma_ops;
+    return 0;
+}
+
+static struct file_operations fops =
+{
+    .owner = THIS_MODULE,
+    .mmap = mmap,
+};
+
+static int init(void)
+{
+    int ret = register_chrdev(MODULE_MAJOR, MODULE_NAME, &amp;fops);
+    if(ret &lt; 0)
+    {
+        printk(&quot;Unable to register device '%s'\n&quot;, MODULE_NAME);
+        return ret;
+    }
+    return 0;
+}
+
+static void cleanup(void)
+{
+    unregister_chrdev(MODULE_MAJOR, MODULE_NAME);
+}
+
+module_init(init);
+module_exit(cleanup);
+</pre>
+
+<p>这里alloc_page()时的flag是GFP_HIGHUSER_MOVABLE | __GFP_ZERO。其中GFP_HIGHUSER_MOVABLE表示该页可以使用高端内存、用于用户态、而且可以移动（碎片整理）。而由于很多内存分配器基于一个假设——mmap()上来的页都是清零的，因此我们需要额外指定__GFP_ZERO。使用如下的Makefile：</p>
+
+<pre>
+obj-m := hybridmem.o
+KERNEL_DIR := /lib/modules/$(shell uname -r)/build
+PWD := $(shell pwd)
+
+all:
+	make -C $(KERNEL_DIR) SUBDIRS=$(PWD) modules
+
+clean:
+	rm -f *.o *.ko *.mod.c
+
+.PHONY: clean
+</pre>
+
+<p>然后编译、插入模块、创建设备节点：</p>
+
+<pre>
+make
+insmod hybridmem.ko
+mknod /dev/hybridmem c 224 0
+</pre>
+
+<p>然后创建一个小应用程序来测试，test.c：</p>
+
+<pre>
+#include &lt;fcntl.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/mman.h&gt;
+
+#define PAGE_SIZE               4096
+
+size_t virtual_to_physical(size_t addr)
+{
+    int fd = open(&quot;/proc/self/pagemap&quot;, O_RDONLY);
+    if(fd &lt; 0)
+    {
+        printf(&quot;open '/proc/self/pagemap' failed!\n&quot;);
+        return 0;
+    }
+    size_t pagesize = getpagesize();
+    size_t offset = (addr / pagesize) * sizeof(uint64_t);
+    if(lseek(fd, offset, SEEK_SET) &lt; 0)
+    {
+        printf(&quot;lseek() failed!\n&quot;);
+        close(fd);
+        return 0;
+    }
+    uint64_t info;
+    if(read(fd, &amp;info, sizeof(uint64_t)) != sizeof(uint64_t))
+    {
+        printf(&quot;read() failed!\n&quot;);
+        close(fd);
+        return 0;
+    }
+    if((info &amp; (((uint64_t)1) &lt;&lt; 63)) == 0)
+    {
+        printf(&quot;page is not present!\n&quot;);
+        close(fd);
+        return 0;
+    }
+    size_t frame = info &amp; ((((uint64_t)1) &lt;&lt; 55) - 1);
+    size_t phy = frame * pagesize + addr % pagesize;
+    close(fd);
+    return phy;
+}
+
+int main()
+{
+    int fd = open(&quot;/dev/hybridmem&quot;, O_RDWR);
+    assert(fd &gt; 0);
+
+    char* base = mmap(NULL, PAGE_SIZE * 3, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    assert(base != MAP_FAILED);
+
+    strcpy(base + 2, &quot;hello&quot;);
+
+    printf(&quot;%d\n&quot;, *(base + PAGE_SIZE + 7));
+
+    printf(&quot;%lx\n&quot;, virtual_to_physical((size_t)base));
+
+    printf(&quot;%lx\n&quot;, virtual_to_physical((size_t)base + PAGE_SIZE));
+
+    return 0;
+}
+</pre>
+
+<pre>
+gcc -std=gnu99 test.c -o exe
+./exe
+</pre>
+
+<p>能看到exe输出：</p>
+
+<pre>
+0
+687b8000
+97c4b000
+</pre>
+
+<p>此时使用命令dmesg查看内核消息，可以看到：</p>
+
+<pre>
+[145053.021640] mmap, start = 7f05b336e000, end = 7f05b3371000
+[145053.021645] fault, is_write = 1, vaddr = 7f05b336e000, paddr = 687b8000
+[145053.021649] fault, is_write = 0, vaddr = 7f05b336f000, paddr = 97c4b000
+</pre>
+
+<p>也就是说，虚拟地址7f05b336e000被映射到物理地址687b8000，而虚拟地址7f05b336f000则被映射到物理地址97c4b000。第三个页还没被访问过，没有触发page fault。另外可以发现，通过vmf->flags可以判断出是读取触发的page fault还是写入触发的page fault。而且vmf->address已经对其到了页边界上。</p>
+
+<p>如果我在page fault中分配一个NVM页给应用程序，就能实现混合内存。三个主要技术问题中的第一个已经解决了~</p>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
