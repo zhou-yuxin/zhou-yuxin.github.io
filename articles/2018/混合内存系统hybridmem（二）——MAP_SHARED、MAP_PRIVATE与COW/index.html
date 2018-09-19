@@ -222,13 +222,13 @@ I am father, vaddr 7f9df6f5e000 map to paddr = 9cef9000
 [427186.886581] fault, is_write = 0, vaddr = 7f9df6f5f000, paddr = 9bbc0000
 </pre>
 
-<p>为啥只触发了两次page fault？结合test.c的输出，可以确定这两次page fault都是父进程还没fork()前触发的。那么子进程的COW页不是我的驱动程序的page fault分配的？可以肯定，kernel直接为子进程分配了页，并拷贝的数据。</p>
+<p>为啥只触发了两次page fault？结合test.c的输出，可以确定这两次page fault都是父进程还没fork()前触发的。那么子进程的COW页不是我的驱动程序的page fault分配的？可以肯定，kernel直接为子进程分配了页，并拷贝数据。</p>
     
 <p>虽然并不会引起任何功能上的问题，但是导致我无法干预COW页的来源。试想，在Redis做后台RDB时，如果父进程修改了一个NVM页，导致COW，那么子进程使用本来的NVM页，而父进程则会使用一个新的DRAM页。但是合理的做法是给父进程分配NVM页。因为父进程之前之所以使用NVM页，一定是因为该页比较冷。当然，这不会造成太大的问题，毕竟在下一轮冷热页迁移时，会被重新迁移到NVM页。</p>
 
 <p><strong>于是，COW问题也有了答案：
 <ul>
-    <li>只要是MAP_PRIVATE，COW由就会由kernel自动管理，驱动程序无需操心；</li>
+    <li>只要是MAP_PRIVATE，COW就会由kernel自动管理，驱动程序无需操心；</li>
     <li>在MAP_PRIVATE时，通过vmf->cow_page字段来控制最终使用的页；</li>
 </ul></strong>
 为了兼顾MAP_SHARED与MAP_PRIVATE，vma_fault()应该这么写：
