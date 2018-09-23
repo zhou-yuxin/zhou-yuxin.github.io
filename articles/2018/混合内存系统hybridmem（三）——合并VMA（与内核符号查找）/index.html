@@ -1,0 +1,678 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>混合内存系统hybridmem（三）——合并VMA（与内核符号查找）</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">混合内存系统hybridmem（三）——合并VMA（与内核符号查找）</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>经过前两篇博客，我已经能够用一个驱动程序的形式为应用程序分配如同匿名内存页一样的物理页。于是我做了一个尝试——让Redis使用/dev/hybridmem来分配内存页。</p>
+
+<p>首先，hybridmem.c的完整代码如下：</p>
+
+<pre>
+#include &lt;linux/fs.h&gt;
+#include &lt;linux/mm.h&gt;
+#include &lt;linux/module.h&gt;
+
+#define MODULE_MAJOR            224
+#define MODULE_NAME             &quot;hybridmem&quot;
+
+MODULE_LICENSE(&quot;Dual BSD/GPL&quot;);
+
+static int vma_fault(struct vm_fault* vmf)
+{
+    struct vm_area_struct* vma = vmf-&gt;vma;
+    // allocate a zeroed page for application
+    struct page* page = alloc_page(GFP_HIGHUSER_MOVABLE | __GFP_ZERO);
+    if(!page)
+        return VM_FAULT_OOM;
+    vmf-&gt;page = page;
+    // if this is private mapping, need fill cow_page
+    if(!(vma-&gt;vm_flags &amp; VM_SHARED))
+    {
+        // release the pre-allocated page from kernel
+        if(vmf-&gt;cow_page)
+            __free_page(vmf-&gt;cow_page);
+        vmf-&gt;cow_page = page;
+        get_page(page);
+    }
+    return 0;
+}
+
+static struct vm_operations_struct vma_ops =
+{
+    .fault = vma_fault,
+};
+
+static int mmap(struct file* file, struct vm_area_struct* vma)
+{
+    vma-&gt;vm_ops = &amp;vma_ops;
+    return 0;
+}
+
+static struct file_operations fops =
+{
+    .owner = THIS_MODULE,
+    .mmap = mmap,
+};
+
+static int init(void)
+{
+    int ret;
+    if((ret = register_chrdev(MODULE_MAJOR, MODULE_NAME, &amp;fops)) &lt; 0)
+    {
+        printk(&quot;Unable to register device '%s'\n&quot;, MODULE_NAME);
+        return ret;
+    }
+    return 0;
+}
+
+static void cleanup(void)
+{
+    unregister_chrdev(MODULE_MAJOR, MODULE_NAME);
+}
+
+module_init(init);
+module_exit(cleanup);
+</pre>
+
+<p>之后编译、插入模块：</p>
+
+<pre>
+make
+insmod hybridmem.ko
+mknod /dev/hybridmem c 224 0
+</pre>
+
+<p>然后，下载<a href="http://download.redis.io/releases/redis-4.0.0.tar.gz">Redis-4.0.0源码包</a>，解压，在deps/jemalloc/src/pages.c中修改如下：
+<ol>
+<li>
+在文件最开头定义变量hybridmem_fd和函数mmap_from_hybridmem()：
+<pre>
+#define JEMALLOC_PAGES_C_
+#include &quot;jemalloc/internal/jemalloc_internal.h&quot;
+
+/******************************************************************************/
+
+static int hybridmem_fd = -1;
+
+static void* mmap_from_hybridmem(void* addr, size_t size, int prot, int flags)
+{
+    if(hybridmem_fd &lt; 0)
+    {
+        if((hybridmem_fd = open(&quot;/dev/hybridmem&quot;, O_RDWR)) &lt; 0)
+        {
+            perror(&quot;open('/dev/hybridmem', O_RDWR) failed: &quot;);
+            exit(1);
+            return NULL;
+        }
+    }
+    void* base = mmap(addr, size, prot, flags, hybridmem_fd, 0);
+    return base;
+}
+</pre>
+</li>
+
+<li>
+在pages_map()内部，修改如下：
+<pre>
+void *
+pages_map(void *addr, size_t size)
+{
+    void *ret;
+
+    assert(size != 0);
+
+#ifdef _WIN32
+    /*
+        * If VirtualAlloc can't allocate at the given address when one is
+        * given, it fails and returns NULL.
+        */
+    ret = VirtualAlloc(addr, size, MEM_COMMIT | MEM_RESERVE,
+        PAGE_READWRITE);
+#else
+    /*
+        * We don't use MAP_FIXED here, because it can cause the *replacement*
+        * of existing mappings, and we only want to create new mappings.
+        */
+<font color="red">//  ret = mmap(addr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON,
+//      -1, 0);
+    ret = mmap_from_hybridmem(addr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE);</font>
+    assert(ret != NULL);
+
+    if (ret == MAP_FAILED)
+        ret = NULL;
+    else if (addr != NULL &amp;&amp; ret != addr) {
+        /*
+            * We succeeded in mapping memory, but not in the right place.
+            */
+        pages_unmap(ret, size);
+        ret = NULL;
+    }
+#endif
+    assert(ret == NULL || (addr == NULL &amp;&amp; ret != addr)
+        || (addr != NULL &amp;&amp; ret == addr));
+    return (ret);
+}        
+</pre>
+</li>
+
+<li>
+在pages_commit_impl()内部，修改如下：
+<pre>
+static bool
+pages_commit_impl(void *addr, size_t size, bool commit)
+{
+
+#ifndef _WIN32
+    /*
+        * The following decommit/commit implementation is functional, but
+        * always disabled because it doesn't add value beyong improved
+        * debugging (at the cost of extra system calls) on systems that
+        * overcommit.
+        */
+    if (false) {
+        int prot = commit ? (PROT_READ | PROT_WRITE) : PROT_NONE;
+<font color="red">//      void *result = mmap(addr, size, prot, MAP_PRIVATE | MAP_ANON |
+//          MAP_FIXED, -1, 0);
+        void* result = mmap_from_hybridmem(addr, size, prot, MAP_PRIVATE | MAP_FIXED);</font>
+        if (result == MAP_FAILED)
+            return (true);
+        if (result != addr) {
+            /*
+                * We succeeded in mapping memory, but not in the right
+                * place.
+                */
+            pages_unmap(result, size);
+            return (true);
+        }
+        return (false);
+    }
+#endif
+    return (true);
+}
+</pre>
+</li>
+</ol>
+
+<p>修改好jemalloc之后，编译Redis:</p>
+
+<pre>
+make
+</pre>
+
+<p>之后，就可以启动Redis了：</p>
+
+<pre>
+src/redis-server --port 6379           # --port 6379就是redis-server的默认端口，此处为了避免其加载配置文件
+</pre>
+
+<p>此时查看redis-server的映射状况：</p>
+
+<pre>
+cat /proc/9637/maps                    # 9637是刚启动的redis-server的PID，根据实际情况修改
+</pre>
+
+<p>可以看到：</p>
+
+<pre>
+zjs@zjs-desktop:~$ cat /proc/9637/maps
+00400000-00552000 r-xp 00000000 08:01 3157590                            /home/zjs/redis-4.0.0/src/redis-server
+00751000-00752000 r--p 00151000 08:01 3157590                            /home/zjs/redis-4.0.0/src/redis-server
+00752000-00757000 rw-p 00152000 08:01 3157590                            /home/zjs/redis-4.0.0/src/redis-server
+00757000-0076f000 rw-p 00000000 00:00 0
+01f16000-01f37000 rw-p 00000000 00:00 0                                  [heap]
+7f7a89ffd000-7f7a89ffe000 ---p 00000000 00:00 0
+7f7a89ffe000-7f7a8a7fe000 rw-p 00000000 00:00 0
+7f7a8a7fe000-7f7a8a7ff000 ---p 00000000 00:00 0
+7f7a8a7ff000-7f7a8afff000 rw-p 00000000 00:00 0
+7f7a8afff000-7f7a8b000000 ---p 00000000 00:00 0
+7f7a8b000000-7f7a8b800000 rw-p 00000000 00:00 0
+<font color="red">7f7a8b800000-7f7a8ba00000 rw-p 0008a000 00:06 26537                      /dev/hybridmem</font>
+7f7a8bb75000-7f7a8c000000 r--p 00000000 08:01 2229878                    /usr/lib/locale/locale-archive
+<font color="red">7f7a8c000000-7f7a8c200000 rw-p 001c0000 00:06 26537                      /dev/hybridmem</font>
+7f7a8c23f000-7f7a8c3ff000 r-xp 00000000 08:01 3677071                    /lib/x86_64-linux-gnu/libc-2.23.so
+7f7a8c3ff000-7f7a8c5ff000 ---p 001c0000 08:01 3677071                    /lib/x86_64-linux-gnu/libc-2.23.so
+7f7a8c5ff000-7f7a8c603000 r--p 001c0000 08:01 3677071                    /lib/x86_64-linux-gnu/libc-2.23.so
+7f7a8c603000-7f7a8c605000 rw-p 001c4000 08:01 3677071                    /lib/x86_64-linux-gnu/libc-2.23.so
+7f7a8c605000-7f7a8c609000 rw-p 00000000 00:00 0
+7f7a8c609000-7f7a8c621000 r-xp 00000000 08:01 3677070                    /lib/x86_64-linux-gnu/libpthread-2.23.so
+7f7a8c621000-7f7a8c820000 ---p 00018000 08:01 3677070                    /lib/x86_64-linux-gnu/libpthread-2.23.so
+7f7a8c820000-7f7a8c821000 r--p 00017000 08:01 3677070                    /lib/x86_64-linux-gnu/libpthread-2.23.so
+7f7a8c821000-7f7a8c822000 rw-p 00018000 08:01 3677070                    /lib/x86_64-linux-gnu/libpthread-2.23.so
+7f7a8c822000-7f7a8c826000 rw-p 00000000 00:00 0
+7f7a8c826000-7f7a8c829000 r-xp 00000000 08:01 3677073                    /lib/x86_64-linux-gnu/libdl-2.23.so
+7f7a8c829000-7f7a8ca28000 ---p 00003000 08:01 3677073                    /lib/x86_64-linux-gnu/libdl-2.23.so
+7f7a8ca28000-7f7a8ca29000 r--p 00002000 08:01 3677073                    /lib/x86_64-linux-gnu/libdl-2.23.so
+7f7a8ca29000-7f7a8ca2a000 rw-p 00003000 08:01 3677073                    /lib/x86_64-linux-gnu/libdl-2.23.so
+7f7a8ca2a000-7f7a8cb32000 r-xp 00000000 08:01 3677067                    /lib/x86_64-linux-gnu/libm-2.23.so
+7f7a8cb32000-7f7a8cd31000 ---p 00108000 08:01 3677067                    /lib/x86_64-linux-gnu/libm-2.23.so
+7f7a8cd31000-7f7a8cd32000 r--p 00107000 08:01 3677067                    /lib/x86_64-linux-gnu/libm-2.23.so
+7f7a8cd32000-7f7a8cd33000 rw-p 00108000 08:01 3677067                    /lib/x86_64-linux-gnu/libm-2.23.so
+7f7a8cd33000-7f7a8cd59000 r-xp 00000000 08:01 3677069                    /lib/x86_64-linux-gnu/ld-2.23.so
+7f7a8cf3c000-7f7a8cf41000 rw-p 00000000 00:00 0
+7f7a8cf58000-7f7a8cf59000 r--p 00025000 08:01 3677069                    /lib/x86_64-linux-gnu/ld-2.23.so
+7f7a8cf59000-7f7a8cf5a000 rw-p 00026000 08:01 3677069                    /lib/x86_64-linux-gnu/ld-2.23.so
+7f7a8cf5a000-7f7a8cf5b000 rw-p 00000000 00:00 0
+7fff5f81f000-7fff5f840000 rw-p 00000000 00:00 0                          [stack]
+7fff5f9ea000-7fff5f9ed000 r--p 00000000 00:00 0                          [vvar]
+7fff5f9ed000-7fff5f9ef000 r-xp 00000000 00:00 0                          [vdso]
+ffffffffff600000-ffffffffff601000 r-xp 00000000 00:00 0                  [vsyscall]
+</pre>
+
+<p>说明redis-server已经能够使用/dev/hybridmem分配内存了。之后，用redis-benchmark迫使redis-server占用更多内存：</p>
+
+<pre>
+src/redis-benchmark -t set -n 1000000 -r 1000000 -d 64
+</pre>
+
+<p>命令执行完之后，再查看redis-server的映射状态：</p>
+
+<pre>
+zjs@zjs-desktop:~/redis-4.0.0$ cat /proc/9637/maps
+00400000-00552000 r-xp 00000000 08:01 3157590                            /home/zjs/redis-4.0.0/src/redis-server
+00751000-00752000 r--p 00151000 08:01 3157590                            /home/zjs/redis-4.0.0/src/redis-server
+00752000-00757000 rw-p 00152000 08:01 3157590                            /home/zjs/redis-4.0.0/src/redis-server
+00757000-0076f000 rw-p 00000000 00:00 0
+01f16000-01f37000 rw-p 00000000 00:00 0                                  [heap]
+<font color="red">7f7a83a00000-7f7a83c00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a83c00000-7f7a83e00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a83e00000-7f7a84000000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a84000000-7f7a84200000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a84200000-7f7a84400000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a84400000-7f7a84c00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a84c00000-7f7a84e00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a84e00000-7f7a85000000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a85000000-7f7a85200000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a85200000-7f7a85400000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a85400000-7f7a85600000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a85600000-7f7a85800000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a85800000-7f7a85a00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a85a00000-7f7a85c00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a85c00000-7f7a85e00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a85e00000-7f7a86000000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a86000000-7f7a86200000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a86200000-7f7a86400000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a86400000-7f7a86600000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a86600000-7f7a86800000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a86800000-7f7a86a00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a86a00000-7f7a86c00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a86c00000-7f7a86e00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a86e00000-7f7a87000000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a87000000-7f7a87400000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a87400000-7f7a87600000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a87600000-7f7a87800000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a87800000-7f7a87a00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a87a00000-7f7a87c00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a87c00000-7f7a87e00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a87e00000-7f7a88000000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a88000000-7f7a88200000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a88200000-7f7a88400000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a88400000-7f7a88600000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a88600000-7f7a88800000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a88800000-7f7a88a00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a88a00000-7f7a88c00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a88c00000-7f7a88e00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a88e00000-7f7a89000000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a89000000-7f7a89200000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a89200000-7f7a89400000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a89400000-7f7a89600000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a89600000-7f7a89800000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a89800000-7f7a89a00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a89a00000-7f7a89c00000 rw-p 00000000 00:06 26537                      /dev/hybridmem
+7f7a89c00000-7f7a89e00000 rw-p 00002000 00:06 26537                      /dev/hybridmem</font>
+7f7a89ffd000-7f7a89ffe000 ---p 00000000 00:00 0
+7f7a89ffe000-7f7a8a7fe000 rw-p 00000000 00:00 0
+7f7a8a7fe000-7f7a8a7ff000 ---p 00000000 00:00 0
+7f7a8a7ff000-7f7a8afff000 rw-p 00000000 00:00 0
+7f7a8afff000-7f7a8b000000 ---p 00000000 00:00 0
+7f7a8b000000-7f7a8b800000 rw-p 00000000 00:00 0
+<font color="red">7f7a8b800000-7f7a8ba00000 rw-p 0008a000 00:06 26537                      /dev/hybridmem</font>
+7f7a8bb75000-7f7a8c000000 r--p 00000000 08:01 2229878                    /usr/lib/locale/locale-archive
+<font color="red">7f7a8c000000-7f7a8c200000 rw-p 001c0000 00:06 26537                      /dev/hybridmem</font>
+7f7a8c23f000-7f7a8c3ff000 r-xp 00000000 08:01 3677071                    /lib/x86_64-linux-gnu/libc-2.23.so
+7f7a8c3ff000-7f7a8c5ff000 ---p 001c0000 08:01 3677071                    /lib/x86_64-linux-gnu/libc-2.23.so
+7f7a8c5ff000-7f7a8c603000 r--p 001c0000 08:01 3677071                    /lib/x86_64-linux-gnu/libc-2.23.so
+7f7a8c603000-7f7a8c605000 rw-p 001c4000 08:01 3677071                    /lib/x86_64-linux-gnu/libc-2.23.so
+7f7a8c605000-7f7a8c609000 rw-p 00000000 00:00 0
+7f7a8c609000-7f7a8c621000 r-xp 00000000 08:01 3677070                    /lib/x86_64-linux-gnu/libpthread-2.23.so
+7f7a8c621000-7f7a8c820000 ---p 00018000 08:01 3677070                    /lib/x86_64-linux-gnu/libpthread-2.23.so
+7f7a8c820000-7f7a8c821000 r--p 00017000 08:01 3677070                    /lib/x86_64-linux-gnu/libpthread-2.23.so
+7f7a8c821000-7f7a8c822000 rw-p 00018000 08:01 3677070                    /lib/x86_64-linux-gnu/libpthread-2.23.so
+7f7a8c822000-7f7a8c826000 rw-p 00000000 00:00 0
+7f7a8c826000-7f7a8c829000 r-xp 00000000 08:01 3677073                    /lib/x86_64-linux-gnu/libdl-2.23.so
+7f7a8c829000-7f7a8ca28000 ---p 00003000 08:01 3677073                    /lib/x86_64-linux-gnu/libdl-2.23.so
+7f7a8ca28000-7f7a8ca29000 r--p 00002000 08:01 3677073                    /lib/x86_64-linux-gnu/libdl-2.23.so
+7f7a8ca29000-7f7a8ca2a000 rw-p 00003000 08:01 3677073                    /lib/x86_64-linux-gnu/libdl-2.23.so
+7f7a8ca2a000-7f7a8cb32000 r-xp 00000000 08:01 3677067                    /lib/x86_64-linux-gnu/libm-2.23.so
+7f7a8cb32000-7f7a8cd31000 ---p 00108000 08:01 3677067                    /lib/x86_64-linux-gnu/libm-2.23.so
+7f7a8cd31000-7f7a8cd32000 r--p 00107000 08:01 3677067                    /lib/x86_64-linux-gnu/libm-2.23.so
+7f7a8cd32000-7f7a8cd33000 rw-p 00108000 08:01 3677067                    /lib/x86_64-linux-gnu/libm-2.23.so
+7f7a8cd33000-7f7a8cd59000 r-xp 00000000 08:01 3677069                    /lib/x86_64-linux-gnu/ld-2.23.so
+7f7a8cf3c000-7f7a8cf41000 rw-p 00000000 00:00 0
+7f7a8cf58000-7f7a8cf59000 r--p 00025000 08:01 3677069                    /lib/x86_64-linux-gnu/ld-2.23.so
+7f7a8cf59000-7f7a8cf5a000 rw-p 00026000 08:01 3677069                    /lib/x86_64-linux-gnu/ld-2.23.so
+7f7a8cf5a000-7f7a8cf5b000 rw-p 00000000 00:00 0
+7fff5f81f000-7fff5f840000 rw-p 00000000 00:00 0                          [stack]
+7fff5f9ea000-7fff5f9ed000 r--p 00000000 00:00 0                          [vvar]
+7fff5f9ed000-7fff5f9ef000 r-xp 00000000 00:00 0                          [vdso]
+ffffffffff600000-ffffffffff601000 r-xp 00000000 00:00 0                  [vsyscall]
+</pre>
+
+<p>可以发现，有很多很多的内存段映射了/dev/hybridmem，而且基本上都是2MB。这是因为jemalloc每次通过mmap()向系统索要2MB的内存空间。可是，为什么这么多映射/dev/hybridmem的内存段在虚拟地址上连续，却不合并呢？查阅了kernel源码后发现，内存段，或者更加专业些叫做VMA（Virtual Memory Area)，默认执行合并的条件是同时满足以下3条：
+<ul>
+<li>虚拟地址上连续；</li>
+<li>读写权限相同；</li>
+<li>文件偏移量上连续，或者是匿名映射，即MAP_ANONYMOUS；</li>
+
+</ul>
+由于我映射的是一个设备文件，虽然前两条满足，但是第三条不满足，因为文件偏移量都是0，不连续。
+</p>
+
+<p>但是如果不合并，那么多的VMA会对性能造成影响，而且占用kernel资源。因此必须手动合并。我在mm/mmap.c中找到了负责合并VMA的函数vma_merge()。其中有一段应该是合并的核心逻辑：</p>
+
+<pre>
+    /*
+    * Can it merge with the predecessor?
+    */
+    if (prev &amp;&amp; prev-&gt;vm_end == addr &amp;&amp;
+            mpol_equal(vma_policy(prev), policy) &amp;&amp;
+            can_vma_merge_after(prev, vm_flags,
+                        anon_vma, file, pgoff,
+                        vm_userfaultfd_ctx)) {
+        /*
+        * OK, it can.  Can we now merge in the successor as well?
+        */
+        if (next &amp;&amp; end == next-&gt;vm_start &amp;&amp;
+                mpol_equal(policy, vma_policy(next)) &amp;&amp;
+                can_vma_merge_before(next, vm_flags,
+                            anon_vma, file,
+                            pgoff+pglen,
+                            vm_userfaultfd_ctx) &amp;&amp;
+                is_mergeable_anon_vma(prev-&gt;anon_vma,
+                                next-&gt;anon_vma, NULL)) {
+                            /* cases 1, 6 */
+            <font color="red">err = __vma_adjust(prev, prev-&gt;vm_start,
+                    next-&gt;vm_end, prev-&gt;vm_pgoff, NULL,
+                    prev);</font>
+        } else                  /* cases 2, 5, 7 */
+            <font color="red">err = __vma_adjust(prev, prev-&gt;vm_start,
+                    end, prev-&gt;vm_pgoff, NULL, prev);</font>
+        if (err)
+            return NULL;
+        khugepaged_enter_vma_merge(prev, vm_flags);
+        return prev;
+    }
+</pre>
+
+<p>显然，__vma_adjust()才是真正合并VMA的重点！__vma_adjust()的声明如下：</p>
+
+<pre>
+/*
+* We cannot adjust vm_start, vm_end, vm_pgoff fields of a vma that
+* is already present in an i_mmap tree without adjusting the tree.
+* The following helper function should be used when such adjustments
+* are necessary.  The &quot;insert&quot; vma (if any) is to be inserted
+* before we drop the necessary locks.
+*/
+int __vma_adjust(struct vm_area_struct *vma, unsigned long start,
+    unsigned long end, pgoff_t pgoff, struct vm_area_struct *insert,
+    struct vm_area_struct *expand)
+</pre>
+
+<p>第一个参数vma就是需要调整的VMA，后面的start、end和pgoff就是该VMA新的起始虚拟地址、结束虚拟地址和文件内偏移量。如同注释所说，参数insert为需要插入的VMA（一般为NULL），最后一个expand注释中没有解释，我估计是可能被扩展的VMA，通常就是第一个参数。有了这个函数，我就可以在我的驱动中合并VMA了。</p>
+
+<p>悲剧的是，__vma_adjust()不是一个导出的内核符号，意味着插入模块时，该函数是无法链接到内核的正确位置的。一种方案就是修改一下mm/mmap.c，在__vma_adjust()函数体下面，加入一行：</p>
+
+<pre>
+EXPORT_SYMBOL(__vma_adjust);
+</pre>
+
+<p>但是擅自修改内核不是一个好的实践，而且在商业环境中，客户不容易接受修改过的kernel。而且该方案需要重新编译内核、重启机器。另一种方案就是在驱动程序内动态查找__vma_adjust的函数入口地址。这时kallsyms_lookup_name()就派上用场了！废话不多说，直接来一波操作~且看新的hybridmem.c：</p>
+
+<pre>
+#include &lt;linux/fs.h&gt;
+#include &lt;linux/mm.h&gt;
+#include &lt;linux/sched.h&gt;
+#include &lt;linux/module.h&gt;
+#include &lt;linux/kallsyms.h&gt;
+
+#define MODULE_MAJOR            224
+#define MODULE_NAME             &quot;hybridmem&quot;
+
+#define IOCTL_CMD_MERGE_VMA     1228
+
+MODULE_LICENSE(&quot;Dual BSD/GPL&quot;);
+
+// the function pointer of kernel symbol __vma_adjust
+<font color="red">static int (*func_vma_adjust)(struct vm_area_struct *vma, unsigned long start, unsigned long end, pgoff_t pgoff,
+    struct vm_area_struct *insert, struct vm_area_struct *expand) = NULL;</font>
+
+static int vma_fault(struct vm_fault* vmf)
+{
+    struct vm_area_struct* vma = vmf-&gt;vma;
+    // allocate a zeroed page for application
+    struct page* page = alloc_page(GFP_HIGHUSER_MOVABLE | __GFP_ZERO);
+    if(!page)
+        return VM_FAULT_OOM;
+    vmf-&gt;page = page;
+    // if this is private mapping, need fill cow_page
+    if(!(vma-&gt;vm_flags &amp; VM_SHARED))
+    {
+        // release the pre-allocated page from kernel
+        if(vmf-&gt;cow_page)
+            __free_page(vmf-&gt;cow_page);
+        vmf-&gt;cow_page = page;
+        get_page(page);
+    }
+    return 0;
+}
+
+static struct vm_operations_struct vma_ops =
+{
+    .fault = vma_fault,
+};
+
+static int mmap(struct file* file, struct vm_area_struct* vma)
+{
+    vma-&gt;vm_ops = &amp;vma_ops;
+    return 0;
+}
+
+static long ioctl(struct file* file, unsigned int cmd, unsigned long arg)
+{
+    if(cmd == IOCTL_CMD_MERGE_VMA)
+    {
+        struct mm_struct *mm = current-&gt;mm;
+        unsigned long address = arg;
+        struct vm_area_struct* vma;
+        int ret;
+        if(down_write_killable(&amp;mm-&gt;mmap_sem))
+            return -EINTR;
+        // find the VMA this address is in
+        vma = find_vma(mm, address);
+        // if it is a VMA mapping this module
+        if(vma &amp;&amp; vma-&gt;vm_ops == &amp;vma_ops)
+        {
+            struct vm_area_struct* prev_vma = vma-&gt;vm_prev;
+            struct vm_area_struct* next_vma = vma-&gt;vm_next;
+            // if the previous VMA maps this module, and touches this one
+            int merge_prev = prev_vma &amp;&amp; prev_vma-&gt;vm_ops == &amp;vma_ops &amp;&amp; prev_vma-&gt;vm_end == vma-&gt;vm_start;
+            // if the next VMA maps this module, and touches this one
+            int merge_next = next_vma &amp;&amp; next_vma-&gt;vm_ops == &amp;vma_ops &amp;&amp; vma-&gt;vm_end == next_vma-&gt;vm_start;
+            // if previous, this and next VMAs are connected, merge these three ones
+            if(merge_prev &amp;&amp; merge_next)
+                <font color="red">ret = func_vma_adjust(prev_vma, prev_vma-&gt;vm_start, next_vma-&gt;vm_end, 0, NULL, prev_vma);</font>
+            // if only the previous and this VMAs are connected, merge these two ones
+            else if(merge_prev)
+                <font color="red">ret = func_vma_adjust(prev_vma, prev_vma-&gt;vm_start, vma-&gt;vm_end, 0, NULL, prev_vma);</font>
+            // if only this and the next VMAs are connected, merge these two ones
+            else if(merge_next)
+                <font color="red">ret = func_vma_adjust(vma, vma-&gt;vm_start, next_vma-&gt;vm_end, 0, NULL, vma);</font>
+            else
+                ret = 0;
+        }
+        else
+            ret = -1;
+        up_write(&amp;mm-&gt;mmap_sem);
+        return ret == 0 ? 0 : -EINVAL;
+    }
+    return -EINVAL;
+}
+
+static struct file_operations fops =
+{
+    .owner = THIS_MODULE,
+    .mmap = mmap,
+    .unlocked_ioctl = ioctl,
+};
+
+static int init(void)
+{
+    int ret;
+    <font color="red">if(!(func_vma_adjust = (void*)kallsyms_lookup_name(&quot;__vma_adjust&quot;)))</font>
+    {
+        printk(&quot;kernel function '__vma_adjust' not found!&quot;);
+        return -ENXIO;
+    }
+    if((ret = register_chrdev(MODULE_MAJOR, MODULE_NAME, &amp;fops)) &lt; 0)
+    {
+        printk(&quot;Unable to register device '%s'\n&quot;, MODULE_NAME);
+        return ret;
+    }
+    return 0;
+}
+
+static void cleanup(void)
+{
+    unregister_chrdev(MODULE_MAJOR, MODULE_NAME);
+}
+
+module_init(init);
+module_exit(cleanup);
+</pre>
+
+<p>首先是定义了一个func_vma_adjust函数指针，用以指向__vma_adjust，同时声明了函数原型。在init()中，通过kallsyms_lookup_name()查找__vma_adjust的函数入口地址。之后，当用户想合并某个VMA时，可以通过ioctl(fd, IOCTL_CMD_MERGE_VMA, address)的方式告知hybridmem。其中address为该VMA中任意一个地址，用于定位某个VMA。如果该VMA可以与前一个VMA合并，则合并；如果可以与后一个VMA合并，则合并；如果该VMA使得前后两个VMA（即共三个VMA)都能合并，则合并。</p>
+
+<p>之后，在redis的deps/jemalloc/src/pages.c的开头改为：</p>
+
+<pre>
+#define JEMALLOC_PAGES_C_
+#include &quot;jemalloc/internal/jemalloc_internal.h&quot;
+
+/******************************************************************************/
+
+#include &lt;sys/ioctl.h&gt;
+
+#define IOCTL_CMD_MERGE_VMA     1228
+
+static int hybridmem_fd = -1;
+
+static void* mmap_from_hybridmem(void* addr, size_t size, int prot, int flags)
+{
+    if(hybridmem_fd &lt; 0)
+    {
+        if((hybridmem_fd = open(&quot;/dev/hybridmem&quot;, O_RDWR)) &lt; 0)
+        {
+            perror(&quot;open('/dev/hybridmem', O_RDWR) failed: &quot;);
+            exit(1);
+            return NULL;
+        }
+    }
+    void* base = mmap(addr, size, prot, flags, hybridmem_fd, 0);
+    <font color="red">int ret = ioctl(hybridmem_fd, IOCTL_CMD_MERGE_VMA, base);</font>
+    if(ret != 0)
+    {
+        perror(&quot;ioctl(hybridmem_fd, IOCTL_CMD_MERGE_VMA, base) failed: &quot;);
+        exit(1);
+        return NULL;
+    }
+    return base;
+}
+</pre>
+
+<p>这样一来，每一个新创建的VMA，都会试图与前后的VMA合并。</p>
+
+<p>重新编译模块、加载模块，重新编译Redis。之后再启动redis-server：</p>
+
+<pre>
+src/redis-server --port 6379           # --port 6379就是redis-server的默认端口，此处为了避免其加载配置文件
+</pre>
+
+<p>再启动redis-benchmark：</p>
+
+<pre>
+src/redis-benchmark -t set -n 1000000 -r 1000000 -d 64
+</pre>
+
+<p>运行过后，查看该redis-server的映射状态：</p>
+
+<pre>
+zjs@zjs-desktop:~$ cat /proc/13911/maps
+00400000-00552000 r-xp 00000000 08:01 3157590                            /home/zjs/redis-4.0.0/src/redis-server
+00751000-00752000 r--p 00151000 08:01 3157590                            /home/zjs/redis-4.0.0/src/redis-server
+00752000-00757000 rw-p 00152000 08:01 3157590                            /home/zjs/redis-4.0.0/src/redis-server
+00757000-0076f000 rw-p 00000000 00:00 0
+01664000-01685000 rw-p 00000000 00:00 0                                  [heap]
+<font color="red">7f6630000000-7f6636400000 rw-p 00000000 00:06 26537                      /dev/hybridmem</font>
+7f66365fd000-7f66365fe000 ---p 00000000 00:00 0
+7f66365fe000-7f6636dfe000 rw-p 00000000 00:00 0
+7f6636dfe000-7f6636dff000 ---p 00000000 00:00 0
+7f6636dff000-7f66375ff000 rw-p 00000000 00:00 0
+7f66375ff000-7f6637600000 ---p 00000000 00:00 0
+7f6637600000-7f6637e00000 rw-p 00000000 00:00 0
+7f6637e00000-7f6638000000 rw-p 0008a000 00:06 26537                      /dev/hybridmem
+7f6638175000-7f6638600000 r--p 00000000 08:01 2229878                    /usr/lib/locale/locale-archive
+7f6638600000-7f6638800000 rw-p 00060000 00:06 26537                      /dev/hybridmem
+7f663899f000-7f6638b5f000 r-xp 00000000 08:01 3677071                    /lib/x86_64-linux-gnu/libc-2.23.so
+7f6638b5f000-7f6638d5f000 ---p 001c0000 08:01 3677071                    /lib/x86_64-linux-gnu/libc-2.23.so
+7f6638d5f000-7f6638d63000 r--p 001c0000 08:01 3677071                    /lib/x86_64-linux-gnu/libc-2.23.so
+7f6638d63000-7f6638d65000 rw-p 001c4000 08:01 3677071                    /lib/x86_64-linux-gnu/libc-2.23.so
+7f6638d65000-7f6638d69000 rw-p 00000000 00:00 0
+7f6638d69000-7f6638d81000 r-xp 00000000 08:01 3677070                    /lib/x86_64-linux-gnu/libpthread-2.23.so
+7f6638d81000-7f6638f80000 ---p 00018000 08:01 3677070                    /lib/x86_64-linux-gnu/libpthread-2.23.so
+7f6638f80000-7f6638f81000 r--p 00017000 08:01 3677070                    /lib/x86_64-linux-gnu/libpthread-2.23.so
+7f6638f81000-7f6638f82000 rw-p 00018000 08:01 3677070                    /lib/x86_64-linux-gnu/libpthread-2.23.so
+7f6638f82000-7f6638f86000 rw-p 00000000 00:00 0
+7f6638f86000-7f6638f89000 r-xp 00000000 08:01 3677073                    /lib/x86_64-linux-gnu/libdl-2.23.so
+7f6638f89000-7f6639188000 ---p 00003000 08:01 3677073                    /lib/x86_64-linux-gnu/libdl-2.23.so
+7f6639188000-7f6639189000 r--p 00002000 08:01 3677073                    /lib/x86_64-linux-gnu/libdl-2.23.so
+7f6639189000-7f663918a000 rw-p 00003000 08:01 3677073                    /lib/x86_64-linux-gnu/libdl-2.23.so
+7f663918a000-7f6639292000 r-xp 00000000 08:01 3677067                    /lib/x86_64-linux-gnu/libm-2.23.so
+7f6639292000-7f6639491000 ---p 00108000 08:01 3677067                    /lib/x86_64-linux-gnu/libm-2.23.so
+7f6639491000-7f6639492000 r--p 00107000 08:01 3677067                    /lib/x86_64-linux-gnu/libm-2.23.so
+7f6639492000-7f6639493000 rw-p 00108000 08:01 3677067                    /lib/x86_64-linux-gnu/libm-2.23.so
+7f6639493000-7f66394b9000 r-xp 00000000 08:01 3677069                    /lib/x86_64-linux-gnu/ld-2.23.so
+7f663969c000-7f66396a1000 rw-p 00000000 00:00 0
+7f66396b8000-7f66396b9000 r--p 00025000 08:01 3677069                    /lib/x86_64-linux-gnu/ld-2.23.so
+7f66396b9000-7f66396ba000 rw-p 00026000 08:01 3677069                    /lib/x86_64-linux-gnu/ld-2.23.so
+7f66396ba000-7f66396bb000 rw-p 00000000 00:00 0
+7fff60ae6000-7fff60b07000 rw-p 00000000 00:00 0                          [stack]
+7fff60bf1000-7fff60bf4000 r--p 00000000 00:00 0                          [vvar]
+7fff60bf4000-7fff60bf6000 r-xp 00000000 00:00 0                          [vdso]
+ffffffffff600000-ffffffffff601000 r-xp 00000000 00:00 0                  [vsyscall]
+</pre>
+
+<p>这些VMA都合并了~</p>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
