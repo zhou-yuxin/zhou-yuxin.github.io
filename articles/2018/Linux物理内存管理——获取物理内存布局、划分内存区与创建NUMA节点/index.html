@@ -1,0 +1,642 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>Linux物理内存管理——获取物理内存布局、划分内存区与创建NUMA节点</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">Linux物理内存管理——获取物理内存布局、划分内存区与创建NUMA节点</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>这段时间，因为需要研究如何在内核里为应用程序做冷页迁移（把冷页从RAM迁移到NVM），就需要知道Linux是如何管理物理内存的，包括：
+<ul>
+    <li>Linux如何知道存在哪些可用的物理内存（以及其类型）；</li>
+    <li>Linux如何划分各种内存区域（DMA、NORMAL和HIGHMEM等）；</li>
+    <li>NUMA节点是如何创建的；</li>
+    <li>这三者的关系是怎样的。</li>
+</ul>
+
+<p>研究是基于<a href="https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.17.19.tar.xz">Linux 4.17.19</a>的代码，实验环境是qemu-kvm中的Ubuntu Server 16.04。环境搭建过程如《<a href="../安装qemu-kvm以及配置桥接网络/index.html">安装qemu-kvm以及配置桥接网络</a>》所示。</p>
+
+<p>更新好4.17.19的内核之后，使用如下命令启动qemu，指定512MB的内存：</p>
+
+<pre>
+qemu-system-x86_64 -m 512 -enable-kvm -smp 4 -vga std ubuntu.img
+</pre>
+
+<p>进入系统后，执行dmesg查看内核日志：</p>
+
+<pre>
+[    0.000000] Linux version 4.17.19 (zjs@ubuntu) (gcc version 5.4.0 20160609 (Ubuntu 5.4.0-6ubuntu1~16.04.10)) #15 SMP Fri Oct 5 16:37:09 CST 2018
+[    0.000000] Command line: BOOT_IMAGE=/boot/vmlinuz-4.17.19 root=UUID=895bf2a8-6111-4d7b-92dd-e76ab8b8265a ro
+[    0.000000] x86/fpu: x87 FPU will use FXSAVE
+<font color="red">[    0.000000] e820: BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000000f0000-0x00000000000fffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000001fffdfff] usable
+[    0.000000] BIOS-e820: [mem 0x000000001fffe000-0x000000001fffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000feffc000-0x00000000feffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000fffc0000-0x00000000ffffffff] reserved</font>
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] SMBIOS 2.4 present.
+[    0.000000] DMI: QEMU Standard PC (i440FX + PIIX, 1996), BIOS Bochs 01/01/2011
+[    0.000000] e820: update [mem 0x00000000-0x00000fff] usable ==&gt; reserved
+[    0.000000] e820: remove [mem 0x000a0000-0x000fffff] usable
+[    0.000000] e820: last_pfn = 0x1fffe max_arch_pfn = 0x400000000
+[    0.000000] MTRR default type: write-back
+[    0.000000] MTRR fixed ranges enabled:
+[    0.000000]   00000-9FFFF write-back
+[    0.000000]   A0000-BFFFF uncachable
+[    0.000000]   C0000-FFFFF write-protect
+[    0.000000] MTRR variable ranges enabled:
+[    0.000000]   0 base 0080000000 mask FF80000000 uncachable
+[    0.000000]   1 disabled
+[    0.000000]   2 disabled
+[    0.000000]   3 disabled
+[    0.000000]   4 disabled
+[    0.000000]   5 disabled
+[    0.000000]   6 disabled
+[    0.000000]   7 disabled
+[    0.000000] x86/PAT: PAT not supported by CPU.
+[    0.000000] x86/PAT: Configuration [0-7]: WB  WT  UC- UC  WB  WT  UC- UC  
+[    0.000000] found SMP MP-table at [mem 0x000f0ae0-0x000f0aef] mapped at [        (ptrval)]
+[    0.000000] Scanning 1 areas for low memory corruption
+[    0.000000] Base memory trampoline at [        (ptrval)] 99000 size 24576
+[    0.000000] BRK [0x04901000, 0x04901fff] PGTABLE
+[    0.000000] BRK [0x04902000, 0x04902fff] PGTABLE
+[    0.000000] BRK [0x04903000, 0x04903fff] PGTABLE
+[    0.000000] BRK [0x04904000, 0x04904fff] PGTABLE
+[    0.000000] BRK [0x04905000, 0x04905fff] PGTABLE
+[    0.000000] RAMDISK: [mem 0x1ea9d000-0x1f24bfff]
+[    0.000000] ACPI: Early table checksum verification disabled
+[    0.000000] ACPI: RSDP 0x00000000000F08D0 000014 (v00 BOCHS )
+[    0.000000] ACPI: RSDT 0x000000001FFFFCFC 000034 (v01 BOCHS  BXPCRSDT 00000001 BXPC 00000001)
+[    0.000000] ACPI: FACP 0x000000001FFFF1C0 000074 (v01 BOCHS  BXPCFACP 00000001 BXPC 00000001)
+[    0.000000] ACPI: DSDT 0x000000001FFFE040 001180 (v01 BOCHS  BXPCDSDT 00000001 BXPC 00000001)
+[    0.000000] ACPI: FACS 0x000000001FFFE000 000040
+[    0.000000] ACPI: SSDT 0x000000001FFFF234 000A00 (v01 BOCHS  BXPCSSDT 00000001 BXPC 00000001)
+[    0.000000] ACPI: APIC 0x000000001FFFFC34 000090 (v01 BOCHS  BXPCAPIC 00000001 BXPC 00000001)
+[    0.000000] ACPI: HPET 0x000000001FFFFCC4 000038 (v01 BOCHS  BXPCHPET 00000001 BXPC 00000001)
+[    0.000000] ACPI: Local APIC address 0xfee00000
+<font color="green">[    0.000000] No NUMA configuration found
+[    0.000000] Faking a node at [mem 0x0000000000000000-0x000000001fffdfff]
+[    0.000000] NODE_DATA(0) allocated [mem 0x1fffa000-0x1fffdfff]</font>
+[    0.000000] tsc: Fast TSC calibration using PIT
+<font color="blue">[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+[    0.000000]   DMA32    [mem 0x0000000001000000-0x000000001fffdfff]
+[    0.000000]   Normal   empty</font>
+[    0.000000] Movable zone start for each node
+<font color="green">[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000000001000-0x000000000009efff]
+[    0.000000]   node   0: [mem 0x0000000000100000-0x000000001fffdfff]</font>
+[    0.000000] Reserved but unavailable: 100 pages
+[    0.000000] Initmem setup node 0 [mem 0x0000000000001000-0x000000001fffdfff]
+<font color="brown">[    0.000000] On node 0 totalpages: 130972
+[    0.000000]   DMA zone: 64 pages used for memmap
+[    0.000000]   DMA zone: 21 pages reserved
+[    0.000000]   DMA zone: 3998 pages, LIFO batch:0
+[    0.000000]   DMA32 zone: 1984 pages used for memmap
+[    0.000000]   DMA32 zone: 126974 pages, LIFO batch:31</font>
+</pre>
+
+<p>===========================阶段一：从BIOS获取物理内存布局=========================</p>
+
+<p>从dmesg的信息可以看出，最先输出的是“e820: BIOS-provided physical RAM map:”，如上红色部分。很明显，这是从BIOS获取了内存布局列表。那么为何名为e820呢？Wiki上的介绍为：
+</p>
+
+<p><img src="1.png"></p>
+
+<p>也就是说，通过15号中断（并在AX寄存器中指定0xE820），可以从BIOS获取物理内存布局信息。</p>
+
+<p>正常情况下，汇编代码调用arch/x86/boot/main.c中的main()函数，main()函数会调用detect_memory()函数，其代码如下：</p>
+
+<pre>
+void main(void)
+{
+    /* First, copy the boot header into the &quot;zeropage&quot; */
+    copy_boot_params();
+
+    /* Initialize the early-boot console */
+    console_init();
+    if (cmdline_find_option_bool(&quot;debug&quot;))
+            puts(&quot;early console in setup code\n&quot;);
+
+    /* End of heap check */
+    init_heap();
+
+    /* Make sure we have all the proper CPU support */
+    if (validate_cpu()) {
+            puts(&quot;Unable to boot - please use a kernel appropriate &quot;
+                    &quot;for your CPU.\n&quot;);
+            die();
+    }
+
+    /* Tell the BIOS what CPU mode we intend to run in. */
+    set_bios_mode();
+
+    /* Detect memory layout */
+    <font color="red">detect_memory();</font>
+    /* Set keyboard repeat rate (why?) and query the lock flags */
+    keyboard_init();
+
+    /* Query Intel SpeedStep (IST) information */
+    query_ist();
+
+    /* Query APM information */
+#if defined(CONFIG_APM) || defined(CONFIG_APM_MODULE)
+    query_apm_bios();
+#endif
+
+    /* Query EDD information */
+#if defined(CONFIG_EDD) || defined(CONFIG_EDD_MODULE)
+    query_edd();
+#endif
+
+    /* Set the video mode */
+    set_video();
+
+    /* Do the last things and invoke protected mode */
+    go_to_protected_mode();
+}        
+</pre>
+
+<p>detect_memory()定义在arch/x86/boot/memory.c中：</p>
+
+<pre>
+int detect_memory(void)
+{
+    int err = -1;
+
+    if (detect_memory_e820() &gt; 0)
+            err = 0;
+
+    if (!detect_memory_e801())
+            err = 0;
+
+    if (!detect_memory_88())
+            err = 0;
+
+    return err;
+}
+</pre>
+
+<p>其逻辑很简单，先试试用e820协议从BIOS获取内存布局，不成功的话试试e801，再试88。一般而言都是e820就可以了，于是就看detect_memory_e820的实现：</p>
+
+<pre>
+static int detect_memory_e820(void)
+{
+    int count = 0;
+    struct biosregs ireg, oreg;
+    <font color="red">struct boot_e820_entry *desc = boot_params.e820_table;</font>
+    static struct boot_e820_entry buf; /* static so it is zeroed */
+
+    initregs(&amp;ireg);
+    <font color="red">ireg.ax  = 0xe820;</font>
+    ireg.cx  = sizeof buf;
+    ireg.edx = SMAP;
+    ireg.di  = (size_t)&amp;buf;
+
+    do {
+        <font color="red">intcall(0x15, &amp;ireg, &amp;oreg);</font>
+        ireg.ebx = oreg.ebx; /* for next iteration... */
+
+        /* BIOSes which terminate the chain with CF = 1 as opposed
+            to %ebx = 0 don't always report the SMAP signature on
+            the final, failing, probe. */
+        if (oreg.eflags &amp; X86_EFLAGS_CF)
+            break;
+
+        /* Some BIOSes stop returning SMAP in the middle of
+            the search loop.  We don't know exactly how the BIOS
+            screwed up the map at that point, we might have a
+            partial map, the full map, or complete garbage, so
+            just return failure. */
+        if (oreg.eax != SMAP) {
+            count = 0;
+            break;
+        }
+
+        <font color="red">*desc++ = buf;</font>
+        count++;
+    } while (ireg.ebx &amp;&amp; count &lt; ARRAY_SIZE(boot_params.e820_table));
+
+    return boot_params.e820_entries = count;
+}        
+</pre>
+
+<p>逻辑很简单，每次用INT 15向BIOS索要一条entry信息，最后把表放在<font color="red">boot_params.e820_table</font>里。OK，与BIOS打交道的故事到此结束~接着讲kernel怎么处理从BIOS获取的boot_params.e820_table。</p>
+
+<p>=======================阶段二：将boot_params.e820_table转换成kernel需要的e820_table===================</p>
+
+</p>在arch/x86/kernel/x86_init.c中，用函数指针指定了内存初始化的函数：</p>
+
+<pre>
+/*
+* The platform setup functions are preset with the default functions
+* for standard PC hardware.
+*/
+struct x86_init_ops x86_init __initdata = {
+
+    .resources = {
+        .probe_roms             = probe_roms,
+        .reserve_resources      = reserve_standard_io_resources,
+        <font color="red">.memory_setup           = e820__memory_setup_default,</font>
+    },
+    // 代码略
+};
+</pre>
+
+<p>接着，在arch/x86/kernel/setup.c中，调用了e820__memory_setup()。该函数定义在arch/x86/kernel/e820.c中：</p>
+
+<pre>
+void __init e820__memory_setup(void)
+{
+    char *who;
+
+    /* This is a firmware interface ABI - make sure we don't break it: */
+    BUILD_BUG_ON(sizeof(struct boot_e820_entry) != 20);
+
+    who = <font color="red">x86_init.resources.memory_setup();</font>
+
+    memcpy(e820_table_kexec, e820_table, sizeof(*e820_table_kexec));
+    memcpy(e820_table_firmware, e820_table, sizeof(*e820_table_firmware));
+
+    pr_info(&quot;e820: BIOS-provided physical RAM map:\n&quot;);
+    e820__print_table(who);
+}
+</pre>
+
+<p>这里的x86_init.resources.memory_setup正指向e820__memory_setup_default函数。e820__memory_setup_default()最重要的工作，莫过于把boot_params.e820_table这张表转换成kernel的e820_table表。之后，e820__memory_setup()又把kernel的e820_table复制到了e820_table_kexec和e820_table_firmware两份。最后打印出dmesg中看到的那些消息。</p>
+
+<p>之所以要做转换，是因为boot_params.e820_table的entry的类型是struct boot_e820_entry，而kernel需要的e820_table的entry的类型是struct e820_type。kernel需要的这个表的类型定义在arch/x86/include/asm/e820/types.h，如下：</p>
+
+<pre>
+enum e820_type {
+    E820_TYPE_RAM           = 1,
+    E820_TYPE_RESERVED      = 2,
+    E820_TYPE_ACPI          = 3,
+    E820_TYPE_NVS           = 4,
+    E820_TYPE_UNUSABLE      = 5,
+    E820_TYPE_PMEM          = 7,
+    E820_TYPE_PRAM          = 12,
+    E820_TYPE_RESERVED_KERN = 128,
+};
+
+struct e820_entry {
+    u64                     addr;
+    u64                     size;
+    enum e820_type          type;
+} __attribute__((packed));
+
+struct e820_table {
+    __u32 nr_entries;
+    struct e820_entry entries[E820_MAX_ENTRIES];
+};
+</pre>
+
+<p>在arch/x86/kernel/e820.c中，定义了一系列对e820_table进行增删改查的函数，比如向表追加一项的函数：</p>
+
+<pre>
+/*
+* Add a memory region to the kernel E820 map.
+*/
+static void __init __e820__range_add(struct e820_table *table, u64 start, u64 size, enum e820_type type)
+{
+        int x = table-&gt;nr_entries;
+
+        if (x &gt;= ARRAY_SIZE(table-&gt;entries)) {
+                pr_err(&quot;e820: too many entries; ignoring [mem %#010llx-%#010llx]\n&quot;, start, start + size - 1);
+                return;
+        }
+
+        table-&gt;entries[x].addr = start;
+        table-&gt;entries[x].size = size;
+        table-&gt;entries[x].type = type;
+        table-&gt;nr_entries++;
+}
+</pre>
+
+<p>通过该函数就能发现，e820_table其实是一个很简单的数组。相应的还有删除操作：</p>
+
+<pre>
+/* Remove a range of memory from the E820 table: */
+u64 __init e820__range_remove(u64 start, u64 size, enum e820_type old_type, bool check_type)
+{
+    // 代码略
+}
+</pre>
+
+<p>还有对表进行排序、去重的操作：</p>
+
+<pre>
+int __init e820__update_table(struct e820_table *table)
+{
+    // 代码略
+}
+</pre>
+
+<p>转化的代码非常简单：</p>
+
+<pre>
+static int __init __append_e820_table(struct boot_e820_entry *entries, u32 nr_entries)
+{
+    struct boot_e820_entry *entry = entries;
+
+    while (nr_entries) {
+        <font color="red">u64 start = entry-&gt;addr;
+        u64 size = entry-&gt;size;</font>
+        u64 end = start + size - 1;
+        <font color="red">u32 type = entry-&gt;type;</font>
+
+        /* Ignore the entry on 64-bit overflow: */
+        if (start &gt; end &amp;&amp; likely(size))
+                return -1;
+
+        <font color="red">e820__range_add(start, size, type);</font>
+
+        entry++;
+        nr_entries--;
+    }
+    return 0;
+}
+</pre>
+
+<p>可以看出boot_e820_entry与e820_entry之间其实没有区别。。。kernel这么“多此一举”，应该是为了兼容将来不同的boot_e820_entry的变化吧。</p>
+
+<p>而e820__memory_setup_default()的实现就是调用了上述函数：</p>
+
+<pre>
+/*
+* Pass the firmware (bootloader) E820 map to the kernel and process it:
+*/
+char *__init e820__memory_setup_default(void)
+{
+    char *who = &quot;BIOS-e820&quot;;
+
+    /*
+    * Try to copy the BIOS-supplied E820-map.
+    *
+    * Otherwise fake a memory map; one section from 0k-&gt;640k,
+    * the next section from 1mb-&gt;appropriate_mem_k
+    */
+    if (<font color="red">append_e820_table(boot_params.e820_table, boot_params.e820_entries)</font> &lt; 0) {
+        u64 mem_size;
+
+        /* Compare results from other methods and take the one that gives more RAM: */
+        if (boot_params.alt_mem_k &lt; boot_params.screen_info.ext_mem_k) {
+            mem_size = boot_params.screen_info.ext_mem_k;
+            who = &quot;BIOS-88&quot;;
+        } else {
+            mem_size = boot_params.alt_mem_k;
+            who = &quot;BIOS-e801&quot;;
+        }
+
+        e820_table-&gt;nr_entries = 0;
+        e820__range_add(0, LOWMEMSIZE(), E820_TYPE_RAM);
+        e820__range_add(HIGH_MEMORY, mem_size &lt;&lt; 10, E820_TYPE_RAM);
+    }
+
+    /* We just appended a lot of ranges, sanitize the table: */
+    e820__update_table(e820_table);
+
+    return who;
+}
+</pre>
+
+<p>至此，来自BIOS的e820表，终于转化成了kernel需要的e820表了，这个表里记录着所有物理内存的起始地址、长度以及类型。</p>
+
+<p>============================阶段三：注册memblock============================</p>
+
+<p>之前的所有操作，都是与具体硬件密切相关的。比如前面两个阶段，都是x86平台上e820相关的操作，而在ARM平台就完全是别的方式了。因此，有了e820_table后，还需要再转换成kernel中体系结构无关的表示形式。</p>
+    
+<p>在kernel中，所有的物理内存都以抽象的memblock的形式管理。相关数据结构定义在include/linux/memblock.h中。首先是struct memblock_region，它描述一段连续的物理内存：</p>
+
+<pre>
+struct memblock_region {
+    phys_addr_t base;
+    phys_addr_t size;
+    unsigned long flags;
+#ifdef CONFIG_HAVE_MEMBLOCK_NODE_MAP
+    int nid;
+#endif
+};
+</pre>
+
+<p>每一段物理内存都有起始地址、长度、一些属性标记以及属于哪一个NUMA node。之后，用一个struct memblock_region的数组，表示所有的某一类内存：</p>
+
+<pre>
+struct memblock_type {
+    unsigned long cnt;      /* number of regions */
+    unsigned long max;      /* size of the allocated array */
+    phys_addr_t total_size; /* size of all regions */
+    struct memblock_region *regions;
+    char *name;
+};
+</pre>
+
+<p>那么有哪些类别的内存呢？在kernel只分两类：可用内存与保留内存。可用内存就是可以由伙伴分配器动态分配的内存，而保留内存通常是预留给某些硬件专用的。整个系统内所有的内存都由一个全局的struct memblock表示：</p>
+
+<pre>
+struct memblock {
+    bool bottom_up;  /* is bottom up direction? */
+    phys_addr_t current_limit;
+    <font color="red">struct memblock_type memory;
+    struct memblock_type reserved;</font>
+#ifdef CONFIG_HAVE_MEMBLOCK_PHYS_MAP
+    struct memblock_type physmem;
+#endif
+};
+
+<font color="red">extern struct memblock memblock;</font>
+</pre>
+
+<p>include/linux/memblock.h中定义、mm/memblock.c中实现了一个关键函数：</p>
+
+<pre>
+/**
+* memblock_add_range - add new memblock region
+* @type: memblock type to add new region into
+* @base: base address of the new region
+* @size: size of the new region
+* @nid: nid of the new region
+* @flags: flags of the new region
+*
+* Add new memblock region [@base,@base+@size) into @type.  The new region
+* is allowed to overlap with existing ones - overlaps don&#39;t affect already
+* existing regions.  @type is guaranteed to be minimal (all neighbouring
+* compatible regions are merged) after the addition.
+*
+* RETURNS:
+* 0 on success, -errno on failure.
+*/
+int __init_memblock memblock_add_range(struct memblock_type *type,
+                                phys_addr_t base, phys_addr_t size,
+                                int nid, unsigned long flags)
+</pre>
+
+<p>用于添加某一个类型的内存区域。之后，又实现了两个辅助函数，都是对memblock_add_range()的简单包装：</p>
+
+<pre>
+int __init_memblock memblock_add(phys_addr_t base, phys_addr_t size)
+{
+    phys_addr_t end = base + size - 1;
+
+    memblock_dbg(&quot;memblock_add: [%pa-%pa] %pF\n&quot;,
+                    &amp;base, &amp;end, (void *)_RET_IP_);
+
+    return memblock_add_range(<font color="red">&amp;memblock.memory</font>, base, size, MAX_NUMNODES, 0);
+}
+
+int __init_memblock memblock_reserve(phys_addr_t base, phys_addr_t size)
+{
+    phys_addr_t end = base + size - 1;
+
+    memblock_dbg(&quot;memblock_reserve: [%pa-%pa] %pF\n&quot;,
+                    &amp;base, &amp;end, (void *)_RET_IP_);
+
+    return memblock_add_range(<font color="red">&amp;memblock.reserved</font>, base, size, MAX_NUMNODES, 0);
+}
+</pre>
+
+<p>分别是添加一块可用内存和添加一块保留内存。</p>
+
+<p>回到arch/x86/kernel/e820.c。在产生了e820_table之后，kernel就需要根据e820_table来创建memblock，即把体系结构相关的物理内存信息转换成体系结构无关的物理内存信息。这个工作由</p>
+
+<pre>
+void __init e820__memblock_setup(void)
+{
+    int i;
+    u64 end;
+    u64 addr = 0;
+
+    /*
+    * The bootstrap memblock region count maximum is 128 entries
+    * (INIT_MEMBLOCK_REGIONS), but EFI might pass us more E820 entries
+    * than that - so allow memblock resizing.
+    *
+    * This is safe, because this call happens pretty late during x86 setup,
+    * so we know about reserved memory regions already. (This is important
+    * so that memblock resizing does no stomp over reserved areas.)
+    */
+    memblock_allow_resize();
+
+    for (i = 0; i &lt; e820_table-&gt;nr_entries; i++) {
+        struct e820_entry *entry = &amp;e820_table-&gt;entries[i];
+
+        end = entry-&gt;addr + entry-&gt;size;
+        if (addr &lt; entry-&gt;addr)
+            memblock_reserve(addr, entry-&gt;addr - addr);
+        addr = end;
+        if (end != (resource_size_t)end)
+            continue;
+
+        /*
+        * all !E820_TYPE_RAM ranges (including gap ranges) are put
+        * into memblock.reserved to make sure that struct pages in
+        * such regions are not left uninitialized after bootup.
+        */
+        <font color="red">if (entry-&gt;type != E820_TYPE_RAM &amp;&amp; entry-&gt;type != E820_TYPE_RESERVED_KERN)
+            memblock_reserve(entry-&gt;addr, entry-&gt;size);
+        else
+            memblock_add(entry-&gt;addr, entry-&gt;size);</font>
+    }
+
+    /* Throw away partial pages: */
+    memblock_trim_memory(PAGE_SIZE);
+
+    memblock_dump_all();
+}
+</pre>
+
+<p>完成。代码中标为红色的四行就是关键，对于E820_TYPE_RAM（也就是普通的可用内存）和E820_TYPE_RESERVED_KERN（被kernel代码占用的内存），加入可用内存中，由伙伴分配器管理。而其他类型的内存则加入保留内存中。从memblock_add()和memblock_reserve()的代码可以看出，目前为止，NUMA node的信息都是留空的。</p>
+
+<p>这里可以解释过去的一个疑惑了：为什么服务器上插的NVM内存条没有被kernel当作可用内存？这是因为BIOS通过e820_table向kernel报告了NVM内存条的起始地址、长度和类型，而其类型为E820_TYPE_PMEM。于是就被加入了保留内存中。如果将上面四行红色代码中第一行改为：</p>
+
+<pre>
+if (entry-&gt;type != E820_TYPE_RAM &amp;&amp; entry-&gt;type != E820_TYPE_RESERVED_KERN &amp;&amp; entry-&gt;type != E820_TYPE_PMEM)
+</pre>
+
+<p>那么NVM内存也会被当作可用内存了。</p>
+
+<p>至此，memblock信息已经建立好了，kernel即将可以使用伙伴分配器分配物理页了。</p>
+
+<p>==============================阶段四：划分内存区域=============================</p>
+
+<p>如果按照前面说的，让NVM内存也被当作可用内存，那么kernel分配内存时，岂不是有时分配的是RAM页，有时分配的是NVM页，而无法通过代码控制？这是无法接受的，我需要代码可以显式地分配RAM页还是NVM页。</p>
+
+<p>我最初想到的是，kernel中会对内存进行区域划分，比如ZONE_DMA、ZONE_NORMAL、ZONE_HIGHMEM等，而相应地，在分配页时，可以指定从哪个区域分配，比如GFP_DMA、GFP_HIGHMEM等等。那么，如果我额外定义一个类型，比如叫ZONE_PMEM，把NVM内存的物理地址划分到ZONE_PMEM里面，然后分配时指定一个GFP_PMEM的参数，不就可以明确地分配NVM页了吗？</p>
+
+<p>于是我研究了kernel中ZONE相关的代码。各种ZONE类型的定义在头文件include/linux/mmzone.h中。</p>
+
+<pre>
+enum zone_type {
+#ifdef CONFIG_ZONE_DMA
+    ZONE_DMA,
+#endif
+#ifdef CONFIG_ZONE_DMA32
+    ZONE_DMA32,
+#endif
+    ZONE_NORMAL,
+#ifdef CONFIG_HIGHMEM
+    ZONE_HIGHMEM,
+#endif
+    ZONE_MOVABLE,
+#ifdef CONFIG_ZONE_DEVICE
+    ZONE_DEVICE,
+#endif
+    __MAX_NR_ZONES
+};
+</pre>
+
+<p>于是__MAX_NR_ZONES自动地变成了ZONE的类型数量。在arch/x86/mm/init.c中，zone_sizes_init()函数完成了各个ZONE的划分：</p>
+
+<pre>
+void __init zone_sizes_init(void)
+{
+    unsigned long max_zone_pfns[MAX_NR_ZONES];
+
+    memset(max_zone_pfns, 0, sizeof(max_zone_pfns));
+
+#ifdef CONFIG_ZONE_DMA
+    max_zone_pfns[ZONE_DMA]         = min(MAX_DMA_PFN, max_low_pfn);
+#endif
+#ifdef CONFIG_ZONE_DMA32
+    max_zone_pfns[ZONE_DMA32]       = min(MAX_DMA32_PFN, max_low_pfn);
+#endif
+    max_zone_pfns[ZONE_NORMAL]      = max_low_pfn;
+#ifdef CONFIG_HIGHMEM
+    max_zone_pfns[ZONE_HIGHMEM]     = max_pfn;
+#endif
+
+    free_area_init_nodes(max_zone_pfns);
+}
+</pre>
+
+<p>可以发现，至今所有的物理内存管理都没有涉及到NUMA。我曾经一度困惑ZONE与NUMA到底是个怎样的关系。目前看，ZONE是一个全局的配置，与NUMA无关。ZONE对全局的物理地址空间进行划分。即使是NUMA，整个系统也只有一个全局的物理地址空间。因此，很有可能某个NUMA node既有ZONE_DMA，又有ZONE_NORMAL，而有的NUMA node可能只有ZONE_NORMAL，如下图所示的情况：</p>
+
+<p><img src="2.png"></p>
+
+<p>NUMA Node 0在ZONE_DMA与ZONE_NORMAL中各有一部分，而NUMA Node 1则在ZONE_NORMAL与ZONE_HIGHMEM中各有一部分。</p>
+
+<p>可以发现，ZONE的划分是一维线性的，灵活度不高。如果某段NVM在物理上处于两段RAM之间，那么就没法用ZONE的办法把它们分为两个“阵营”。</p>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
