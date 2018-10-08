@@ -627,7 +627,467 @@ void __init zone_sizes_init(void)
 
 <p>NUMA Node 0在ZONE_DMA与ZONE_NORMAL中各有一部分，而NUMA Node 1则在ZONE_NORMAL与ZONE_HIGHMEM中各有一部分。</p>
 
-<p>可以发现，ZONE的划分是一维线性的，灵活度不高。如果某段NVM在物理上处于两段RAM之间，那么就没法用ZONE的办法把它们分为两个“阵营”。</p>
+<p>可以发现，ZONE的划分是一维线性的，灵活度不高。如果某段NVM在物理上处于两段RAM之间，那么就没法用ZONE的办法把它们分为两个“阵营”。于是，功利性的我就没有对ZONE做太多的研究。其实以后有空可以研究一下ZONE_xxx与GFP_xxx之间的关联。</p>
+
+<p>===============================阶段五：创建NUMA节点================================</p>
+
+<p>既然没法使用ZONE的机制将NVM与RAM区分开来，我想到了Intel的OTC组的设计——虚拟一个NUMA节点，把NVM都关联到该虚拟节点上，这样分配内存页时，使用</p>
+
+<pre>
+/*
+* Allocate pages, preferring the node given as nid. When nid == NUMA_NO_NODE,
+* prefer the current CPU's closest node. Otherwise node must be valid and
+* online.
+*/
+struct page *alloc_pages_node(int nid, gfp_t gfp_mask, unsigned int order);
+</pre>
+
+<p>即在分配页指定NUMA节点号，即可显式控制分配NVM页还是RAM页。所以，我需要研究Linux是怎么创建NUMA节点的，我如何“虚构”NUMA信息呢？</p>
+
+<p>dmesg信息中绿色的部分就是NUMA相关的信息。代码都在arch/x86/mm/numa.c中。整个过程的入口是x86_numa_init()函数：</p>
+
+<pre>
+/**
+* x86_numa_init - Initialize NUMA
+*
+* Try each configured NUMA initialization method until one succeeds.  The
+* last fallback is dummy single node config encomapssing whole memory and
+* never fails.
+*/
+void __init x86_numa_init(void)
+{
+    if (!numa_off) {
+#ifdef CONFIG_ACPI_NUMA
+        if (!numa_init(x86_acpi_numa_init))
+            return;
+#endif
+#ifdef CONFIG_AMD_NUMA
+        if (!numa_init(amd_numa_init))
+            return;
+#endif
+    }
+
+    numa_init(dummy_numa_init);
+}
+</pre>
+
+<p>该函数被arch/x86/mm/numa_64.c（或者arch/x86/mm/numa_32.c，看系统是32位还是64位）调用。先看最最简单的、也是本实验中被执行的</p>
+
+<pre>
+numa_init(dummy_numa_init);
+</pre>
+
+<p>numa_init()函数的参数是一个函数指针：</p>
+
+<pre>
+static int __init numa_init(<font color="red">int (*init_func)(void)</font>)
+{
+    int i;
+    int ret;
+
+    for (i = 0; i &lt; MAX_LOCAL_APIC; i++)
+        set_apicid_to_node(i, NUMA_NO_NODE);
+
+    nodes_clear(numa_nodes_parsed);
+    nodes_clear(node_possible_map);
+    nodes_clear(node_online_map);
+    memset(&amp;numa_meminfo, 0, sizeof(numa_meminfo));
+    WARN_ON(memblock_set_node(0, ULLONG_MAX, &amp;memblock.memory,
+                    MAX_NUMNODES));
+    WARN_ON(memblock_set_node(0, ULLONG_MAX, &amp;memblock.reserved,
+                    MAX_NUMNODES));
+    /* In case that parsing SRAT failed. */
+    WARN_ON(memblock_clear_hotplug(0, ULLONG_MAX));
+    numa_reset_distance();
+
+    <font color="red">ret = init_func();</font>
+    if (ret &lt; 0)
+        return ret;
+
+    /*
+        * We reset memblock back to the top-down direction
+        * here because if we configured ACPI_NUMA, we have
+        * parsed SRAT in init_func(). It is ok to have the
+        * reset here even if we did't configure ACPI_NUMA
+        * or acpi numa init fails and fallbacks to dummy
+        * numa init.
+        */
+    memblock_set_bottom_up(false);
+
+    ret = numa_cleanup_meminfo(&amp;numa_meminfo);
+    if (ret &lt; 0)
+        return ret;
+
+    numa_emulation(&amp;numa_meminfo, numa_distance_cnt);
+
+    <font color="red">ret = numa_register_memblks(&amp;numa_meminfo);</font>
+    if (ret &lt; 0)
+        return ret;
+
+    for (i = 0; i &lt; nr_cpu_ids; i++) {
+        int nid = early_cpu_to_node(i);
+
+        if (nid == NUMA_NO_NODE)
+            continue;
+        if (!node_online(nid))
+            numa_clear_node(i);
+    }
+    <font color="red">numa_init_array();</font>
+
+    return 0;
+}
+</pre>
+
+<p>逻辑很简单，先是清空一些全局配置，之后调用传入的函数指针进行NUMA的配置，然后根据全局的numa_meminfo（NUMA的内存布局信息，由传入的函数指针负责创建）配置memblock（把各个内存块与NUMA节点关联）。最后则是把各个CPU core与NUMA节点关联。那么先来看传入的函数指针dummy_numa_init()干了什么：</p>
+
+<pre>
+/**
+* dummy_numa_init - Fallback dummy NUMA init
+*
+* Used if there's no underlying NUMA architecture, NUMA initialization
+* fails, or NUMA is disabled on the command line.
+*
+* Must online at least one node and add memory blocks that cover all
+* allowed memory.  This function must not fail.
+*/
+static int __init dummy_numa_init(void)
+{
+    printk(KERN_INFO "%s\n",
+            numa_off ? "NUMA turned off" : "No NUMA configuration found");
+    printk(KERN_INFO "Faking a node at [mem %#018Lx-%#018Lx]\n",
+            0LLU, PFN_PHYS(max_pfn) - 1);
+
+    <font color="red">node_set(0, numa_nodes_parsed);
+    numa_add_memblk(0, 0, PFN_PHYS(max_pfn));</font>
+
+    return 0;
+}   
+</pre>
+
+<p>这个函数是默认的NUMA初始化函数，通常是系统没有NUMA配置时被调用。Linux中，任何机器都被看作NUMA。如果是UMA（比如四核笔记本常用的SMP架构），就被看作只有一个节点的NUMA系统。因此，dummy_numa_init()首先通过node_set()标记节点0可用，再通过numa_add_memblock()把所有的物理内存都关联到节点0，从而伪造了一个NUMA节点。</p>
+
+<p>numa_nodes_parsed是一个全局的bitmap，其定义如下：</p>
+
+<pre>
+nodemask_t numa_nodes_parsed __initdata;
+</pre>
+
+<p>nodemask_t的类型定义在include/linux/nodemask.h中：</p>
+
+<pre>
+typedef struct { DECLARE_BITMAP(bits, MAX_NUMNODES); } nodemask_t;
+</pre>
+
+<p>node_set()是一个宏，展开后如下：</p>
+
+<pre>
+#define node_set(node, dst) __node_set((node), &amp;(dst))
+
+static __always_inline void __node_set(int node, volatile nodemask_t *dstp)
+{
+    set_bit(node, dstp->bits);
+}
+</pre>
+
+<p>所以很明了，numa_nodes_parsed的第i位置为1则表示节点i可用。</p>
+
+<p>那么numa_add_memblks()是怎么做的呢？</p>
+
+<pre>
+static int __init numa_add_memblk_to(int nid, u64 start, u64 end,
+    struct numa_meminfo *mi)
+{
+    /* ignore zero length blks */
+    if (start == end)
+        return 0;
+
+    /* whine about and ignore invalid blks */
+    if (start &gt; end || nid &lt; 0 || nid &gt;= MAX_NUMNODES) {
+        pr_warning("NUMA: Warning: invalid memblk node %d [mem %#010Lx-%#010Lx]\n",
+            nid, start, end - 1);
+        return 0;
+    }
+
+    if (mi-&gt;nr_blks &gt;= NR_NODE_MEMBLKS) {
+        pr_err("NUMA: too many memblk ranges\n");
+        return -EINVAL;
+    }
+
+    <font color="red">mi-&gt;blk[mi-&gt;nr_blks].start = start;
+    mi-&gt;blk[mi-&gt;nr_blks].end = end;
+    mi-&gt;blk[mi-&gt;nr_blks].nid = nid;
+    mi-&gt;nr_blks++;</font>
+    return 0;
+}
+
+/**
+* numa_add_memblk - Add one numa_memblk to numa_meminfo
+* @nid: NUMA node ID of the new memblk
+* @start: Start address of the new memblk
+* @end: End address of the new memblk
+*
+* Add a new memblk to the default numa_meminfo.
+*
+* RETURNS:
+* 0 on success, -errno on failure.
+*/
+int __init numa_add_memblk(int nid, u64 start, u64 end)
+{
+   return numa_add_memblk_to(nid, start, end, <font color="red">&amp;numa_meminfo</font>);
+}
+</pre>
+
+<p>看来numa_meminfo就是一个全局的列表，每一项都是(起始地址, 结束地址, 节点编号)的三元组，描述了内存块与NUMA节点的关联关系。当dummy_numa_init()设置好了numa_meminfo后，numa_init()函数就调用了numa_register_memblks(&amp;numa_meminfo)，该函数根据numa_meminfo将每一个memblock与NUMA节点号关联，并且创建每一个NUMA节点。其逻辑如下：</p>
+
+<pre>
+static int __init numa_register_memblks(struct numa_meminfo *mi)
+{
+    unsigned long uninitialized_var(pfn_align);
+    int i, nid;
+
+    /* Account for nodes with cpus and no memory */
+    node_possible_map = numa_nodes_parsed;
+    numa_nodemask_from_meminfo(&amp;node_possible_map, mi);
+    if (WARN_ON(nodes_empty(node_possible_map)))
+        return -EINVAL;
+
+    for (i = 0; i &lt; mi-&gt;nr_blks; i++) {
+        struct numa_memblk *mb = &amp;mi-&gt;blk[i];
+        <font color="red">memblock_set_node(mb-&gt;start, mb-&gt;end - mb-&gt;start,
+                    &amp;memblock.memory, mb-&gt;nid);</font>
+    }
+
+    /*
+    * At very early time, the kernel have to use some memory such as
+    * loading the kernel image. We cannot prevent this anyway. So any
+    * node the kernel resides in should be un-hotpluggable.
+    *
+    * And when we come here, alloc node data won't fail.
+    */
+    numa_clear_kernel_node_hotplug();
+
+    /*
+    * If sections array is gonna be used for pfn -&gt; nid mapping, check
+    * whether its granularity is fine enough.
+    */
+#ifdef NODE_NOT_IN_PAGE_FLAGS
+    pfn_align = node_map_pfn_alignment();
+    if (pfn_align &amp;&amp; pfn_align &lt; PAGES_PER_SECTION) {
+        printk(KERN_WARNING "Node alignment %LuMB &lt; min %LuMB, rejecting NUMA config\n",
+                PFN_PHYS(pfn_align) &gt;&gt; 20,
+                PFN_PHYS(PAGES_PER_SECTION) &gt;&gt; 20);
+        return -EINVAL;
+    }
+#endif
+    if (!numa_meminfo_cover_memory(mi))
+        return -EINVAL;
+
+    /* Finally register nodes. */
+    for_each_node_mask(nid, node_possible_map) {
+        u64 start = PFN_PHYS(max_pfn);
+        u64 end = 0;
+
+        for (i = 0; i &lt; mi-&gt;nr_blks; i++) {
+            if (nid != mi-&gt;blk[i].nid)
+                continue;
+            start = min(mi-&gt;blk[i].start, start);
+            end = max(mi-&gt;blk[i].end, end);
+        }
+
+        if (start &gt;= end)
+            continue;
+
+        /*
+            * Don't confuse VM with a node that doesn't have the
+            * minimum amount of memory:
+            */
+        if (end &amp;&amp; (end - start) &lt; NODE_MIN_SIZE)
+            continue;
+    
+        <font color="red">alloc_node_data(nid);</font>
+    }
+
+    /* Dump memblock with node info and return. */
+    memblock_dump_all();
+    return 0;
+}
+</pre>
+
+<p>在alloc_node_data()之后，伙伴分配器就能使用了~</p>
+
+<p>在numa_init()的最后，调用了numa_init_array()，该函数用于将各个CPU core与NUMA节点关联，代码很简单：</p>
+
+<pre>
+/*
+* There are unfortunately some poorly designed mainboards around that
+* only connect memory to a single CPU. This breaks the 1:1 cpu-&gt;node
+* mapping. To avoid this fill in the mapping for all possible CPUs,
+* as the number of CPUs is not known yet. We round robin the existing
+* nodes.
+*/
+static void __init numa_init_array(void)
+{
+    int rr, i;
+
+    rr = first_node(node_online_map);
+    for (i = 0; i &lt; nr_cpu_ids; i++) {
+        if (early_cpu_to_node(i) != NUMA_NO_NODE)
+            continue;
+        numa_set_node(i, rr);
+        rr = next_node_in(rr, node_online_map);
+    }
+}
+</pre>
+
+<p>CPU core 0关联到NUMA node 0，CPU core 1关联到NUMA node 1，CPU core 2关联到NUMA node 0，CPU core 3关联到NUMA node 1，如此循环。</p>
+
+<p>OK，全部结束！</p>
+
+<p>=================================最后小试验====================================</p>
+
+<p>既然知道了Linux是在哪里、是怎么创建NUMA节点的，那么就让我试试“虚构”一个NUMA节点。</p>
+
+<p>首先，看看当前NUMA的结构：</p>
+
+<p><img src="3.png"></p>
+
+<p>只有一个节点，四个CPU core都挂在上面，而且节点0有481MB的内存。</p>
+
+<p>把dummy_numa_init改成这样：</p>
+
+<pre>
+/**
+* dummy_numa_init - Fallback dummy NUMA init
+*
+* Used if there's no underlying NUMA architecture, NUMA initialization
+* fails, or NUMA is disabled on the command line.
+*
+* Must online at least one node and add memory blocks that cover all
+* allowed memory.  This function must not fail.
+*/
+static int __init dummy_numa_init(void)
+{
+    printk(KERN_INFO "%s\n",
+            numa_off ? "NUMA turned off" : "No NUMA configuration found");
+    printk(KERN_INFO "Faking a node at [mem %#018Lx-%#018Lx]\n",
+            0LLU, PFN_PHYS(max_pfn) - 1);
+
+    <font color="red">//node_set(0, numa_nodes_parsed);
+    //numa_add_memblk(0, 0, PFN_PHYS(max_pfn));
+
+    node_set(0, numa_nodes_parsed);
+    numa_add_memblk(0, 0, PFN_PHYS(max_pfn) - (32 &lt;&lt; 20));
+
+    node_set(1, numa_nodes_parsed);
+    numa_add_memblk(1, PFN_PHYS(max_pfn) - (32 &lt;&lt; 20), PFN_PHYS(max_pfn));</font>
+
+    return 0;
+}   
+</pre>
+
+<p>也就是说，最后的32MB内存划分到NUMA Node 1上。</p>
+
+<pre>
+# 进入内核目录
+make
+sudo make install
+</pre>
+
+<p>安装好新内核后，重启。再次查看NUMA结构：</p>
+
+<p><img src="4.png"></p>
+
+<p>果然，变成了两个NUMA Node，而且节点1有31MB内存（节点的数据结构本身要占用一些内存），与代码逻辑一致。不过，这离最终方案还有些距离，最终的方案希望虚拟的Node只用来管理NVM内存，但是不要干预CPU。所以，我要让节点1只有内存，但是不要有CPU core。在这个试验中，改起来很方便，在numa_init_array()中注释掉一行：</p>
+
+<pre>
+static void __init numa_init_array(void)
+{
+    int rr, i;
+
+    rr = first_node(node_online_map);
+    for (i = 0; i &lt; nr_cpu_ids; i++) {
+        if (early_cpu_to_node(i) != NUMA_NO_NODE)
+            continue;
+        numa_set_node(i, rr);
+        <font color="red">//rr = next_node_in(rr, node_online_map);</font>
+    }
+}
+</pre>
+
+<p>编译安装内核，重启，再次查看NUMA信息：</p>
+
+<p><img src="5.png"></p>
+
+<p>果然，4个CPU core都挂在了NUMA Node 0上了。而且可以发现一个细节，上面一张图中，Node 1的内存都被用完了，而这里还剩很多（相对于32MB总大小而言）。这说明，Linux在分配内存时，默认情况下，确实会优先分配当前CPU所在Node的内存。因为上面一个试验中，Node 1上也有CPU，所以很快被分完了。而这次试验中，Node 1没有CPU，所以不怎么会分配Node 1上的内存。</p>
+
+<p>接下来，我要验证一下，</p>
+
+<pre>
+/*
+* Allocate pages, preferring the node given as nid. When nid == NUMA_NO_NODE,
+* prefer the current CPU's closest node. Otherwise node must be valid and
+* online.
+*/
+struct page *alloc_pages_node(int nid, gfp_t gfp_mask, unsigned int order);
+</pre>
+
+<p>是否确实可以如设想的那样分配指定节点的内存。</p>
+
+<p>编写内核模块numapages.c：</p>
+
+<pre>
+#include &lt;linux/mm.h&gt;
+#include &lt;linux/module.h&gt;
+
+MODULE_LICENSE("Dual BSD/GPL");
+
+static int init(void)
+{
+    struct page* page = <font color="red">alloc_pages_node(1, GFP_KERNEL, 0);</font>
+    if(!page)
+    {
+        printk("alloc_pages_node() failed!\n");
+        return -ENOMEM;
+    }
+    printk("physical address: %llx\n", virt_to_phys(page_address(page)));
+    __free_pages(page, 0); 
+    return -EINVAL;
+}
+
+module_init(init);
+</pre>
+
+<p>之所以返回-EINVAL，是为了模块加载不成功，这样就不需要手工卸载了。</p>
+
+<p>Makefile如下：</p>
+
+<pre>
+obj-m := numapages.o
+KERNEL_DIR := /lib/modules/$(shell uname -r)/build
+PWD := $(shell pwd)
+
+all:
+	make -C $(KERNEL_DIR) SUBDIRS=$(PWD) modules
+
+clean:
+	rm -f *.o *.ko *.mod.c *.order *.symvers
+
+.PHONY: clean
+</pre>
+
+<p>make后，每次插入模块都会失败，然后可以看dmesg最后一行，看看模块中分配得到的页的物理地址：</p>
+
+<pre>
+sudo insmod numapages.ko; dmesg | tail -n 1
+</pre>
+
+<p><img src="6.png"></p>
+
+<p>验证一下是否真的是在Node 1上。通过dmesg可以看到启动时的信息：</p>
+
+<p><img src="7.png"></p>
+
+<p>果然，地址落在0x000000001dffe000-0x000000001fffdfff之间。</p>
 
                             </div>
                         </article>
