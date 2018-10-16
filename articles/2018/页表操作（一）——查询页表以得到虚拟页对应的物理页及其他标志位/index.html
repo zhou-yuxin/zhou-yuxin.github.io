@@ -119,7 +119,7 @@ unsigned long user_addr_to_phy_addr(unsigned long address)
 
 #define IOCTL_CMD_GET_PHYADDR   1234
 
-unsigned long user_addr_to_phy_addr(unsigned long address)
+static unsigned long user_addr_to_phy_addr(unsigned long address)
 {
     pgd_t* pgd;
     p4d_t* p4d;
@@ -299,6 +299,10 @@ gcc -std=gnu99 test.c -o exe
 <p>可以看到/proc/self/pagemap与/dev/phyaddr给出的结果是一致的：</p>
 
 <p><img src="4.png"></p>
+
+<p>那么还有个问题：页框号之后的12位空着做啥呢？其实另有妙用，比如存放该页的权限、access位和dirty位等。以IA64为例，pte可以访问及设置如下标志位：</p>
+
+<p><img src="5.png"></p>
 
                             </div>
                         </article>

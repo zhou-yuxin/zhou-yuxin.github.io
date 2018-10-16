@@ -1,0 +1,436 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>页表操作（二）——页替换</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">页表操作（二）——页替换</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>前面在《<a href="../页表操作（一）——查询页表以得到虚拟页对应的物理页及其他标志位/index.html">页表操作（一）——查询页表以得到虚拟页对应的物理页及其他标志位</a>》中我已经搞清楚了页表的结构。可以看到，页表项其实就是一个64位整数，由物理页框号与一些标志位构成。</p>
+
+<p>我已经多次提到，我需要能够动态地把一个DRAM的页替换为NVM的页，那么我是否可以修改页表项，把其中表示物理页框号的几位（x86_64上是36位）改为一个NVM页的物理页框号呢？或者更普适的说法是，我能否通过修改页表项，把虚拟页换到另一个物理页上呢？于是我做了实验，证明是可行的，但是有一些附带的细节需要处理。</p>
+
+<p>首先，我实现一个函数，用于获取一个用户虚拟地址所在页的页表项的指针：</p>
+
+<pre>
+static pte_t* get_pte_by_user_addr(unsigned long address)
+{
+    pgd_t* pgd;
+    p4d_t* p4d;
+    pud_t* pud;
+    pmd_t* pmd;
+    pte_t* pte;
+    struct mm_struct *mm = current-&gt;mm;
+    pgd = pgd_offset(mm, address);
+    if(pgd_none(*pgd) || pgd_bad(*pgd))
+        return NULL;
+    p4d = p4d_offset(pgd, address);
+    if(p4d_none(*p4d) || p4d_bad(*p4d))
+        return NULL;
+    pud = pud_offset(p4d, address);
+    if(pud_none(*pud) || pud_bad(*pud))
+        return NULL;
+    pmd = pmd_offset(pud, address);
+    if(pmd_none(*pmd) || pmd_bad(*pmd))
+        return NULL;
+    pte = pte_offset_kernel(pmd, address);
+    if(pte_none(*pte))
+        return NULL;
+    return pte;
+}
+</pre>
+
+<p>如果理解了《<a href="../页表操作（一）——查询页表以得到虚拟页对应的物理页及其他标志位/index.html">页表操作（一）——查询页表以得到虚拟页对应的物理页及其他标志位</a>》，那么这段代码不需要解释。</p>
+
+<p>得到了指针pte_t* ptr_pte，接下来，无非就是把获取的指针指向的64位整数修改一下。我最初觉得就是很简单的几步：
+<ul>
+    <li>struct page* new_page = alloc_page(...);  //申请一个新页</li>
+    <li>pgprot_t prot = pte_pgprot(*ptr_pte);   //获取本来的页权限</li>
+    <li>pte_t new_pte = mk_pte(new_page, prot);  //构建新的页表项</li>
+    <li>set_pte(ptr_pte, new_pte);  //把新的页表项赋值到指针指向的地方</li>
+</ul>
+于是我写了第一个版本的代码：
+</p>
+
+<pre>
+static long ioctl(struct file* file, unsigned int cmd, unsigned long arg)
+{
+    if(cmd == IOCTL_CMD_GET_PHYADDR)
+    {
+        // do something
+    }
+    else if(cmd == IOCTL_CMD_REPLACE_PAGE)
+    {
+        unsigned long user_addr = arg;
+        pte_t* pte;
+        struct page* new_page;
+        if(!(pte = get_pte_by_user_addr(user_addr)))
+            return -EINVAL;
+        if(!(new_page = alloc_page(GFP_HIGHUSER_MOVABLE | __GFP_ZERO)))
+            return -ENOMEM;
+        set_pte(pte, mk_pte(new_page, pte_pgprot(*pte)));
+        return 0;
+    }
+    return -EINVAL;
+}
+</pre>
+
+<p>应用程序通过ioctl()传入一个虚拟地址，我的内核模块就会把该虚拟地址所在的物理页换到一个新的页上去。测试发现，程序运行过程中并没有问题，但是，当程序结束时，内核就报了一堆bug：</p>
+
+<p><img src="1.png"></p>
+
+<p>Call Trace的信息是不准确的，因为kernel编译时，开启了优化，导致很多static函数都被inline了。通过字符串“BUG: Bad page map in process”，我找到了这个在mm/memory.c的print_bad_pte()函数内部：</p>
+
+<pre>
+/*
+* This function is called to print an error when a bad pte
+* is found. For example, we might have a PFN-mapped pte in
+* a region that doesn't allow it.
+*
+* The calling function must still handle the error.
+*/
+static void print_bad_pte(struct vm_area_struct *vma, unsigned long addr,
+                pte_t pte, struct page *page)
+{
+    // ...
+    pr_alert(&quot;BUG: Bad page map in process %s  pte:%08llx pmd:%08llx\n&quot;,
+        current-&gt;comm,
+        (long long)pte_val(pte), (long long)pmd_val(*pmd));
+    if (page)
+        dump_page(page, &quot;bad pte&quot;);
+    // ...
+}
+</pre>
+
+<p>从dmesg可以看出，print_bad_pte()的page参数不是NULL，因为dmesg中有page的dump信息。而print_bad_pte()是一个static函数，因此调用者一定在mm/memory.c文件中。mm/memory.c中共有五处调用了print_bad_pte()，巧的是，只有一处调用是填了page参数，其他四处page参数都是NULL。这一处调用位于</p>
+
+<pre>
+static unsigned long zap_pte_range(struct mmu_gather *tlb,
+                struct vm_area_struct *vma, pmd_t *pmd,
+                unsigned long addr, unsigned long end,
+                struct zap_details *details)
+{
+    // ...
+            rss[mm_counter(page)]--;
+            page_remove_rmap(page, false);
+            if (unlikely(<font color="red">page_mapcount(page) &lt; 0</font>))
+                print_bad_pte(vma, addr, ptent, page);
+    // ...
+}
+</pre>
+
+<p>也就是说，page_mapcount(page) &lt; 0引起了这个bug。page_mapcount()定义在include/linux/mm.h中：</p>
+
+<pre>
+static inline int page_mapcount(struct page *page)
+{
+    VM_BUG_ON_PAGE(PageSlab(page), page);
+
+    if (unlikely(PageCompound(page)))
+        return __page_mapcount(page);
+    return <font color="red">atomic_read(&amp;page-&gt;_mapcount) + 1</font>;
+}
+</pre>
+
+<p>结合网上的资料得知，struct page的mapcount信息记录了一个页被同时映射的数量。比如，如果两个进程共享同一个物理页，那么这个页的page_mapcount()返回2。而struct page的_mapcount字段则是这个数字减1，这只是为了原子操作时方便。</p>
+
+<p>现在我清楚了，<font color="red"><strong>当我用一个新的页替换老的页时，老的页的_mapcount需要减1，而新的页的_mapcount需要加1。</strong></font>毕竟，对老的页而言，少了一个映射，而对新的页而言，多了一个映射。这个bug是因为，新的页没有增加_mapcount，于是当进程退出时，mapcount()被减到了-1。这就吻合了dmesg中第二行信息中mapcount: -1。</p>
+
+<p>于是我改了代码，增加了对_mapcount的操作：</p>
+
+<pre>
+static long ioctl(struct file* file, unsigned int cmd, unsigned long arg)
+{
+    if(cmd == IOCTL_CMD_GET_PHYADDR)
+    {
+        // do something
+    }
+    else if(cmd == IOCTL_CMD_REPLACE_PAGE)
+    {
+        unsigned long user_addr = arg;
+        pte_t* pte;
+        struct page* old_page;
+        struct page* new_page;
+        if(!(pte = get_pte_by_user_addr(user_addr)))
+            return -EINVAL;
+        old_page = pte_page(*pte);
+        if(!(new_page = alloc_page(GFP_HIGHUSER_MOVABLE | __GFP_ZERO)))
+            return -ENOMEM;
+        set_pte(pte, mk_pte(new_page, pte_pgprot(*pte)));
+        <font color="red">atomic_dec(&amp;(old_page-&gt;_mapcount));
+        atomic_inc(&amp;(new_page-&gt;_mapcount));</font>
+        return 0;
+    }
+    return -EINVAL;
+}
+</pre>
+
+<p>现在，少了_mapcount的bug，但是还有一个bug：</p>
+
+<p><img src="2.png"></p>
+
+<p>貌似是关于rss-counter。依旧是老办法，查看这个bug是哪里输出的。搜索“BUG: Bad rss-counter state”，发现来自于kernel/fork.c中的check_mm()函数：</p>
+
+<pre>
+static void check_mm(struct mm_struct *mm)
+{
+    int i;
+
+    for (i = 0; i &lt; NR_MM_COUNTERS; i++) {
+        long x = atomic_long_read(&amp;mm-&gt;rss_stat.count[i]);
+
+        if (unlikely(x))
+            printk(KERN_ALERT &quot;BUG: Bad rss-counter state &quot;
+                        &quot;mm:%p idx:%d val:%ld\n&quot;, mm, i, x);
+    }
+
+    // ...
+}
+</pre>
+
+<p>原因是mm-&gt;rss_stat.count[]数组中第0项是-1，而第1项是1。而预期的是全为0。又是一个计数器问题！我在mm/memory.c中看到了这么一段代码会操作rss_stat.count[]数组：</p>
+
+<pre>
+static void add_mm_counter_fast(struct mm_struct *mm, int member, int val)
+{
+    struct task_struct *task = current;
+
+    if (likely(task-&gt;mm == mm))
+        task-&gt;rss_stat.count[member] += val;
+    else
+        add_mm_counter(mm, member, val);
+}
+
+#define inc_mm_counter_fast(mm, member) add_mm_counter_fast(mm, member, 1)
+#define dec_mm_counter_fast(mm, member) add_mm_counter_fast(mm, member, -1)
+</pre>
+
+<p>所以rss_stat.count[]这个数组是可以直接加减的，而member怎么产生的呢？可以通过定义在include/linux/mm.h中的mm_counter()来获取。所以我又改了代码：</p>
+
+<pre>
+static long ioctl(struct file* file, unsigned int cmd, unsigned long arg)
+{
+    if(cmd == IOCTL_CMD_GET_PHYADDR)
+    {
+        // do something
+    }
+    else if(cmd == IOCTL_CMD_REPLACE_PAGE)
+    {
+        unsigned long user_addr = arg;
+        pte_t* pte;
+        struct page* old_page;
+        struct page* new_page;
+        if(!(pte = get_pte_by_user_addr(user_addr)))
+            return -EINVAL;
+        old_page = pte_page(*pte);
+        if(!(new_page = alloc_page(GFP_HIGHUSER_MOVABLE | __GFP_ZERO)))
+            return -ENOMEM;
+        set_pte(pte, mk_pte(new_page, pte_pgprot(*pte)));
+        atomic_dec(&amp;(old_page-&gt;_mapcount));
+        atomic_inc(&amp;(new_page-&gt;_mapcount));
+        <font color="red">current-&gt;rss_stat.count[mm_counter(old_page)]--;
+        current-&gt;rss_stat.count[mm_counter(new_page)]++;</font>
+        return 0;
+    }
+    return -EINVAL;
+}
+</pre>
+
+<p>好了，现在就没有kernel bug了~不过我后来发现，free -h得到的空闲内存越来越少，后来意识到，old_page应该还需要释放掉，不然就会内存泄漏吧。最后还有一个细节需要注意，就是<font color="red"><strong>需要flush TLB里面的页表项，否则在实际应用中，TLB没有更新的话，可能还会去访问之前的页</strong></font>。TBL刷新的函数定义在arch/x86/include/asm/tlbflush.h中。这里可以给出完整的代码了（pte.c）：
+</p>
+
+<pre>
+#include &lt;linux/fs.h&gt;
+#include &lt;linux/mm.h&gt;
+#include &lt;linux/sched.h&gt;
+#include &lt;linux/module.h&gt;
+#include &lt;asm/tlbflush.h&gt;
+#include &lt;linux/uaccess.h&gt;
+
+#define MODULE_MAJOR            224
+#define MODULE_NAME             &quot;pte&quot;
+
+#define IOCTL_CMD_GET_PHYADDR   1201
+#define IOCTL_CMD_REPLACE_PAGE  1202
+
+static pte_t* get_pte_by_user_addr(unsigned long address)
+{
+    pgd_t* pgd;
+    p4d_t* p4d;
+    pud_t* pud;
+    pmd_t* pmd;
+    pte_t* pte;
+    struct mm_struct *mm = current-&gt;mm;
+    pgd = pgd_offset(mm, address);
+    if(pgd_none(*pgd) || pgd_bad(*pgd))
+        return NULL;
+    p4d = p4d_offset(pgd, address);
+    if(p4d_none(*p4d) || p4d_bad(*p4d))
+        return NULL;
+    pud = pud_offset(p4d, address);
+    if(pud_none(*pud) || pud_bad(*pud))
+        return NULL;
+    pmd = pmd_offset(pud, address);
+    if(pmd_none(*pmd) || pmd_bad(*pmd))
+        return NULL;
+    pte = pte_offset_kernel(pmd, address);
+    if(pte_none(*pte))
+        return NULL;
+    return pte;
+}
+
+static unsigned long user_addr_to_phy_addr(unsigned long address)
+{
+    pte_t* pte = get_pte_by_user_addr(address);
+    if(!pte)
+        return 0;
+    return (pte_val(*pte) &amp; PTE_PFN_MASK) | (address &amp; ~PAGE_MASK);
+}
+
+static long ioctl(struct file* file, unsigned int cmd, unsigned long arg)
+{
+    if(cmd == IOCTL_CMD_GET_PHYADDR)
+    {
+        unsigned long user_addr, phy_addr;
+        if(copy_from_user(&amp;user_addr, (void*)arg, sizeof(unsigned long)) != 0)
+            return -EINVAL;
+        phy_addr = user_addr_to_phy_addr(user_addr);
+        if(copy_to_user((void*)arg, &amp;phy_addr, sizeof(unsigned long)) != 0)
+            return -EINVAL;
+        return 0;
+    }
+    else if(cmd == IOCTL_CMD_REPLACE_PAGE)
+    {
+        unsigned long user_addr = arg;
+        pte_t* pte;
+        struct page* old_page;
+        struct page* new_page;
+        if(!(pte = get_pte_by_user_addr(user_addr)))
+            return -EINVAL;
+        old_page = pte_page(*pte);
+        if(!(new_page = alloc_page(GFP_HIGHUSER_MOVABLE | __GFP_ZERO)))
+            return -ENOMEM;
+        set_pte(pte, mk_pte(new_page, pte_pgprot(*pte)));
+        atomic_dec(&amp;(old_page-&gt;_mapcount));
+        atomic_inc(&amp;(new_page-&gt;_mapcount));
+        current-&gt;rss_stat.count[mm_counter(old_page)]--;
+        current-&gt;rss_stat.count[mm_counter(new_page)]++;
+        __free_page(old_page);
+        __native_flush_tlb_one_user(user_addr &amp; PAGE_MASK);
+        return 0;
+    }
+    return -EINVAL;
+}
+
+static struct file_operations fops =
+{
+    .owner = THIS_MODULE,
+    .unlocked_ioctl = ioctl,
+};
+
+static int init(void)
+{
+    int ret;
+    if((ret = register_chrdev(MODULE_MAJOR, MODULE_NAME, &amp;fops)) &lt; 0)
+    {
+        printk(&quot;Unable to register device '%s'\n&quot;, MODULE_NAME);
+        return ret;
+    }
+    return 0;
+}
+
+static void cleanup(void)
+{
+    unregister_chrdev(MODULE_MAJOR, MODULE_NAME);
+}
+
+module_init(init);
+module_exit(cleanup);
+
+MODULE_LICENSE(&quot;Dual BSD/GPL&quot;);
+</pre>
+
+<p>写一个应用程序test.c测试一下：</p>
+
+<pre>
+#include &lt;fcntl.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/mman.h&gt;
+#include &lt;sys/ioctl.h&gt;
+
+#define PAGE_SIZE               4096
+
+#define IOCTL_CMD_GET_PHYADDR   1201
+#define IOCTL_CMD_REPLACE_PAGE  1202
+
+int main()
+{
+    char* base = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    assert(base != MAP_FAILED);
+    strcpy(base, &quot;hello&quot;);
+
+    size_t vaddr = (size_t)base + 7;
+    printf(&quot;vaddr: %lx\n&quot;, vaddr);
+
+    int fd = open(&quot;/dev/pte&quot;, O_RDWR);
+    assert(fd &gt; 0);
+
+    size_t phyaddr = vaddr;
+    int ret = ioctl(fd, IOCTL_CMD_GET_PHYADDR, &amp;phyaddr);
+    assert(ret == 0);
+    printf(&quot;phyaddr: %lx\n&quot;, phyaddr);
+
+    ret = ioctl(fd, IOCTL_CMD_REPLACE_PAGE, vaddr);
+    assert(ret == 0);
+
+    phyaddr = vaddr;
+    ret = ioctl(fd, IOCTL_CMD_GET_PHYADDR, &amp;phyaddr);
+    assert(ret == 0);
+    printf(&quot;phyaddr: %lx\n&quot;, phyaddr);
+
+    printf(&quot;%d\n&quot;, base[0]);
+
+    return 0;
+}
+</pre>
+
+<p>编译运行：</p>
+
+<pre>
+gcc -std=gnu99 test.c -o exe
+sudo ./exe
+</pre>
+
+<p><img src="3.png"></p>
+
+<p>符合预期，因为/dev/pte用一个新的初始化为0的页替换了base所在的页，因此base[0]为0。而如果把pte.c中__native_flush_tlb_one_user(user_addr &amp; PAGE_MASK);一行去掉，那么运行结果为：</p>
+
+<p><img src="4.png"></p>
+
+<p>也就是说，base[0]依旧是字符's'，这就是TLB没有刷新的关系！</p>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
