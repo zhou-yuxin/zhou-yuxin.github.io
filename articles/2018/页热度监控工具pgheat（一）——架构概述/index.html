@@ -1,0 +1,52 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>页热度监控工具pgheat（一）——架构概述</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">页热度监控工具pgheat（一）——架构概述</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>最近要开始改内核了，紧张~</p>
+
+<p>这个项目隶属于整个大项目，即使用3D XPoint内存条来部分替换DRAM内存。3D XPoint是英特尔研发的一种存储技术，用它做成的内存条具有持久化的特性（以下称为NVM内存）。当然，它还有一个特性就是造价比DRAM便宜很多，尽管性能也要差一些。这个大项目的目标，就是在一台服务器上同时插上DRAM内存条与NVM内存条，将程序中比较热的数据放到DRAM上，而把比较冷的数据放到NVM上，这样，就能在保证程序性能不受太多影响的情况下，大大降低内存的硬件成本。</p>
+
+<p>显然，这个大项目的关键，就是得知哪些数据是冷的，哪些数据是热的。可惜，现在的硬件或OS架构，并没有提供现成的统计数据，这是可以理解的，因为在传统的纯DRAM存储体系下，没有这个必要。</p>
+
+<p>这里进一步明确，<strong><font color="red">热度统计单位是一个4K内存页</font></strong>。因为如果要做到不修改应用程序（即让内存类型对应用程序透明），那么数据的单位只能是内存页。如果有些服务器应用使用2M的巨页(huge page)，那么必须改为使用4K页。应用程序使用2M巨页的原因是巨页可以大幅降低TLB的miss率，从而提升性能。但是，当使用DRAM + NVM混合内存后，巨页带来的危害远大于提升的一点性能。当使用4K页时，一个热的字节只会导致其所在的4K页被当作热页；而使用2M巨页后，就会导致所在的2M巨页都被当作热页。形象地说，本来只是“株连九族”，现在却要“屠城”了。不仅页的迁移代价高昂，而且使得NVM利用率大大降低（本来明明可以放在NVM上的冷数据，却因为与一个热字节同处一个巨页内，而不能放到NVM上）。</p>
+
+<p>我要统计页的热度，思路是这样的：在进程的虚拟地址空间中，随机挑选一个虚拟页，顺着分级页表找到其对应页表项（下称PTE）。页表项记录了该页对应的物理页号以及一些标志位。然后把该PTE设置为不可访问（形象地称为“埋雷”）。当应用程序试图访问这个页时，MMU会检测到权限异常，就会触发page fault（形象地称为“踩雷”）。我截断OS原来的page fault处理逻辑，先检查这个page fault是不是因为“踩雷”引起的。如果不是，则交由OS本来的逻辑处理。如果确实是“踩雷”了，那么我就把该页对应的PTE重新设置为可以访问（形象地称为“排雷”）。这样，我就得到了一次统计（具体如何统计由决策层决定，比如把该页对应的热度值加一），而应用程序浑然不知底层发生的一切。</p>
+
+<p>“埋雷”本身有开销，而“踩雷”会导致进程上下文切换、执行“排雷”逻辑，也会造成显著的性能开销，而且这一部分性能开销是同步的（在“排雷”时，应用程序是被阻塞的，形象地说就是“记在应用程序头上”）。为了避免统计过程对应用程序造成过大负担，我采用随机抽样统计的策略，比如每100ms随机抽取10%的页。</p>
+    
+<p>阐释了硬件上的原理之后，也就是阐释了“能力”问题。接下来就是设计软件架构。
+<ol>
+<li>对于Linux Kernel的修改肯定是免不了的，但是为了将Kernel的修改降到最低，我使用钩子的形式，即在描述进程虚拟地址空间的mm_struct结构体中，增加一个函数指针字段page_fault_hook。并在处理page fault的do_page_fault()函数中，增加一点逻辑，即先检查该指针是否为空，若不为空，则调用该函数。如果该函数返回1，则直接return，否则执行原有的page fault逻辑。</li>
+<br>
+<li>编写一个内核模块，该模块可以通过ioctl()调用接受用户态程序的命令。该模块提供一个init命令，用户可以给定一个pid，模块就将指定进程的mm_struct中的page_fault_hook函数指针指向一个“排雷”函数。该模块也提供一个set_landmines命令，用户可以指定pid和投放地雷的数量，该模块就会在指定进程的虚拟地址空间中“埋雷”。当进程“踩雷”后，触发page fault，由于page_fault_hook指向“排雷”函数，该函数被调用。“排雷”函数除了“排雷”外，还会将“踩雷”的虚拟地址与时间戳放入一个队列中。</li>
+<br>
+<li>编写一个用户态的函数库，可以向上述内核模块发送init命令以及set_landmines命令，并且可以从内核模块的队列中读取“踩雷”的地址与时间。至于用户态要如何计算热度，那完全是用户的事情。</li>
+</ol>
+</p>
+
+<p>OK，那么就一步步做起来吧~</p>
+
+                </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
