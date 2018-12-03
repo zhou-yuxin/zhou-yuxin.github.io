@@ -84,7 +84,25 @@
 
 <p><img src="4.png"></p>
 
+<p>第五步，在arch/x86/Kconfig的最前面，加上如下代码，让以上所有CONFIG_PAGE_FAULT_HOOK使能：</p>
 
+<pre>
+config PAGE_FAULT_HOOK
+    def_bool y
+</pre>
+
+<p><img src="5.png"></p>
+
+<p>OK，编译内核：</p>
+
+<pre>
+make oldconfig
+make -j4
+sudo make modules_install
+sudo make install
+</pre>
+
+<p>重启即可使用新的Kernel了！</p>
 
                 </div>
                         </article>
