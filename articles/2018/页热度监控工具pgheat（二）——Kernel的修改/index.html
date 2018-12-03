@@ -15,9 +15,9 @@
                             </header>
                             <div class="entry-content">
 
-<p>Kernel的修改非常简单，分为四步，下面一步步分解。我使用的kernel版本是<a href="https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.17.19.tar.xz">4.17.19</a>，不过修改对kernel版本依赖很小。</p>
+<p>Kernel的修改非常简单，分为五步，下面一步步分解。我使用的kernel版本是<a href="https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.17.19.tar.xz">4.17.19</a>，不过修改对kernel版本依赖很小。</p>
 
-<p>首先，在include/linux/mm_types.h的第506行附近，即struct mm_struct结构体最后加入如下代码：</p>
+<p>第一步，在include/linux/mm_types.h的第506行附近，即struct mm_struct结构体最后加入如下代码，一切修改都以新的数据结构为基础：</p>
 
 <pre>
 #ifdef CONFIG_PAGE_FAULT_HOOK
@@ -25,7 +25,7 @@
     {
         struct rw_semaphore lock;
         int (*on_fault)(struct mm_struct* mm, unsigned long vaddr, int is_write);
-        void (*on_exit)(struct mm_struct* task);
+        void (*on_exit)(struct mm_struct* mm);
         void* privdata;
     }
     page_fault_hook;
@@ -34,7 +34,7 @@
 
 <p><img src="1.png"></p>
 
-<p>接着，在kernel/fork.c的第632行附近，即__mmdrop()里面，加入如下代码：</p>
+<p>第二步，在kernel/fork.c的第632行附近，即__mmdrop()里面，加入如下代码，使得进程结束时我们自定义的on_exit函数可以被调用，以做一些析构操作：</p>
 
 <pre>
 #ifdef CONFIG_PAGE_FAULT_HOOK
@@ -52,7 +52,7 @@
 
 <p><img src="2.png"></p>
 
-<p>然后，在kernel/fork.c的第1338行附近，即copy_mm()接近尾部的地方，加入如下代码：</p>
+<p>第三步，在kernel/fork.c的第1338行附近，即copy_mm()接近尾部的地方，加入如下代码，使得进程创建时新增的数据结构得到初始化：</p>
 
 <pre>
 #ifdef CONFIG_PAGE_FAULT_HOOK
@@ -64,6 +64,27 @@
 </pre>
 
 <p><img src="3.png"></p>
+
+<p>第四步，在arch/x86/mm/fault.c的1305行附近，即__do_page_fault()中，插入如下代码，使得发生page fault时我们的on_fault函数得到调用：</p>
+
+<pre>
+#ifdef CONFIG_PAGE_FAULT_HOOK
+    down_read(&amp;(mm-&gt;page_fault_hook.lock));
+    if(mm-&gt;page_fault_hook.on_fault)
+    {
+        if(mm-&gt;page_fault_hook.on_fault(mm, address, error_code &amp; X86_PF_WRITE))
+        {
+            up_read(&amp;(mm-&gt;page_fault_hook.lock));
+            return;
+        }
+    }
+    up_read(&amp;(mm-&gt;page_fault_hook.lock));
+#endif
+</pre>
+
+<p><img src="4.png"></p>
+
+
 
                 </div>
                         </article>
