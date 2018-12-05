@@ -1,0 +1,580 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>页热度监控工具pgheat（三）——高内聚稀疏数组vmarray</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">页热度监控工具pgheat（三）——高内聚稀疏数组vmarray</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>在这个项目中，我需要使用到这么一个数据结构：在逻辑上，它是一个非常大的数组，可以使用索引来访问元素；而在实现上，又要做到内存按需分配。</p>
+
+<p>之所以有这样的需求，最初是因为在用户态的监测、决策程序中，我需要为每一个页维持一个自定义的数据结构，比如每一个页的访问计数。最容易想到的解决方案是hashmap，其key为页号（或者虚拟页地址），而value则是自定义的数据结构。这样，通过hashmap为页动态关联上了额外信息。</p>
+
+<p>后来发现，不光在上述的场景中有此需求，在内核模块中也有这样的需求。我的内核模块需要维持一个可以动态伸缩的集合，以保存所有“踩雷”的地址（见后续博客）。这个集合的容量是不能提前预估的，可能会非常大，也可能会非常小。</p>
+
+<p>这两个场景需要的数据结构看似完全不同——一个是需要一个hashmap，而一个则是需要一个set，我为何会说他们是相似的需求呢？因为，如果我能够实现一个满足本文开头提到的要求的数组，那么这两个需求都可以用该数据结构解决：
+<ul>
+<li>
+在第一个需求中，我可以把虚拟页号作为数组的索引，而数组的元素类型则是自定义的数据结构，于是就做到了页号与自定义数组结构的关联。
+</li>
+<li>
+在第二个需求中，我可以把每一个“踩雷”的地址追加到数组末尾，即使用数组连续地存放元素。假设某一个时刻数组长度为N，当我需要随机取出一个元素时，只有随即选择[0, N)之间的一个索引（假设为i），取出第i个元素，并把最后一个元素移动到第i个元素，最后把N减一即可。
+</li>
+</ul>
+仔细思考一下，会发现这个数组其实就是一个稀疏数组：索引空间非常巨大，但是真实有值的索引很少（相对于索引空间）。<strong>再挖掘一下，还会发现，这个稀疏数组中，有效的索引是高度内聚的。内聚，是指有效索引通常是大片大片连续的。</strong>其反义词是分散，指有效索引是零零碎碎散布在索引空间中。在第一个需求中，虚拟地址空间的分配都是具有高度内聚性的，即一个进程只有为数不多的内存段，而一个内存段则是多个连续的内存页。比如一个应用程序开辟了10GB的地址空间，这10GB可能分为三个段，分别是2GB、5GB和3GB，而不可能是分为几万个不连续的段分散在整个虚拟空间的各处。在第二个需求中，所有的值都是连在一起的。</p>
+
+<p>我想到了《<a href="../页表操作（一）——查询页表以得到虚拟页对应的物理页及其他标志位/index.html">页表操作（一）——查询页表以得到虚拟页对应的物理页及其他标志位</a>》中介绍的分级页表。页表本质上也是一种映射关系，类似于hashmap。分级页表可以做到“按需分配”，很多没有物理页的虚拟地址区域，可以留空指针，而不需要分配次级页表。之所以可以这么做，正是利用了一个虚拟地址空间的高内聚性。</p>
+
+<p>我打算仿照分级页表，实现一个分级数组。这个数组在逻辑上就是一个一维的数组，可以通过指定index访问每一个元素。而在实现上，则是分为很多级，从而不依赖于连续物理地址，内存按需分配。而且该数组要与一般数组一样，元素大小是可以在初始化时确定的。也就是说，可以创建一个针对某种struct的数组。</p>
+
+<p>以一个三级数组为例，如下图：</p>
+
+<p><img src="1.png"></p>
+
+<p>每一级都是由多个节点构成，一个节点占用一个页。图中最基本的单位是entry，每一个entry包含两个字段，即node与refcount。node是一个指针，指向一个节点。refcount是一个整数，记录了node所指向的节点中非空指针的个数。当refcount减为0，则释放node指向的节点。第一级就只有一个节点。最后一级节点称为叶节点，其他节点称为分支节点。叶节点最上面有若干个value，每一个value就是用户需要的元素，其大小在初始化时指定，比如图中的value大小为24字节。value之后，则是一个bitmap。叶节点中有多少个value，那么bitmap就（至少）有多少位。bitmap的第i位表示第i个value是否有效。最后一级分支节点中的refcount的值，即表示node指向的叶节点中有效value的个数。从这个的结构可以得知，每一个分支节点最多包含4096 / (8 + 8) = 256个指向下一级节点的entry，而每个叶节点包含的value数的计算则稍微复杂些。</p>
+
+<p>假设value的大小为S，一个叶节点可以包含n个value。那么n个value和一个至少n位的bitmap占用的字节数为</p>
+
+<pre>S * n + ceil(n / 8)</pre>
+
+<p>因为要用一个页来容纳，那么必须满足</p>
+
+<pre>S * n + ceil(n / 8) &lt;= 4096</pre>
+
+<p>首先两边都乘以8，对不等式做一个等价变换：</p>
+
+<pre>8 * S * n + 8 * ceil(n / 8) &lt;= 8 * 4096</pre>
+
+<p>由于</p>
+
+<pre>8 * ceil(n / 8) &lt; n + 8</pre>
+
+<p>因此，如果满足</p>
+
+<pre>8 * S *n + n + 8 &lt;= 8 * 4096</pre>
+
+<p>那么原不等式就能成立（条件增强了）。</p>
+
+<p>去掉了ceil()运算之后，就可以对不等式进行简化：</p>
+
+<pre>(8 * S + 1) * n &lt;= 8 * (4096 - 1) </pre>
+
+<p>因此整数域上最大的n为</p>
+
+<pre>floor(8 * (4096 - 1) / (8 * S + 1))</pre>
+
+<p>下文中，规定</p>
+
+<pre>
+entry_per_page = 4096 / (8 + 8) = 256
+value_per_page = 8 * (4096 - 1) / (8 * S + 1)  // 这里的除法是C语言的除法
+</pre>
+
+<p>接下来还有几个问题需要确定：
+    <ul>
+        <li>要使用几级数组？</li>
+        <li>每一级的index与逻辑上的数组index怎么映射？</li>
+    </ul>
+</p>
+
+<p>如果只是用一级数组，也就是只有叶节点，那么数组最大容量就是value_per_page。如果使用两级数组，那么每一个叶节点可以容纳value_per_page个value，而一级数组可以指向entry_per_page个叶节点，因此总共可以容纳value_per_page * entry_per_page个元素。以此类推，n级数组最大容纳value_per_page * entry_per_page ^ (n - 1)个元素。所以，当用户指定数组长度为len时，只要找到最小的n，使得</p>
+
+<pre>
+value_per_page * entry_per_page ^ (n - 1) &gt;= len
+</pre>
+
+<p>对于第二个问题，思路也是类似的。当用户给定一个索引i时，该value是第i / value_per_page个叶节点上的第i % value_per_page个value。那么第i / value_per_page个叶节点又被第(i / value_per_page) / entry_per_page个上级节点的第(i / value_per_page) % entry_per_page个指针所指。如此一层层计算上去即可。</p>
+
+<p>原理都讲完了，那么就给出代码吧~核心是vmarray.h和vmarray.c两个文件。</p>
+
+<p>vmarray.h</p>
+
+<pre>
+#ifndef VMARRAY_H
+#define VMARRAY_H
+
+// define size_t here, to avoid including &lt;stdint.h&gt; in user space or 
+//   &lt;linux/types.h&gt; in kernel space
+typedef unsigned long size_t;
+
+// a entry to a node in next level
+struct vmarray_branch_entry
+{
+    void* node;             // the page of the node in next level
+    size_t refcount;        // the count of non-NULL pointers in the node
+};
+
+struct vmarray
+{
+    // constants, keep unchange after init
+    size_t value_size;      // the size of user's element
+    size_t value_per_page;  // how many elements in a leaf node
+    struct
+    {
+        size_t value;       // the real value of entry_per_page, e.g. value = 256
+        size_t shift;       // value = 1 &lt;&lt; shift, e.g. shift = 8
+        size_t mask;        // value = mask + 1, e.g. mask = 255
+    }
+    entry_per_page;         // because count of entries in a branch node
+                            //   must be a power of 2, so using bit-operations
+                            //   will be much faster than div and mod.
+    size_t level_count;     // how many layers
+    void* (*func_alloc_zeroed_page)(void* privdata);    // the function to
+                                                        //   allocate a zeroed page
+    void (*func_free_page)(void* page, void* privdata); // the function to 
+                                                        //   free a page
+    void* privdata;         // user's privdata to the two functions above
+
+    // root level
+    struct vmarray_branch_entry root;   // the root entry
+
+    // statistics
+    size_t value_count;     // how many vaild values in the array
+    size_t page_count;      // how many pages used
+};
+
+// init the array
+//      length: the length of this array
+//      value_size: size of of user's element, sizeof(struct user_ele)
+//      page_size: size of a memory page, usually 4096
+//      alloc_zeroed_page: the function to allocate a zeroed page
+//      free_page: the function to free a page
+//      privdata: user's privdata to the two functions above
+// return 1 if succeed, 0 if failed.
+int vmarray_init(struct vmarray* array, size_t length, size_t value_size,
+    size_t page_size,
+    void* (*func_alloc_zeroed_page)(void* privdata),
+    void (*func_free_page)(void* page, void* privdata),
+    void* privdata);
+
+// get the pointer of the user elements at the given index
+//      index: the index of the element in logic
+//      allocate: if the element doesn't exist, allow to allocate it?
+// return the pointer of the user element, or NULL if it doesn't exist and not
+//   allow to allocate it.
+void* vmarray_access(struct vmarray* array, size_t index, int allocate);
+
+// delete the elements at the given index
+//      index: the index of the element in logic
+// return 1 if succeed, 0 if failed.
+int vmarray_delete(struct vmarray* array, size_t index);
+
+// release the array, and call destructor on every vaild element if it is not NULL
+//      destructor: the destructor to destroy every vaild element, or NULL
+void vmarray_deinit(struct vmarray* array, void (*destructor)(void* value));
+
+#endif
+</pre>
+
+<p>vmarray.c</p>
+
+<pre>
+#include &quot;error.h&quot;
+#include &quot;vmarray.h&quot;
+
+#define MAX_LEVEL_COUNT 16
+
+#define VALUE_PER_PAGE(page_size, value_size)   \
+    (8 * ((page_size) - 1) / (8 * (value_size) + 1))
+
+int vmarray_init(struct vmarray* array, size_t length, size_t value_size,
+    size_t page_size,
+    void* (*func_alloc_zeroed_page)(void* privdata),
+    void (*func_free_page)(void* page, void* privdata),
+    void* privdata)
+{
+    size_t capacity;
+    assert(array);
+    array-&gt;entry_per_page.value = page_size / sizeof(struct vmarray_branch_entry);
+    array-&gt;entry_per_page.shift = __builtin_ffsll(array-&gt;entry_per_page.value) - 1;
+    if(((size_t)1 &lt;&lt; array-&gt;entry_per_page.shift) != array-&gt;entry_per_page.value)
+        ERROR1(0, &quot;entry_per_page = %lu is not power of 2&quot;,
+            array-&gt;entry_per_page.value);
+    array-&gt;entry_per_page.mask = array-&gt;entry_per_page.value - 1;
+    array-&gt;value_size = value_size;
+    if((array-&gt;value_per_page = VALUE_PER_PAGE(page_size, value_size)) &lt; 1)
+        ERROR2(0, &quot;too small &lt;page_size = %lu&gt; or too big &lt;value_size = %lu&gt;&quot;,
+            page_size, value_size);
+    capacity = array-&gt;value_per_page;
+    for(array-&gt;level_count = 1; ; array-&gt;level_count++)
+    {
+        if(capacity &gt;= length)
+            break;
+        capacity *= array-&gt;entry_per_page.value;
+    }
+    assert(array-&gt;level_count &lt;= MAX_LEVEL_COUNT);
+    if(!(array-&gt;func_alloc_zeroed_page = func_alloc_zeroed_page))
+        ERROR0(0, &quot;&lt;func_alloc_zeroed_page = NULL&gt; is not allowed&quot;);
+    if(!(array-&gt;func_free_page = func_free_page))
+        ERROR0(0, &quot;&lt;func_free_page = NULL&gt; is not allowed&quot;);
+    array-&gt;privdata = privdata;
+    array-&gt;root.node = NULL;
+    array-&gt;root.refcount = 0;
+    array-&gt;value_count = 0;
+    array-&gt;page_count = 0;
+    return 1;
+}
+
+static int parse_index(struct vmarray* array, size_t index, size_t* level_index_array)
+{
+    int i;
+    size_t index_var = index;
+    level_index_array[0] = index_var % array-&gt;value_per_page;
+    index_var /= array-&gt;value_per_page;
+    for(i = 1; i &lt; array-&gt;level_count; i++)
+    {
+        level_index_array[i] = index_var &amp; array-&gt;entry_per_page.mask;
+        index_var &gt;&gt;= array-&gt;entry_per_page.shift;
+    }
+    if(index_var)
+        ERROR1(0, &quot;&lt;index = %lu&gt; is out of range&quot;, index);
+    return 1;
+}
+
+#define BRANCH_ENTRY(branch, index)                 \
+    ((struct vmarray_branch_entry*)(branch) + (index))
+
+#define LEAF_VALUE(leaf, value_size, index)         \
+    ((void*)((char*)(leaf) + (value_size) * (index)))
+
+#define LEAF_BITMAP(leaf, value_size, value_count)  \
+    ((char*)(leaf) + (value_size) * (value_count))
+
+#define BITMAP_GET(bitmap, index)                       \
+({                                                      \
+    size_t byte_index = (index) / 8;                    \
+    size_t bit_index = (index) % 8;                     \
+    (((char*)(bitmap))[byte_index] &gt;&gt; bit_index) &amp; 1;   \
+})
+
+#define BITMAP_TEST_AND_SET(bitmap, index)                      \
+({                                                              \
+    int ret;                                                    \
+    size_t byte_index = (index) / 8;                            \
+    size_t bit_index = (index) % 8;                             \
+    if(((((char*)(bitmap))[byte_index] &gt;&gt; bit_index) &amp; 1) == 0) \
+    {                                                           \
+        ((char*)(bitmap))[byte_index] |= 1 &lt;&lt; bit_index;        \
+        ret = 1;                                                \
+    }                                                           \
+    else                                                        \
+        ret = 0;                                                \
+    ret;                                                        \
+})
+
+#define BITMAP_TEST_AND_CLEAR(bitmap, index)                    \
+({                                                              \
+    int ret;                                                    \
+    size_t byte_index = (index) / 8;                            \
+    size_t bit_index = (index) % 8;                             \
+    if(((((char*)(bitmap))[byte_index] &gt;&gt; bit_index) &amp; 1) == 1) \
+    {                                                           \
+        ((char*)(bitmap))[byte_index] &amp;= ~(1 &lt;&lt; bit_index);     \
+        ret = 1;                                                \
+    }                                                           \
+    else                                                        \
+        ret = 0;                                                \
+    ret;                                                        \
+})
+
+void* vmarray_access(struct vmarray* array, size_t index, int allocate)
+{
+    size_t level_index_array[MAX_LEVEL_COUNT];
+    struct vmarray_branch_entry *upper_entry = NULL, *entry;
+    int i;
+    void* leaf_node;
+    size_t leaf_index;
+    char* bitmap;
+    assert(array);
+    if(!parse_index(array, index, level_index_array))
+        ERROR1(NULL, &quot;parse_index(array, %lu, level_index_array) failed&quot;, index);
+    entry = &amp;(array-&gt;root);
+    for(i = array-&gt;level_count - 1; i &gt;= 0; i--)
+    {
+        if(!entry-&gt;node)
+        {
+            if(!allocate)
+                return NULL;
+            if(!(entry-&gt;node = array-&gt;func_alloc_zeroed_page(array-&gt;privdata)))
+                ERROR0(NULL, &quot;array-&gt;func_alloc_zeroed_page() failed&quot;);
+            array-&gt;page_count++;
+            if(upper_entry)
+                upper_entry-&gt;refcount++;
+        }
+        assert(entry-&gt;node);
+        upper_entry = entry;
+        entry = BRANCH_ENTRY(entry-&gt;node, level_index_array[i]);
+    }
+    entry = upper_entry;
+    leaf_node = entry-&gt;node;
+    leaf_index = level_index_array[0];
+    bitmap = LEAF_BITMAP(leaf_node, array-&gt;value_size, array-&gt;value_per_page);
+    if(BITMAP_TEST_AND_SET(bitmap, leaf_index))
+    {
+        entry-&gt;refcount++;
+        assert(entry-&gt;refcount &lt;= array-&gt;value_per_page);
+        array-&gt;value_count++;
+    }
+    return LEAF_VALUE(leaf_node, array-&gt;value_size, leaf_index);
+}
+
+int vmarray_delete(struct vmarray* array, size_t index)
+{
+    size_t level_index_array[MAX_LEVEL_COUNT];
+    struct vmarray_branch_entry* entry_array[MAX_LEVEL_COUNT];
+    struct vmarray_branch_entry* entry;
+    int i;
+    void* leaf_node;
+    size_t leaf_index;
+    char* bitmap;
+    assert(array);
+    if(!parse_index(array, index, level_index_array))
+        ERROR1(0, &quot;parse_index(array, %lu, level_index_array) failed&quot;, index);
+    entry = &amp;(array-&gt;root);
+    for(i = array-&gt;level_count - 1; i &gt;= 0; i--)
+    {
+        if(!entry-&gt;node)
+            return 1;
+        entry_array[i] = entry;
+        entry = BRANCH_ENTRY(entry-&gt;node, level_index_array[i]);
+    }
+    leaf_node = entry_array[0]-&gt;node;
+    leaf_index = level_index_array[0];
+    bitmap = LEAF_BITMAP(leaf_node, array-&gt;value_size, array-&gt;value_per_page);
+    if(!BITMAP_TEST_AND_CLEAR(bitmap, leaf_index))
+        return 1;
+    assert(array-&gt;value_count);
+    array-&gt;value_count--;
+    for(i = 0; i &lt; array-&gt;level_count; i++)
+    {
+        entry = entry_array[i];
+        assert(entry-&gt;refcount);
+        entry-&gt;refcount--;
+        if(entry-&gt;refcount)
+            return 1;
+        array-&gt;func_free_page(entry-&gt;node, array-&gt;privdata);
+        entry-&gt;node = NULL;
+        assert(array-&gt;page_count);
+        array-&gt;page_count--;
+    }
+    return 1;
+}
+
+static void deinit_node(struct vmarray* array, void (*destructor)(void* value),
+    void* node, int depth)
+{
+    size_t i;
+    if(depth &gt; 0)
+    {
+        for(i = 0; i &lt; array-&gt;entry_per_page.value; i++)
+        {
+            struct vmarray_branch_entry* entry = BRANCH_ENTRY(node, i);
+            if(entry-&gt;node)
+                deinit_node(array, destructor, entry-&gt;node, depth - 1);
+        }
+    }
+    else
+    {
+        char* bitmap = LEAF_BITMAP(node, array-&gt;value_size, array-&gt;value_per_page);
+        for(i = 0; i &lt; array-&gt;value_per_page; i++)
+        {
+            if(BITMAP_GET(bitmap, i))
+            {
+                if(destructor)
+                    destructor(LEAF_VALUE(node, array-&gt;value_size, i));
+                assert(array-&gt;value_count);
+                array-&gt;value_count--;
+            }
+        }
+    }
+    array-&gt;func_free_page(node, array-&gt;privdata);
+    assert(array-&gt;page_count);
+    array-&gt;page_count--;
+}
+
+void vmarray_deinit(struct vmarray* array, void (*destructor)(void* value))
+{
+    assert(array);
+    if(array-&gt;root.node)
+        deinit_node(array, destructor, array-&gt;root.node, array-&gt;level_count - 1);
+    assert(array-&gt;value_count == 0);
+    assert(array-&gt;page_count == 0);
+}
+</pre>
+
+<p>vmarray.c采用了C89的风格，保证了在user space和kernel space都可以无警告地编译。vmarray.c依赖于error.h。这个头文件分为user space版本和kernel space版本。user space版本的error.h如下：</p>
+
+<pre>
+#ifndef ERROR_H
+#define ERROR_H
+
+#ifdef NO_ASSERT
+#define assert(x) ((void)0)
+#else
+#include &lt;assert.h&gt;
+#endif
+
+#include &lt;stdio.h&gt;
+
+#define ERROR0(ret, msg)                                                    \
+({                                                                          \
+    fprintf(stderr, &quot;[&lt;%s&gt; @ %s: %d]: &quot;, __FUNCTION__, __FILE__, __LINE__); \
+    fprintf(stderr, msg &quot;\n&quot;);                                              \
+    return (ret);                                                           \
+})
+
+#define ERROR1(ret, msg, arg1)                                              \
+({                                                                          \
+    fprintf(stderr, &quot;[&lt;%s&gt; @ %s: %d]: &quot;, __FUNCTION__, __FILE__, __LINE__); \
+    fprintf(stderr, msg &quot;\n&quot;, arg1);                                        \
+    return (ret);                                                           \
+})
+
+#define ERROR2(ret, msg, arg1, arg2)                                        \
+({                                                                          \
+    fprintf(stderr, &quot;[&lt;%s&gt; @ %s: %d]: &quot;, __FUNCTION__, __FILE__, __LINE__); \
+    fprintf(stderr, msg &quot;\n&quot;, arg1, arg2);                                  \
+    return (ret);                                                           \
+})
+
+#define ERROR3(ret, msg, arg1, arg2, arg3)                                  \
+({                                                                          \
+    fprintf(stderr, &quot;[&lt;%s&gt; @ %s: %d]: &quot;, __FUNCTION__, __FILE__, __LINE__); \
+    fprintf(stderr, msg &quot;\n&quot;, arg1, arg2, arg3);                            \
+    return (ret);                                                           \
+})
+
+#endif
+</pre>
+
+<p>而kernel space版本的error.h如下：</p>
+
+<pre>
+#ifndef ERROR_H
+#define ERROR_H
+
+#include &lt;linux/module.h&gt;
+
+#ifdef NO_ASSERT
+#define assert(x) ((void)0)
+#else
+#define assert(x)   \
+    ((x) ? (void)0 : panic(&quot;assert('%s')failed in %s: %d&quot;, #x, __FILE__, __LINE__))
+#endif
+
+#define ERROR0(ret, msg)                                                    \
+({                                                                          \
+    printk(KERN_ERR &quot;[&lt;%s&gt; @ %s: %d]: &quot;, __FUNCTION__, __FILE__, __LINE__); \
+    printk(KERN_ERR msg &quot;\n&quot;);                                              \
+    return (ret);                                                           \
+})
+
+#define ERROR1(ret, msg, arg1)                                              \
+({                                                                          \
+    printk(KERN_ERR &quot;[&lt;%s&gt; @ %s: %d]: &quot;, __FUNCTION__, __FILE__, __LINE__); \
+    printk(KERN_ERR msg &quot;\n&quot;, arg1);                                        \
+    return (ret);                                                           \
+})
+
+#define ERROR2(ret, msg, arg1, arg2)                                        \
+({                                                                          \
+    printk(KERN_ERR &quot;[&lt;%s&gt; @ %s: %d]: &quot;, __FUNCTION__, __FILE__, __LINE__); \
+    printk(KERN_ERR msg &quot;\n&quot;, arg1, arg2);                                  \
+    return (ret);                                                           \
+})
+
+#define ERROR3(ret, msg, arg1, arg2, arg3)                                  \
+({                                                                          \
+    printk(KERN_ERR &quot;[&lt;%s&gt; @ %s: %d]: &quot;, __FUNCTION__, __FILE__, __LINE__); \
+    printk(KERN_ERR msg &quot;\n&quot;, arg1, arg2, arg3);                            \
+    return (ret);                                                           \
+})
+
+#endif
+</pre>
+
+<p>在用户态写一个测试程序test.c：</p>
+
+<pre>
+#include &quot;error.h&quot;
+#include &quot;vmarray.h&quot;
+#include &lt;sys/mman.h&gt;
+
+#define PAGE_SIZE   4096
+
+static void* alloc_zeroed_page(void* privdata)
+{
+    void* addr = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if(addr == MAP_FAILED)
+        return NULL;
+    return addr;
+}
+
+static void free_page(void* page, void* privdata)
+{
+    int ret = munmap(page, PAGE_SIZE);
+    assert(ret == 0);
+}
+
+struct page_info
+{
+    size_t a, b, c;
+};
+
+static void destructor(void* value)
+{
+    struct page_info* info = value;
+    printf(&quot;%lu, %lu, %lu\n&quot;, info-&gt;a, info-&gt;b, info-&gt;c);
+}
+
+int main()
+{
+    struct vmarray array;
+    if(!vmarray_init(&amp;array, 68719476736, sizeof(struct page_info),
+        PAGE_SIZE, alloc_zeroed_page, free_page, NULL))
+        ERROR0(1, &quot;vmarray_init() failed&quot;);
+    printf(&quot;level_count = %lu\n&quot;, array.level_count);
+    for(int i = 0; i &lt; 1000000; i++)
+    {
+        struct page_info* info = vmarray_access(&amp;array, i, 1);
+        info-&gt;a = i;
+        info-&gt;b = i + 1;
+        info-&gt;c = i + 2;
+    }
+    printf(&quot;value_count = %lu, page_count = %lu\n&quot;,
+        array.value_count, array.page_count);
+    for(int i = 0; i &lt; 500000; i++)
+    {
+        int ret = vmarray_delete(&amp;array, i);
+        assert(ret);
+        assert(array.value_count + i + 1 == 1000000);
+    }
+    printf(&quot;root_level = %p\n&quot;, array.root.node);
+    vmarray_deinit(&amp;array, destructor);
+    return 0;
+}
+</pre>
+
+<p>可以看到析构函数destructor被执行了。</p>
+
+                </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
