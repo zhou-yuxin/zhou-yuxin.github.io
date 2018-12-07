@@ -1,0 +1,207 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>页热度监控工具pgheat（四）——虚拟页框号的集合vpfnset</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">页热度监控工具pgheat（四）——虚拟页框号的集合vpfnset</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>我在实现内核模块时，需要一个存储虚拟页框号（Virtual Page Frame Number，下称vpfn）的集合，这个集合要能够去重和随机取出元素。vpfn就是一个unsigned long，因此说白了就是一个存储整数的集合。</p>
+
+<p>经典的集合是使用hash实现的，即对value计算一个hash值，然后找到对应的slot，把该value加入slot对应的链表中。但是很快就被我否决了。原因有三：
+<ol>
+    <li>计算hash，加入链表的开销略大，而<strong>随机取出元素则开销非常大</strong>（尤其是当hash table很空闲时，查找一个非空的slot就需要O(n)的时间，而在一个slot的链表中要随机选择一个节点，又需要遍历链表元素）；</li>
+    <li>hash table需要大段连续内存，而在内核态，连续内存是一个非常稀缺的资源，可用“可遇不可求”来形容，而动用vmalloc则显得太重量级；</li>
+    <li>hash table存在空缺slot，而每一个unsigned long的元素都要开销一个链表节点，这些都导致经典的集合内存利用率很低。</li>
+</ol>
+</p>
+
+<p>于是，我把《<a href="../页热度监控工具pgheat（三）——高内聚稀疏数组vmarray/index.html">页热度监控工具pgheat（三）——高内聚稀疏数组vmarray</a>》里的故伎重施，充分利用虚拟页框号的高内聚特性，实现超级高效的、针对虚拟页框号的集合——vpfnset。</p>
+
+<p>vpfnset使用两个vmarray组成，其数据结构很简单：</p>
+
+<pre>
+struct vpfnset
+{
+    struct vmarray stack;   // the array to continuously hold all values
+    struct vmarray bitmap;  // the bitmap to record which values are in the array
+};
+</pre>
+
+<p>stack字段是一个逻辑上的连续数组，当需要向集合中新增元素时，就追加在stack的末尾。那么如何知道某个元素是否已经在stack中了呢？这就需要用到bitmap字段。bitmap字段的元素类型是字节，即uint8_t，bitmap的第i个字节的第j位表示了vpfn = i * 8 + j是否在集合中。这样的设计使得插入、取出操作的时间复杂度全都是O(1)：
+<ol>
+    <li>当需要插入某个vpfn时，先查询bitmap中第vpfn / 8个字节的第vpfn % 8个位是否为1，如果为1，说明该vpfn已经在集合中，直接返回。否则在stack末尾追加该vpfn，并把bitmap中该位值为1；</li>
+    <li>当需要随机取出一个值时，先在stack中随机取出一个vpfn（假设stack中有N个元素，即stack长度为N，随机产生一个[0, N)之间的索引i，读取stack[i]的数据，并把stack[N - 1]复制到stack[i]，最后把N减一），然后把bitmap中第vpfn / 8个字节的第vpfn % 8个位值为0。</li>
+</ol>
+而vpfn的高内聚性，决定了bitmap的内存基本都是按需分配，内存利用率很高。stack中连续存储元素，内聚性更加高。
+</p>
+
+<p>vpfnset的原理非常简单，那么就给出一样简单的实现。代码依赖于《<a href="../页热度监控工具pgheat（三）——高内聚稀疏数组vmarray/index.html">页热度监控工具pgheat（三）——高内聚稀疏数组vmarray</a>》里的vmarray。</p>
+
+<p>vpfnset.h</p>
+
+<pre>
+#ifndef VPFNSET_H
+#define VPFNSET_H
+
+#include &quot;vmarray.h&quot;
+
+#include &lt;linux/types.h&gt;
+
+struct vpfnset
+{
+    struct vmarray stack;   // the array to continuously hold all values
+    struct vmarray bitmap;  // the bitmap to record which values are in the array
+};
+
+// init
+//      length: the max count of values in the set
+//      page_size: the size of a used page (usually 4K)
+//      func_alloc_zeroed_page: the function to allocate a zeroed page
+//      func_free_page: the function to free a page
+//      privdata: user's privdata to the two functions above
+// return 1 if succeed, 0 otherwise
+int vpfnset_init(struct vpfnset* set, size_t length, size_t page_size,
+    void* (*func_alloc_zeroed_page)(void* privdata),
+    void (*func_free_page)(void* page, void* privdata),
+    void* privdata);
+
+// get the count of values in the set
+size_t vpfnset_get_length(struct vpfnset* set);
+
+// add a value info the set
+//      vpfn: the virtual page frame number to be added
+// return 1 if succeed (no matter newly added or already exists), 0 otherwise
+int vpfnset_add(struct vpfnset* set, unsigned long vpfn);
+
+// randomly pop a value from the set
+//      empty_ret: if the set is empty, return this value
+// return a randomly selected value, or 'empty_ret' if the set is empty
+//   so make sure any value in the set is not equal to 'empty_ret'
+unsigned long vpfnset_pop(struct vpfnset* set, unsigned long empty_ret);
+
+// release the set
+void vpfnset_deinit(struct vpfnset* set);
+
+#endif
+</pre>
+
+<p>vpfnset.c</p>
+
+<pre>
+#include &quot;error.h&quot;
+#include &quot;vpfnset.h&quot;
+
+#include &lt;linux/random.h&gt;
+
+#define DIV_CEIL(n, p)  ((n) ? (((n) - 1) / (p) + 1) : 0)
+
+int vpfnset_init(struct vpfnset* set, size_t length, size_t page_size,
+    void* (*func_alloc_zeroed_page)(void* privdata),
+    void (*func_free_page)(void* page, void* privdata),
+    void* privdata)
+{
+    size_t bitmap_len = DIV_CEIL(length, 8);
+    assert(set);
+    if(unlikely(!vmarray_init(&amp;(set-&gt;stack), length, sizeof(unsigned long), page_size,
+        func_alloc_zeroed_page, func_free_page, privdata)))
+        ERROR2(0, &quot;vmarray_init(&amp;(set-&gt;stack), %lu, sizeof(unsigned log), %lu, ...) failed&quot;,
+            length, page_size);
+    if(unlikely(!vmarray_init(&amp;(set-&gt;bitmap), bitmap_len, 1, page_size,
+        func_alloc_zeroed_page, func_free_page, privdata)))
+    {
+        vmarray_deinit(&amp;(set-&gt;stack), NULL);
+        ERROR2(0, &quot;vmarray_init(&amp;(set-&gt;bitmap), %lu, 1, %lu, ...) failed&quot;, 
+            bitmap_len, page_size);
+    }
+    return 1;
+}
+
+size_t vpfnset_get_length(struct vpfnset* set)
+{
+    assert(set);
+    return set-&gt;stack.value_count;
+}
+
+int vpfnset_add(struct vpfnset* set, unsigned long vpfn)
+{
+    size_t byte_index = vpfn / 8, bit_index = vpfn % 8;
+    uint8_t* pbyte;
+    unsigned long* pvalue;
+    assert(set);
+    if(unlikely(!(pbyte = vmarray_access(&amp;(set-&gt;bitmap), byte_index, 1))))
+        ERROR1(0, &quot;vmarray_access(&amp;(set-&gt;bitmap), %lu, 1) failed&quot;, byte_index);
+    if(((*pbyte) &gt;&gt; bit_index) &amp; 1)
+        return 1;
+    if(unlikely(!(pvalue = vmarray_access(&amp;(set-&gt;stack), set-&gt;stack.value_count, 1))))
+        ERROR1(0, &quot;vmarray_access(&amp;(set-&gt;stack), %lu, 1) failed&quot;, set-&gt;stack.value_count);
+    (*pbyte) |= 1 &lt;&lt; bit_index;
+    (*pvalue) = vpfn;
+    return 1;
+}
+
+unsigned long vpfnset_pop(struct vpfnset* set, unsigned long empty_ret)
+{
+    assert(set);
+    if(likely(set-&gt;stack.value_count))
+    {
+        size_t select_index = get_random_long() % set-&gt;stack.value_count;
+        size_t last_index = set-&gt;stack.value_count - 1;
+        unsigned long* select = vmarray_access(&amp;(set-&gt;stack), select_index, 0);
+        unsigned long* last = vmarray_access(&amp;(set-&gt;stack), last_index, 0);
+        unsigned long value;
+        int ret;
+        size_t byte_index, bit_index;
+        uint8_t* pbyte;
+        assert(select);
+        assert(last);
+        value = (*select);
+        (*select) = (*last);
+        ret = vmarray_delete(&amp;(set-&gt;stack), last_index);
+        assert(ret);
+        assert(value != empty_ret);
+        byte_index = value / 8;
+        bit_index = value % 8;
+        pbyte = vmarray_access(&amp;(set-&gt;bitmap), byte_index, 0);
+        assert(pbyte);
+        assert(((*pbyte) &gt;&gt; bit_index) &amp; 1);
+        (*pbyte) &amp;= ~(1 &lt;&lt; bit_index);
+        if((*pbyte) == 0)
+        {
+            ret = vmarray_delete(&amp;(set-&gt;bitmap), byte_index);
+            assert(ret);
+        }
+        return value;
+    }
+    else
+        return empty_ret;
+}
+
+void vpfnset_deinit(struct vpfnset* set)
+{
+    assert(set);
+    vmarray_deinit(&amp;(set-&gt;stack), NULL);
+    vmarray_deinit(&amp;(set-&gt;bitmap), NULL);
+}
+</pre>
+
+                </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>

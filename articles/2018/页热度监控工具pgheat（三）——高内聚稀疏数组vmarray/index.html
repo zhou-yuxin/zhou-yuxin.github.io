@@ -146,8 +146,8 @@ struct vmarray
 //      length: the length of this array
 //      value_size: size of of user's element, sizeof(struct user_ele)
 //      page_size: size of a memory page, usually 4096
-//      alloc_zeroed_page: the function to allocate a zeroed page
-//      free_page: the function to free a page
+//      func_alloc_zeroed_page: the function to allocate a zeroed page
+//      func_free_page: the function to free a page
 //      privdata: user's privdata to the two functions above
 // return 1 if succeed, 0 if failed.
 int vmarray_init(struct vmarray* array, size_t length, size_t value_size,
