@@ -102,9 +102,7 @@ value_per_page * entry_per_page ^ (n - 1) &gt;= len
 #ifndef VMARRAY_H
 #define VMARRAY_H
 
-// define size_t here, to avoid including &lt;stdint.h&gt; in user space or 
-//   &lt;linux/types.h&gt; in kernel space
-typedef unsigned long size_t;
+#include &quot;common.h&quot;
 
 // a entry to a node in next level
 struct vmarray_branch_entry
@@ -146,10 +144,10 @@ struct vmarray
 //      length: the length of this array
 //      value_size: size of of user's element, sizeof(struct user_ele)
 //      page_size: size of a memory page, usually 4096
-//      func_alloc_zeroed_page: the function to allocate a zeroed page
-//      func_free_page: the function to free a page
+//      alloc_zeroed_page: the function to allocate a zeroed page
+//      free_page: the function to free a page
 //      privdata: user's privdata to the two functions above
-// return 1 if succeed, 0 if failed.
+// return 0 if succeed, or error code if failed.
 int vmarray_init(struct vmarray* array, size_t length, size_t value_size,
     size_t page_size,
     void* (*func_alloc_zeroed_page)(void* privdata),
@@ -159,13 +157,15 @@ int vmarray_init(struct vmarray* array, size_t length, size_t value_size,
 // get the pointer of the user elements at the given index
 //      index: the index of the element in logic
 //      allocate: if the element doesn't exist, allow to allocate it?
-// return the pointer of the user element, or NULL if it doesn't exist and not
-//   allow to allocate it.
+// return the pointer of the user element, or NULL if:
+//   1. allocate = 1, then no memory;
+//   2. allocate = 0, it doesn't exist.
+// or (void*)(-1) if index is invalid
 void* vmarray_access(struct vmarray* array, size_t index, int allocate);
 
 // delete the elements at the given index
 //      index: the index of the element in logic
-// return 1 if succeed, 0 if failed.
+// return 0 if succeed, or error code if failed.
 int vmarray_delete(struct vmarray* array, size_t index);
 
 // release the array, and call destructor on every vaild element if it is not NULL
@@ -178,7 +178,6 @@ void vmarray_deinit(struct vmarray* array, void (*destructor)(void* value));
 <p>vmarray.c</p>
 
 <pre>
-#include &quot;error.h&quot;
 #include &quot;vmarray.h&quot;
 
 #define MAX_LEVEL_COUNT 16
@@ -196,13 +195,13 @@ int vmarray_init(struct vmarray* array, size_t length, size_t value_size,
     assert(array);
     array-&gt;entry_per_page.value = page_size / sizeof(struct vmarray_branch_entry);
     array-&gt;entry_per_page.shift = __builtin_ffsll(array-&gt;entry_per_page.value) - 1;
-    if(((size_t)1 &lt;&lt; array-&gt;entry_per_page.shift) != array-&gt;entry_per_page.value)
-        ERROR1(0, &quot;entry_per_page = %lu is not power of 2&quot;,
+    if(unlikely(((size_t)1 &lt;&lt; array-&gt;entry_per_page.shift) != array-&gt;entry_per_page.value))
+        ERROR1(-EINVAL, &quot;entry_per_page = %lu is not power of 2&quot;,
             array-&gt;entry_per_page.value);
     array-&gt;entry_per_page.mask = array-&gt;entry_per_page.value - 1;
     array-&gt;value_size = value_size;
-    if((array-&gt;value_per_page = VALUE_PER_PAGE(page_size, value_size)) &lt; 1)
-        ERROR2(0, &quot;too small &lt;page_size = %lu&gt; or too big &lt;value_size = %lu&gt;&quot;,
+    if(unlikely((array-&gt;value_per_page = VALUE_PER_PAGE(page_size, value_size)) &lt; 1))
+        ERROR2(-EINVAL, &quot;too small &lt;page_size = %lu&gt; or too big &lt;value_size = %lu&gt;&quot;,
             page_size, value_size);
     capacity = array-&gt;value_per_page;
     for(array-&gt;level_count = 1; ; array-&gt;level_count++)
@@ -212,16 +211,16 @@ int vmarray_init(struct vmarray* array, size_t length, size_t value_size,
         capacity *= array-&gt;entry_per_page.value;
     }
     assert(array-&gt;level_count &lt;= MAX_LEVEL_COUNT);
-    if(!(array-&gt;func_alloc_zeroed_page = func_alloc_zeroed_page))
-        ERROR0(0, &quot;&lt;func_alloc_zeroed_page = NULL&gt; is not allowed&quot;);
-    if(!(array-&gt;func_free_page = func_free_page))
-        ERROR0(0, &quot;&lt;func_free_page = NULL&gt; is not allowed&quot;);
+    if(unlikely(!(array-&gt;func_alloc_zeroed_page = func_alloc_zeroed_page)))
+        ERROR0(-EINVAL, &quot;&lt;func_alloc_zeroed_page = NULL&gt; is not allowed&quot;);
+    if(unlikely(!(array-&gt;func_free_page = func_free_page)))
+        ERROR0(-EINVAL, &quot;&lt;func_free_page = NULL&gt; is not allowed&quot;);
     array-&gt;privdata = privdata;
     array-&gt;root.node = NULL;
     array-&gt;root.refcount = 0;
     array-&gt;value_count = 0;
     array-&gt;page_count = 0;
-    return 1;
+    return 0;
 }
 
 static int parse_index(struct vmarray* array, size_t index, size_t* level_index_array)
@@ -235,7 +234,7 @@ static int parse_index(struct vmarray* array, size_t index, size_t* level_index_
         level_index_array[i] = index_var &amp; array-&gt;entry_per_page.mask;
         index_var &gt;&gt;= array-&gt;entry_per_page.shift;
     }
-    if(index_var)
+    if(unlikely(index_var))
         ERROR1(0, &quot;&lt;index = %lu&gt; is out of range&quot;, index);
     return 1;
 }
@@ -295,8 +294,8 @@ void* vmarray_access(struct vmarray* array, size_t index, int allocate)
     size_t leaf_index;
     char* bitmap;
     assert(array);
-    if(!parse_index(array, index, level_index_array))
-        ERROR1(NULL, &quot;parse_index(array, %lu, level_index_array) failed&quot;, index);
+    if(unlikely(!parse_index(array, index, level_index_array)))
+        ERROR1((void*)(-1), &quot;parse_index(array, %lu, level_index_array) failed&quot;, index);
     entry = &amp;(array-&gt;root);
     for(i = array-&gt;level_count - 1; i &gt;= 0; i--)
     {
@@ -304,7 +303,7 @@ void* vmarray_access(struct vmarray* array, size_t index, int allocate)
         {
             if(!allocate)
                 return NULL;
-            if(!(entry-&gt;node = array-&gt;func_alloc_zeroed_page(array-&gt;privdata)))
+            if(unlikely(!(entry-&gt;node = array-&gt;func_alloc_zeroed_page(array-&gt;privdata))))
                 ERROR0(NULL, &quot;array-&gt;func_alloc_zeroed_page() failed&quot;);
             array-&gt;page_count++;
             if(upper_entry)
@@ -337,13 +336,13 @@ int vmarray_delete(struct vmarray* array, size_t index)
     size_t leaf_index;
     char* bitmap;
     assert(array);
-    if(!parse_index(array, index, level_index_array))
-        ERROR1(0, &quot;parse_index(array, %lu, level_index_array) failed&quot;, index);
+    if(unlikely(!parse_index(array, index, level_index_array)))
+        ERROR1(-EINVAL, &quot;parse_index(array, %lu, level_index_array) failed&quot;, index);
     entry = &amp;(array-&gt;root);
     for(i = array-&gt;level_count - 1; i &gt;= 0; i--)
     {
         if(!entry-&gt;node)
-            return 1;
+            return 0;
         entry_array[i] = entry;
         entry = BRANCH_ENTRY(entry-&gt;node, level_index_array[i]);
     }
@@ -351,7 +350,7 @@ int vmarray_delete(struct vmarray* array, size_t index)
     leaf_index = level_index_array[0];
     bitmap = LEAF_BITMAP(leaf_node, array-&gt;value_size, array-&gt;value_per_page);
     if(!BITMAP_TEST_AND_CLEAR(bitmap, leaf_index))
-        return 1;
+        return 0;
     assert(array-&gt;value_count);
     array-&gt;value_count--;
     for(i = 0; i &lt; array-&gt;level_count; i++)
@@ -360,13 +359,13 @@ int vmarray_delete(struct vmarray* array, size_t index)
         assert(entry-&gt;refcount);
         entry-&gt;refcount--;
         if(entry-&gt;refcount)
-            return 1;
+            return 0;
         array-&gt;func_free_page(entry-&gt;node, array-&gt;privdata);
         entry-&gt;node = NULL;
         assert(array-&gt;page_count);
         array-&gt;page_count--;
     }
-    return 1;
+    return 0;
 }
 
 static void deinit_node(struct vmarray* array, void (*destructor)(void* value),
@@ -411,19 +410,23 @@ void vmarray_deinit(struct vmarray* array, void (*destructor)(void* value))
 }
 </pre>
 
-<p>vmarray.c采用了C89的风格，保证了在user space和kernel space都可以无警告地编译。vmarray.c依赖于error.h。这个头文件分为user space版本和kernel space版本。user space版本的error.h如下：</p>
+<p>vmarray.c采用了C89的风格，保证了在user space和kernel space都可以无警告地编译。vmarray.c依赖于common.h。这个头文件定义了一些常用的小工具，主要是错误输出、断言以及likely()和unlikely()的定义。他会自动检测当前处于user space还是在编译kernel代码。</p>
 
 <pre>
-#ifndef ERROR_H
-#define ERROR_H
+#ifndef COMMON_H
+#define COMMON_H
+
+#ifndef __KERNEL__
 
 #ifdef NO_ASSERT
-#define assert(x) ((void)0)
+#define assert(x)
 #else
 #include &lt;assert.h&gt;
 #endif
 
+#include &lt;errno.h&gt;
 #include &lt;stdio.h&gt;
+#include &lt;stdint.h&gt;
 
 #define ERROR0(ret, msg)                                                    \
 ({                                                                          \
@@ -453,22 +456,19 @@ void vmarray_deinit(struct vmarray* array, void (*destructor)(void* value))
     return (ret);                                                           \
 })
 
-#endif
-</pre>
+#else
 
-<p>而kernel space版本的error.h如下：</p>
-
-<pre>
-#ifndef ERROR_H
-#define ERROR_H
-
+#include &lt;linux/types.h&gt;
 #include &lt;linux/module.h&gt;
 
 #ifdef NO_ASSERT
-#define assert(x) ((void)0)
+#define assert(x)
 #else
-#define assert(x)   \
-    ((x) ? (void)0 : panic(&quot;assert('%s')failed in %s: %d&quot;, #x, __FILE__, __LINE__))
+#define assert(x)                                                           \
+({                                                                          \
+    if(!(x))                                                                \
+        panic(&quot;assert('%s')failed in %s: %d&quot;, #x, __FILE__, __LINE__);      \
+})
 #endif
 
 #define ERROR0(ret, msg)                                                    \
@@ -500,12 +500,22 @@ void vmarray_deinit(struct vmarray* array, void (*destructor)(void* value))
 })
 
 #endif
+
+#ifndef likely
+#define likely(x)       __builtin_expect(!!(x), 1)
+#endif
+
+#ifndef unlikely
+#define unlikely(x)     __builtin_expect(!!(x), 0)
+#endif
+
+#endif
 </pre>
 
 <p>在用户态写一个测试程序test.c：</p>
 
 <pre>
-#include &quot;error.h&quot;
+#include &quot;common.h&quot;
 #include &quot;vmarray.h&quot;
 #include &lt;sys/mman.h&gt;
 
@@ -540,7 +550,7 @@ static void destructor(void* value)
 int main()
 {
     struct vmarray array;
-    if(!vmarray_init(&amp;array, 68719476736, sizeof(struct page_info),
+    if(vmarray_init(&amp;array, 68719476736, sizeof(struct page_info),
         PAGE_SIZE, alloc_zeroed_page, free_page, NULL))
         ERROR0(1, &quot;vmarray_init() failed&quot;);
     printf(&quot;level_count = %lu\n&quot;, array.level_count);
@@ -556,7 +566,7 @@ int main()
     for(int i = 0; i &lt; 500000; i++)
     {
         int ret = vmarray_delete(&amp;array, i);
-        assert(ret);
+        assert(ret == 0);
         assert(array.value_count + i + 1 == 1000000);
     }
     printf(&quot;root_level = %p\n&quot;, array.root.node);
