@@ -146,15 +146,13 @@ int vpfnset_add(struct vpfnset* set, unsigned long vpfn)
     pbyte = vmarray_access(&amp;(set-&gt;bitmap), byte_index, 1);
     if(unlikely(!pbyte))
         ERROR1(-ENOMEM, &quot;vmarray_access(&amp;(set-&gt;bitmap), %lu, 1) failed&quot;, byte_index);
-    if(unlikely(pbyte == (void*)(-1)))
-        ERROR1(-EINVAL, &quot;vmarray_access(&amp;(set-&gt;bitmap), %lu, 1) failed&quot;, byte_index);
+    assert(pbyte != (void*)(-1));
     if(((*pbyte) &gt;&gt; bit_index) &amp; 1)
         return 0;
     pvalue = vmarray_access(&amp;(set-&gt;stack), set-&gt;stack.value_count, 1);
     if(unlikely(!pvalue))
         ERROR1(-ENOMEM, &quot;vmarray_access(&amp;(set-&gt;stack), %lu, 1) failed&quot;, set-&gt;stack.value_count);
-    if(unlikely(pvalue == (void*)(-1)))
-        ERROR1(-EINVAL, &quot;vmarray_access(&amp;(set-&gt;stack), %lu, 1) failed&quot;, set-&gt;stack.value_count);
+    assert(pvalue != (void*)(-1));
     (*pbyte) |= 1 &lt;&lt; bit_index;
     (*pvalue) = vpfn;
     return 0;

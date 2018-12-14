@@ -24,7 +24,10 @@
     struct
     {
         struct rw_semaphore lock;
-        int (*on_fault)(struct mm_struct* mm, unsigned long vaddr, int is_write);
+        void (*update_pte)(struct mm_struct* mm, unsigned long vaddr,
+            pte_t* pte, pte_t new_pte);
+        int (*on_fault)(struct mm_struct* mm, unsigned long errcode, unsigned long vaddr);
+        pte_t (*fork_copy_pte)(struct mm_struct* mm, struct mm_struct* dst_mm, pte_t pte);
         void (*on_exit)(struct mm_struct* mm);
         void* privdata;
     }
@@ -32,66 +35,104 @@
 #endif
 </pre>
 
+<p>update_pte函数指针是kernel提供给内核模块使用的，用以更新PTE（比如刷新TLB）。由于不同平台可能有较大差异，因此设计为由kernel提供。on_fault函数指针是内核模块注册的，在发生page fault时，kernel应检查之，如果不为空，则调用。fork_copy_pte函数指针是内核模块注册的，在fork()中复制PTE时，如果其不为空，则调用之（比如内核模块可以清理地雷等等）。on_exit函数指针也是内核模块注册的，在虚拟地址空间被释放前，kernel检查该指针，如果不为空，则调用之。</p>
+
 <p><img src="1.png"></p>
 
 <p>第二步，在kernel/fork.c的第632行附近，即__mmdrop()里面，加入如下代码，使得进程结束时我们自定义的on_exit函数可以被调用，以做一些析构操作：</p>
 
 <pre>
 #ifdef CONFIG_PAGE_FAULT_HOOK
-    down_write(&amp;(mm-&gt;page_fault_hook.lock));
+    down_read(&amp;(mm-&gt;page_fault_hook.lock));
     if(mm-&gt;page_fault_hook.on_exit)
-    {
         mm-&gt;page_fault_hook.on_exit(mm);
-        mm-&gt;page_fault_hook.on_exit = NULL;
-        mm-&gt;page_fault_hook.on_fault = NULL;
-        mm-&gt;page_fault_hook.privdata = NULL;
-    }
-    up_write(&amp;(mm-&gt;page_fault_hook.lock));
+    up_read(&amp;(mm-&gt;page_fault_hook.lock));
 #endif
 </pre>
 
 <p><img src="2.png"></p>
 
-<p>第三步，在kernel/fork.c的第1338行附近，即copy_mm()接近尾部的地方，加入如下代码，使得进程创建时新增的数据结构得到初始化：</p>
+<p>第三步，在kernel/fork.c的第926行附近，加入如下代码，实现新增字段的初始化工作：</p>
 
 <pre>
 #ifdef CONFIG_PAGE_FAULT_HOOK
+static void page_fault_hook_update_pte(struct mm_struct* mm,
+    unsigned long vaddr, pte_t* ppte, pte_t new_pte)
+{
+    struct vm_area_struct fake_vma;
+    fake_vma.vm_mm = mm;
+    unsigned long mmu_start = vaddr &amp; PAGE_MASK;
+    unsigned long mmu_end = mmu_start + PAGE_SIZE;
+    mmu_notifier_invalidate_range_start(mm, mmu_start, mmu_end);
+    flush_cache_page(&amp;fake_vma, vaddr, pte_pfn(*ppte));
+    ptep_clear_flush_notify(&amp;fake_vma, vaddr, ppte);
+    set_pte_at_notify(mm, vaddr, ppte, new_pte);
+    update_mmu_cache(&amp;fake_vma, vaddr, ppte);
+    mmu_notifier_invalidate_range_only_end(mm, mmu_start, mmu_end);
+}
+
+static void inline init_page_fault_hook(struct mm_struct* mm)
+{
     init_rwsem(&amp;(mm-&gt;page_fault_hook.lock));
+    mm-&gt;page_fault_hook.update_pte = page_fault_hook_update_pte;
     mm-&gt;page_fault_hook.on_fault = NULL;
+    mm-&gt;page_fault_hook.fork_copy_pte = NULL;
     mm-&gt;page_fault_hook.on_exit = NULL;
     mm-&gt;page_fault_hook.privdata = NULL;
+}
+#endif
+</pre>
+
+<p>并在第953行附近，即mm_init()函数开头调用之，使得进程创建时新增的数据结构得到初始化：</p>
+
+<pre>
+#ifdef CONFIG_PAGE_FAULT_HOOK
+    init_page_fault_hook(mm);
 #endif
 </pre>
 
 <p><img src="3.png"></p>
 
-<p>第四步，在arch/x86/mm/fault.c的1305行附近，即__do_page_fault()中，插入如下代码，使得发生page fault时我们的on_fault函数得到调用：</p>
+<p>第四步，在arch/x86/mm/fault.c的1305行附近，即__do_page_fault()中，插入如下代码，使得发生page fault时我们的on_fault函数得到调用（目前仅支持x86）：</p>
 
 <pre>
 #ifdef CONFIG_PAGE_FAULT_HOOK
     down_read(&amp;(mm-&gt;page_fault_hook.lock));
     if(mm-&gt;page_fault_hook.on_fault)
-    {
-        if(mm-&gt;page_fault_hook.on_fault(mm, address, error_code &amp; X86_PF_WRITE))
-        {
+    {    
+        if(mm-&gt;page_fault_hook.on_fault(mm, error_code, address))
+        {    
             up_read(&amp;(mm-&gt;page_fault_hook.lock));
             return;
-        }
-    }
+        }    
+    }    
     up_read(&amp;(mm-&gt;page_fault_hook.lock));
 #endif
 </pre>
 
 <p><img src="4.png"></p>
 
-<p>第五步，在arch/x86/Kconfig的最前面，加上如下代码，让以上所有CONFIG_PAGE_FAULT_HOOK使能：</p>
+<p>第五步，在mm/memory.c的第1059行附近添加如下代码，使得内核模块有机会修改fork()时的页表项：</p>
+
+<pre>
+#ifdef CONFIG_PAGE_FAULT_HOOK
+    down_read(&amp;(src_mm-&gt;page_fault_hook.lock));
+    if(src_mm-&gt;page_fault_hook.fork_copy_pte)
+        pte = src_mm-&gt;page_fault_hook.fork_copy_pte(src_mm, dst_mm, pte);
+    up_read(&amp;(src_mm-&gt;page_fault_hook.lock));
+#endif
+</pre>
+
+<p><img src="5.png"></p>
+
+<p>第六步，在arch/x86/Kconfig的最前面，加上如下代码，让以上所有CONFIG_PAGE_FAULT_HOOK使能：</p>
 
 <pre>
 config PAGE_FAULT_HOOK
     def_bool y
 </pre>
 
-<p><img src="5.png"></p>
+<p><img src="6.png"></p>
 
 <p>OK，编译内核：</p>
 
