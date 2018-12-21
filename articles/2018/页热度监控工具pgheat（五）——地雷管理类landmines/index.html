@@ -17,6 +17,474 @@
 
 <p>有了vpfnset之后，就可以构建整个系统的核心了——landmines，即管理“埋雷”的工具类。landmines类提供了“埋雷”、“排雷”等操作，外部调用者只需要按照接口定义进行使用即可，不需要知道“地雷”到底是通过何种手段实现的（比如说，在x86_64上，通过PAGE_USER标志位来实现“地雷”）。</p>
 
+<p>最初我“投放地雷”的策略是在虚拟地址空间里随机投放，如果选中的页已经有雷，那么则跳过，否则投放。但是，实践发现，这样的投放效率会非常低下。比如说，一个进程开辟了10GB的地址空间，其中只有10M空间是频繁访问的，而其他内存几乎不访问。那么一开始投雷时，基本都能投上，但是到后来，投雷效率越来越低，到了最后，9G 1014M的冷数据空间都被投上了地雷，只有10M热数据空间才能新投放，于是投放效率只有千分之一不到！</p>
+
+<p>于是呢，我又想，能不能有个集合，集合里面存放了那些没有雷的虚拟页号（没错，需要《<a href="../页热度监控工具pgheat（四）——虚拟页框号的集合vpfnset/index.html">页热度监控工具pgheat（四）——虚拟页框号的集合vpfnset</a>》中的vpfnset）。每次投雷时，都从这个集合中随机取出一个虚拟页号，然后投在这个页上，这样基本百发百中。那么如何维护这个集合呢？首先，当初始化时，需要遍历虚拟地址空间，把所有“友好页（friendly page）”（稍后解释）的虚拟页号都加入集合中。之后投雷时会不停地随机取出元素。而当一个投了雷的页被“踩”时，触发page fault，在“排雷”之后把该虚拟页号加入集合。
+</p>
+
+<p>所谓“友好页(friendly page)”，是指那些可以投放地雷的页。那么哪些是不友好的页呢？比如巨页（huge page）、比如用作IO的纯粹的地址映射（IO map）、比如共享页（shared page)等等。其实IO页和共享页是可以投雷的，只是没有必要——IO页通常不占用内存页，只是一个映射关系，而共享页通常用于进程间通信，不可以挪动。</p>
+
+<p>如果虚拟地址空间与物理地址空间的映射关系永远不变的话，那么上述的操作足矣。可是，应用程序可能会新开内存段、扩张地址段、收缩地址段，或者通过缺页异常为空的虚拟页关联上物理页。因此，仅仅在初始化时收集“友好页号”、在“排雷”是回收“友好页号”是不够的。改进后的策略是这样的：
+<ul>
+<li>当触发缺页异常（page fault的一种，另一种是页权限异常），就把虚拟页号加入集合。</li>
+<li>当投放地雷时，判断当前的虚拟页号是否还是“友好页号”。</li>
+<li>每隔一段时间，比如30秒，遍历虚拟地址空间，收集“友好页号”。</li>
+</ul>
+第一条规则可以应对应用程序新增物理页的情况，因为绝大多数新的非共享物理页都是通过缺页中断关联入虚拟地址空间的。第二条规则则是为了应对应用程序释放物理页的情况，可以在投放时过滤集合中无效的页号。第三条规则则是为了“兜底”，因为总有一些特例，比如有些文件系统可能是在mmap时就把所有物理页都映射好了，而不是通过page fault逐页按需映射。
+</p>
+
+<p>OK，需要文字描述的就这么多，其他细节代码都写的很清楚了～</p>
+
+<p>首先是landmines.h，定义了对外接口，接口是平台无关的：</p>
+
+<pre>
+#ifndef LANDMINES_H
+#define LANDMINES_H
+
+#include "common.h"
+#include "vpfnset.h"
+
+#include &lt;linux/mm.h&gt;
+
+#define LANDMINES_TRIGGERED_BY_READ   1
+#define LANDMINES_TRIGGERED_BY_WRITE  2
+#define LANDMINES_TRIGGERED_BY_EXEC   3
+
+struct landmines 
+{
+    struct mm_struct* mm;   // the virtual memory space that's monitored
+    size_t page_count;      // count of friendly pages
+    struct vpfnset alts;    // the alternative pages to set landmines
+    spinlock_t alts_lock;   // protect field 'alts'
+    size_t triggered_count; // the count of triggered landmines totally
+};
+
+// init
+//      mm: the virtual memory space of a process to be monitored
+// return 0 when succeed, or error code otherwise
+int landmines_init(struct landmines* landmines, struct mm_struct* mm);
+
+// scan the whole virtual memory space to find out friendly pages
+// return 0 when succeed, or error code otherwise
+int landmines_detect_pages(struct landmines* landmines);
+
+// randomly set landmines in scanned friendly pages
+//      count: count of landmines
+//      func_on_set: called before a landmine is set, it cannot sleep (can be null)
+//        if it returns a negative value, setting landmines is cancelled,
+//        and landmines_set() return this negative value
+//          vaddr: the virtual address where the page is
+//          privdata: the private data
+//      privdata: the user's private data passed to the function above
+// return the count of landmines that are set successfully, or error code if failed
+ssize_t landmines_set(struct landmines* landmines, size_t count,
+    int (*func_on_set)(unsigned long vaddr, void* privdata), void* privdata);
+
+// when a page fault is triggered, call this function
+//      errcode: the reason why this page fault happens
+//      vaddr: the address in virtual memory space where page fault happens
+//      func_on_unset: called before a landmine is unset, it cannot sleep (can be null)
+//        if it returns a negative value,
+//        then landmines_try_unset() return this negative value
+//          type: why this landmine is triggered(see the return values below)
+//          vaddr: the virtual address where the page fault is
+//          privdata: the private data
+//      privdata: the user's private data passed to the function above
+// return LANDMINES_TRIGGERED_BY_READ if a landmine on this page is triggered by read
+// return LANDMINES_TRIGGERED_BY_WRITE if a landmine on this page triggered by write
+// return LANDMINES_TRIGGERED_BY_EXEC if a landmine on this page is triggered by exec
+// return 0 if not (then kernel will do the original logic of do_page_fault)
+// or a negative error code if something goes wrong
+int landmines_on_page_fault(struct landmines* landmines,
+    unsigned long errcode, unsigned long vaddr,
+    int (*func_on_unset)(int type, unsigned long vaddr, void* privdata), void* privdata);
+
+// get the count of triggered landmines
+//      reset: whether to reset the counter after get
+// return the triggered count
+size_t landmines_get_triggered_count(struct landmines* landmines, int reset);
+
+// get the count of alternative pages
+// return the alternative count
+size_t landmines_get_alternative_count(struct landmines* landmines);
+
+// get the count of friendly pages
+// return the page count 
+size_t landmines_get_page_count(struct landmines* landmines);
+
+// recover all pages in the virtual memory space,
+//   usually used before pgheat_deinit()
+// return 0 if succeed, or error code otherwise
+int landmines_recover_all(struct landmines* landmines);
+
+// deinit the structure
+void landmines_deinit(struct landmines* landmines);
+
+// which VMA is supported to be set landmines on
+int landmines_is_friendly_vma(struct vm_area_struct* vma);
+
+// unset a landmine on this page if any
+pte_t landmines_recover_pte(pte_t pte);
+
+#endif
+</pre>
+
+<p>接着是实现landmines.c。实现要做到平台无关是不可能的，但是对平台依赖不太大，全部提取成了最开头的宏定义了。</p>
+
+<pre>
+#include "landmines.h"
+
+#include &lt;asm/traps.h&gt;
+#include &lt;linux/slab.h&gt;
+#include &lt;linux/random.h&gt;
+
+#define ADDRESS_BITS        48
+#define MAX_PAGE_COUNT      ((size_t)1 &lt;&lt; (ADDRESS_BITS - PAGE_SHIFT))
+
+#define MAKE_PTE_ACCESSABLE(pte)        pte_set_flags(pte, _PAGE_USER)
+#define MAKE_PTE_UNACCESSABLE(pte)      pte_clear_flags(pte, _PAGE_USER)
+#define IS_PTE_ACCESSABLE(pte)          (pte_flags(pte) &amp; _PAGE_USER)
+
+#define IS_PAGE_FAULT_BY_NO_PAGE(err)   (!(err &amp; X86_PF_PROT))
+#define IS_PAGE_FAULT_BY_EXEC(err)      (err &amp; X86_PF_INSTR)
+#define IS_PAGE_FAULT_BY_WRITE(err)     (err &amp; X86_PF_WRITE)
+
+#define ATOMIC_GET_U64(name)            (name)
+#define ATOMIC_INC_U64(name)            __sync_fetch_and_add(&amp;(name), 1)
+#define ATOMIC_SET_U64(name, val)       (name) = (val)
+#define ATOMIC_GET_AND_RESET_U64(name)  __sync_fetch_and_and(&amp;(name), 0)
+
+static void* alloc_zeroed_page_for_vpfnset(void* privdata)
+{
+    return (void*)get_zeroed_page(GFP_ATOMIC);
+}
+
+static void free_page_for_vpfnset(void* page, void* privdata)
+{
+    free_page((unsigned long)page);
+}
+
+static size_t random_for_vpfnset(void* privdata)
+{
+    return get_random_long();
+}
+
+int landmines_init(struct landmines* landmines, struct mm_struct* mm)
+{
+    int ret;
+    assert(landmines);
+    if(unlikely(!mm))
+        ERROR0(-EINVAL, "param &lt;mm = NULL&gt; is not allowed");
+    landmines-&gt;mm = mm;
+    landmines-&gt;page_count = 0;
+    if(unlikely(ret = vpfnset_init(&amp;(landmines-&gt;alts), MAX_PAGE_COUNT, PAGE_SIZE, 
+        alloc_zeroed_page_for_vpfnset, free_page_for_vpfnset, random_for_vpfnset, NULL)))
+        ERROR0(ret, "vpfnset_init(&amp;(landmines-&gt;alts), ...) failed");
+    spin_lock_init(&amp;(landmines-&gt;alts_lock));
+    landmines-&gt;triggered_count = 0;
+    return 0;
+}
+
+static pte_t* get_pte(struct mm_struct* mm, unsigned long vaddr, spinlock_t** pte_lock)
+{
+    pgd_t* pgd;
+    p4d_t* p4d;
+    pud_t* pud;
+    pmd_t* pmd;
+    pte_t* pte;
+    spinlock_t *pmd_lock, *lock;
+    spin_lock(&amp;(mm-&gt;page_table_lock));
+    pgd = pgd_offset(mm, vaddr);
+    if(unlikely(pgd_none(*pgd) || pgd_bad(*pgd)))
+        goto error;
+    p4d = p4d_offset(pgd, vaddr);
+    if(unlikely(p4d_none(*p4d) || p4d_bad(*p4d)))
+        goto error;
+    pud = pud_offset(p4d, vaddr);
+    if(unlikely(pud_none(*pud) || pud_bad(*pud)))
+        goto error;
+    pmd = pmd_offset(pud, vaddr);
+    pmd_lock = pmd_lockptr(mm, pmd);
+    spin_lock(pmd_lock);
+    spin_unlock(&amp;(mm-&gt;page_table_lock));
+    if(unlikely(pmd_none(*pmd) || pmd_bad(*pmd)))
+    {
+        spin_unlock(pmd_lock);
+        return NULL;
+    }
+    pte = pte_offset_map(pmd, vaddr);
+    lock = pte_lockptr(mm, pmd);
+    spin_lock(lock);
+    spin_unlock(pmd_lock);
+    if(unlikely(pte_none(*pte) || !pte_present(*pte)))
+    {
+        pte_unmap_unlock(pte, lock);
+        return NULL;
+    }
+    assert(pte_lock);
+    (*pte_lock) = lock;
+    return pte;  
+
+error:
+    spin_unlock(&amp;(mm-&gt;page_table_lock));
+    return NULL;
+}
+
+static inline int add_alternative(struct landmines* landmines, unsigned long vaddr)
+{
+    unsigned long vpfn = vaddr &gt;&gt; PAGE_SHIFT;
+    int ret;
+    assert(vpfn);
+    spin_lock(&amp;(landmines-&gt;alts_lock));
+    ret = vpfnset_add(&amp;(landmines-&gt;alts), vpfn);
+    spin_unlock(&amp;(landmines-&gt;alts_lock));
+    if(unlikely(ret))
+        ERROR1(ret, "vpfnset_add(&amp;(landmines-&gt;alts), %lx) failed", vpfn);
+    return 0;
+}
+
+static inline unsigned long pop_alternative(struct landmines* landmines)
+{
+    unsigned long vpfn;
+    spin_lock(&amp;(landmines-&gt;alts_lock));
+    vpfn = vpfnset_pop(&amp;(landmines-&gt;alts), 0);
+    spin_unlock(&amp;(landmines-&gt;alts_lock));
+    return vpfn &lt;&lt; PAGE_SHIFT;
+}
+
+int landmines_detect_pages(struct landmines* landmines)
+{
+    struct mm_struct* mm;
+    struct vm_area_struct* vma;
+    size_t page_count = 0;
+    assert(landmines);
+    mm = landmines-&gt;mm;
+    down_read(&amp;(mm-&gt;mmap_sem));
+    vma = mm-&gt;mmap;
+    while(vma)
+    {
+        if(likely(landmines_is_friendly_vma(vma)))
+        {
+            unsigned long vaddr = vma-&gt;vm_start, vaddr_end = vma-&gt;vm_end;
+            for(; vaddr &lt; vaddr_end; vaddr += PAGE_SIZE)
+            {
+                pte_t *ppte, pte;
+                spinlock_t* pte_lock;
+                int ret;
+                if(!(ppte = get_pte(mm, vaddr, &amp;pte_lock)))
+                    continue;
+                pte = (*ppte);
+                pte_unmap_unlock(ppte, pte_lock);
+                if(IS_PTE_ACCESSABLE(pte))
+                {
+                    if(unlikely(ret = add_alternative(landmines, vaddr)))
+                    {
+                        assert(ret &lt; 0);
+                        up_read(&amp;(mm-&gt;mmap_sem));
+                        ERROR1(ret, "add_alternative(landmines, %lx) failed", vaddr);
+                    }
+                }
+                page_count++;
+            }
+        }
+        vma = vma-&gt;vm_next;
+    }
+    up_read(&amp;(mm-&gt;mmap_sem));
+    ATOMIC_SET_U64(landmines-&gt;page_count, page_count);
+    return 0;
+}
+
+static int set_landmine_at(struct mm_struct* mm, unsigned long vaddr,
+    int (*func_on_set)(unsigned long vaddr, void* privdata), void* privdata)
+{
+    pte_t *ppte, pte;
+    spinlock_t* pte_lock;
+    if(unlikely(!(ppte = get_pte(mm, vaddr, &amp;pte_lock))))
+        return 0;
+    pte = (*ppte);
+    if(unlikely(!IS_PTE_ACCESSABLE(pte)))
+    {
+        pte_unmap_unlock(ppte, pte_lock);
+        return 0;
+    }
+    if(likely(func_on_set))
+    {
+        int ret;
+        if(unlikely((ret = func_on_set(vaddr, privdata)) &lt; 0))
+        {
+            pte_unmap_unlock(ppte, pte_lock);
+            return ret;
+        }
+    }
+    pte = MAKE_PTE_UNACCESSABLE(pte);
+    set_pte_at(mm, vaddr, ppte, pte);
+    pte_unmap_unlock(ppte, pte_lock);
+    return 1;
+}
+
+static struct vm_area_struct* find_friendly_vma(struct mm_struct* mm, unsigned long vaddr)
+{
+    struct vm_area_struct* vma = find_vma(mm, vaddr);
+    if(unlikely(!vma))
+        return NULL;
+    if(unlikely(!(vma-&gt;vm_start &lt;= vaddr &amp;&amp; vaddr &lt; vma-&gt;vm_end)))
+        return NULL;
+    if(unlikely(!landmines_is_friendly_vma(vma)))
+        return NULL;
+    return vma;
+}
+
+ssize_t landmines_set(struct landmines* landmines, size_t count,
+    int (*func_on_set)(unsigned long vaddr, void* privdata), void* privdata)
+{
+    struct mm_struct* mm;
+    size_t i, new_set_count = 0;
+    assert(landmines);
+    mm = landmines-&gt;mm;
+    down_read(&amp;(mm-&gt;mmap_sem));
+    for(i = 0; i &lt; count; i++)
+    {
+        unsigned long vaddr = pop_alternative(landmines);
+        int ret;
+        if(unlikely(vaddr == 0))
+            break;
+        if(unlikely(!find_friendly_vma(mm, vaddr)))
+            continue;
+        if(likely((ret = set_landmine_at(mm, vaddr, func_on_set, privdata)) == 1))
+            new_set_count++; 
+        else if(unlikely(ret &lt; 0))
+        {
+            up_read(&amp;(mm-&gt;mmap_sem));
+            return ret;
+        }
+    }
+    up_read(&amp;(mm-&gt;mmap_sem));
+    return new_set_count;
+}
+
+int landmines_on_page_fault(struct landmines* landmines,
+    unsigned long errcode, unsigned long vaddr,
+    int (*func_on_unset)(int type, unsigned long vaddr, void* privdata), void* privdata)
+{
+    struct mm_struct* mm;
+    pte_t *ppte, pte;
+    spinlock_t* pte_lock;
+    int type, func_ret = 0;
+    assert(landmines);
+    if(unlikely(IS_PAGE_FAULT_BY_NO_PAGE(errcode)))
+    {
+        add_alternative(landmines, vaddr);
+        return 0;
+    }
+    mm = landmines-&gt;mm;
+    ppte = get_pte(mm, vaddr, &amp;pte_lock);
+    assert(ppte);
+    pte = (*ppte);
+    if(unlikely(IS_PTE_ACCESSABLE(pte)))
+    {
+        pte_unmap_unlock(ppte, pte_lock);
+        return 0;
+    }
+    pte = MAKE_PTE_ACCESSABLE(pte);
+    set_pte_at(mm, vaddr, ppte, pte);
+    if(unlikely(IS_PAGE_FAULT_BY_EXEC(errcode)))
+        type = LANDMINES_TRIGGERED_BY_EXEC;
+    else if(IS_PAGE_FAULT_BY_WRITE(errcode))
+        type = LANDMINES_TRIGGERED_BY_WRITE;
+    else
+        type = LANDMINES_TRIGGERED_BY_READ;
+    if(likely(func_on_unset))
+        func_ret = func_on_unset(type, vaddr, privdata);
+    pte_unmap_unlock(ppte, pte_lock);
+    ATOMIC_INC_U64(landmines-&gt;triggered_count);
+    add_alternative(landmines, vaddr);
+    if(unlikely(func_ret &lt; 0))
+        return func_ret;
+    return type;
+}
+
+size_t landmines_get_triggered_count(struct landmines* landmines, int reset)
+{
+    size_t count;
+    assert(landmines);
+    if(reset)
+        count = ATOMIC_GET_AND_RESET_U64(landmines-&gt;triggered_count);
+    else
+        count = ATOMIC_GET_U64(landmines-&gt;triggered_count);
+    return count;
+}
+
+size_t landmines_get_alternative_count(struct landmines* landmines)
+{
+    size_t n;
+    assert(landmines);
+    spin_lock(&amp;(landmines-&gt;alts_lock));
+    n = vpfnset_get_length(&amp;(landmines-&gt;alts));
+    spin_unlock(&amp;(landmines-&gt;alts_lock));
+    return n;
+}
+
+size_t landmines_get_page_count(struct landmines* landmines)
+{
+    assert(landmines);
+    return ATOMIC_GET_U64(landmines-&gt;page_count);
+}
+
+int landmines_recover_all(struct landmines* landmines)
+{
+    struct mm_struct* mm;
+    struct vm_area_struct* vma;
+    assert(landmines);
+    mm = landmines-&gt;mm;
+    down_read(&amp;(mm-&gt;mmap_sem));
+    vma = mm-&gt;mmap;
+    while(vma)
+    {
+        if(likely(landmines_is_friendly_vma(vma)))
+        {
+            unsigned long vaddr = vma-&gt;vm_start, vaddr_end = vma-&gt;vm_end;
+            for(; vaddr &lt; vaddr_end; vaddr += PAGE_SIZE)
+            {
+                pte_t *ppte, pte;
+                spinlock_t* pte_lock;
+                if(!(ppte = get_pte(mm, vaddr, &amp;pte_lock)))
+                    continue;
+                pte = (*ppte);
+                if(!IS_PTE_ACCESSABLE(pte))
+                {
+                    pte = MAKE_PTE_ACCESSABLE(pte);
+                    set_pte_at(mm, vaddr, ppte, pte);
+                }
+                pte_unmap_unlock(ppte, pte_lock);
+            }
+        }
+        vma = vma-&gt;vm_next;
+    }
+    up_read(&amp;(mm-&gt;mmap_sem));
+    return 0;
+}
+
+void landmines_deinit(struct landmines* landmines)
+{
+    assert(landmines);
+    vpfnset_deinit(&amp;(landmines-&gt;alts));
+}
+
+int landmines_is_friendly_vma(struct vm_area_struct* vma)
+{
+    assert(vma);
+    return !(vma-&gt;vm_flags &amp; (VM_SHARED | VM_PFNMAP | VM_LOCKED | VM_IO |
+        VM_LOCKONFAULT | VM_HUGETLB | VM_MIXEDMAP | VM_HUGEPAGE | VM_MERGEABLE));
+}
+
+pte_t landmines_recover_pte(pte_t pte)
+{
+    if(!IS_PTE_ACCESSABLE(pte))
+        pte = MAKE_PTE_ACCESSABLE(pte);
+    return pte;
+}
+</pre>
+
                 </div>
                         </article>
                     </div>

@@ -103,15 +103,15 @@
 
 <pre>
 #ifdef CONFIG_PAGE_HEAT_SAMPLE
-    down_read(&amp;(mm-&gt;page_heat_sample.lock));
-    if(mm-&gt;page_heat_sample.on_access_error &amp;&amp;
-        mm-&gt;page_heat_sample.on_access_error(mm, error_code, address))
-    {
+        down_read(&amp;(mm-&gt;page_heat_sample.lock));
+        if(mm-&gt;page_heat_sample.on_access_error &amp;&amp;
+            mm-&gt;page_heat_sample.on_access_error(mm, error_code, address))
+        {
+            up_read(&amp;(mm-&gt;page_heat_sample.lock));
+            up_read(&amp;mm-&gt;mmap_sem);
+            return;
+        }
         up_read(&amp;(mm-&gt;page_heat_sample.lock));
-        up_read(&amp;mm-&gt;mmap_sem);
-        return;
-    }
-    up_read(&amp;(mm-&gt;page_heat_sample.lock));
 #endif
 </pre>
 
