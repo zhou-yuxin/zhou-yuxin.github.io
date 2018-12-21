@@ -15,124 +15,116 @@
                             </header>
                             <div class="entry-content">
 
-<p>Kernel的修改非常简单，分为五步，下面一步步分解。我使用的kernel版本是<a href="https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.17.19.tar.xz">4.17.19</a>，不过修改对kernel版本依赖很小。</p>
+<p>Kernel的修改非常简单，分为7步，下面一步步分解。我使用的kernel版本是<a href="https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.17.19.tar.xz">4.17.19</a>，不过修改对kernel版本依赖很小。</p>
 
 <p>第一步，在include/linux/mm_types.h的第506行附近，即struct mm_struct结构体最后加入如下代码，一切修改都以新的数据结构为基础：</p>
 
 <pre>
-#ifdef CONFIG_PAGE_FAULT_HOOK
+#ifdef CONFIG_PAGE_HEAT_SAMPLE
     struct
-    {
+    {   
         struct rw_semaphore lock;
-        void (*update_pte)(struct mm_struct* mm, unsigned long vaddr,
-            pte_t* pte, pte_t new_pte);
-        int (*on_fault)(struct mm_struct* mm, unsigned long errcode, unsigned long vaddr);
-        pte_t (*fork_copy_pte)(struct mm_struct* mm, struct mm_struct* dst_mm, pte_t pte);
+        int (*on_fault)(struct mm_struct* mm, unsigned long error_code, unsigned long address);
+        int (*on_access_error)(struct mm_struct* mm, unsigned long error_code, 
+            unsigned long address);
+        pte_t (*on_fork)(struct mm_struct* mm, struct mm_struct* dst_mm, pte_t pte);
         void (*on_exit)(struct mm_struct* mm);
         void* privdata;
-    }
-    page_fault_hook;
+    }   
+    page_heat_sample;
 #endif
 </pre>
 
-<p>update_pte函数指针是kernel提供给内核模块使用的，用以更新PTE（比如刷新TLB）。由于不同平台可能有较大差异，因此设计为由kernel提供。on_fault函数指针是内核模块注册的，在发生page fault时，kernel应检查之，如果不为空，则调用。fork_copy_pte函数指针是内核模块注册的，在fork()中复制PTE时，如果其不为空，则调用之（比如内核模块可以清理地雷等等）。on_exit函数指针也是内核模块注册的，在虚拟地址空间被释放前，kernel检查该指针，如果不为空，则调用之。</p>
-
 <p><img src="1.png"></p>
+
+<p>每一个字段的用处将在以下代码中体现。</p>
 
 <p>第二步，在kernel/fork.c的第632行附近，即__mmdrop()里面，加入如下代码，使得进程结束时我们自定义的on_exit函数可以被调用，以做一些析构操作：</p>
 
 <pre>
-#ifdef CONFIG_PAGE_FAULT_HOOK
-    down_read(&amp;(mm-&gt;page_fault_hook.lock));
-    if(mm-&gt;page_fault_hook.on_exit)
-        mm-&gt;page_fault_hook.on_exit(mm);
-    up_read(&amp;(mm-&gt;page_fault_hook.lock));
+#ifdef CONFIG_PAGE_HEAT_SAMPLE
+    down_read(&amp;(mm-&gt;page_heat_sample.lock));
+    if(mm-&gt;page_heat_sample.on_exit)
+        mm-&gt;page_heat_sample.on_exit(mm);
+    up_read(&amp;(mm-&gt;page_heat_sample.lock));
 #endif
 </pre>
 
 <p><img src="2.png"></p>
 
-<p>第三步，在kernel/fork.c的第926行附近，加入如下代码，实现新增字段的初始化工作：</p>
+<p>第三步，在kernel/fork.c的第929行附近，即mm_init()开头，加入如下代码，实现新增字段的初始化工作：</p>
 
 <pre>
-#ifdef CONFIG_PAGE_FAULT_HOOK
-static void page_fault_hook_update_pte(struct mm_struct* mm,
-    unsigned long vaddr, pte_t* ppte, pte_t new_pte)
-{
-    struct vm_area_struct fake_vma;
-    fake_vma.vm_mm = mm;
-    unsigned long mmu_start = vaddr &amp; PAGE_MASK;
-    unsigned long mmu_end = mmu_start + PAGE_SIZE;
-    mmu_notifier_invalidate_range_start(mm, mmu_start, mmu_end);
-    flush_cache_page(&amp;fake_vma, vaddr, pte_pfn(*ppte));
-    ptep_clear_flush_notify(&amp;fake_vma, vaddr, ppte);
-    set_pte_at_notify(mm, vaddr, ppte, new_pte);
-    update_mmu_cache(&amp;fake_vma, vaddr, ppte);
-    mmu_notifier_invalidate_range_only_end(mm, mmu_start, mmu_end);
-}
-
-static void inline init_page_fault_hook(struct mm_struct* mm)
-{
-    init_rwsem(&amp;(mm-&gt;page_fault_hook.lock));
-    mm-&gt;page_fault_hook.update_pte = page_fault_hook_update_pte;
-    mm-&gt;page_fault_hook.on_fault = NULL;
-    mm-&gt;page_fault_hook.fork_copy_pte = NULL;
-    mm-&gt;page_fault_hook.on_exit = NULL;
-    mm-&gt;page_fault_hook.privdata = NULL;
-}
-#endif
-</pre>
-
-<p>并在第953行附近，即mm_init()函数开头调用之，使得进程创建时新增的数据结构得到初始化：</p>
-
-<pre>
-#ifdef CONFIG_PAGE_FAULT_HOOK
-    init_page_fault_hook(mm);
+#ifdef CONFIG_PAGE_HEAT_SAMPLE
+    init_rwsem(&amp;(mm-&gt;page_heat_sample.lock));
+    mm-&gt;page_heat_sample.on_fault = NULL;
+    mm-&gt;page_heat_sample.on_access_error = NULL;
+    mm-&gt;page_heat_sample.on_fork = NULL;
+    mm-&gt;page_heat_sample.on_exit = NULL;
+    mm-&gt;page_heat_sample.privdata = NULL;
 #endif
 </pre>
 
 <p><img src="3.png"></p>
 
-<p>第四步，在arch/x86/mm/fault.c的1305行附近，即__do_page_fault()中，插入如下代码，使得发生page fault时我们的on_fault函数得到调用（目前仅支持x86）：</p>
+<p>第四步，在mm/memory.c的第1059行附近添加如下代码，使得内核模块有机会修改fork()时的页表项（比如，复制给子进程的PTE是不能有“地雷”的，所以on_fork()需要清除PTE上的地雷）：</p>
 
 <pre>
-#ifdef CONFIG_PAGE_FAULT_HOOK
-    down_read(&amp;(mm-&gt;page_fault_hook.lock));
-    if(mm-&gt;page_fault_hook.on_fault)
-    {    
-        if(mm-&gt;page_fault_hook.on_fault(mm, error_code, address))
-        {    
-            up_read(&amp;(mm-&gt;page_fault_hook.lock));
-            return;
-        }    
-    }    
-    up_read(&amp;(mm-&gt;page_fault_hook.lock));
+#ifdef CONFIG_PAGE_HEAT_SAMPLE
+    down_read(&amp;(src_mm-&gt;page_heat_sample.lock));
+    if(src_mm-&gt;page_heat_sample.on_fork)
+        pte = src_mm-&gt;page_heat_sample.on_fork(src_mm, dst_mm, pte);
+    up_read(&amp;(src_mm-&gt;page_heat_sample.lock));
 #endif
 </pre>
 
 <p><img src="4.png"></p>
 
-<p>第五步，在mm/memory.c的第1059行附近添加如下代码，使得内核模块有机会修改fork()时的页表项：</p>
+<p>第五步，在arch/x86/mm/fault.c的1305行附近，即__do_page_fault()中，插入如下代码，使得发生page fault时我们的on_fault函数得到调用（比如“排雷”）（目前仅支持x86，如要支持其他硬件，在相应的arch/xxx/mm/fault.c中作类似修改）：</p>
 
 <pre>
-#ifdef CONFIG_PAGE_FAULT_HOOK
-    down_read(&amp;(src_mm-&gt;page_fault_hook.lock));
-    if(src_mm-&gt;page_fault_hook.fork_copy_pte)
-        pte = src_mm-&gt;page_fault_hook.fork_copy_pte(src_mm, dst_mm, pte);
-    up_read(&amp;(src_mm-&gt;page_fault_hook.lock));
+#ifdef CONFIG_PAGE_HEAT_SAMPLE
+    down_read(&amp;(mm-&gt;page_heat_sample.lock));
+    if(mm-&gt;page_heat_sample.on_fault &amp;&amp;
+        mm-&gt;page_heat_sample.on_fault(mm, error_code, address))
+    {
+        up_read(&amp;(mm-&gt;page_heat_sample.lock));
+        return;
+    }
+    up_read(&amp;(mm-&gt;page_heat_sample.lock));
 #endif
 </pre>
 
 <p><img src="5.png"></p>
 
-<p>第六步，在arch/x86/Kconfig的最前面，加上如下代码，让以上所有CONFIG_PAGE_FAULT_HOOK使能：</p>
+<p>该函数返回0表示该page fault与页热度检测无关，交由kernel原本的page fault逻辑去处理。返回1表示该page fault是“地雷”导致的，并且已经“排雷”，不需要后续的kernel的逻辑了，直接return。</p>
+
+<p>第六步，在arch/x86/mm/fault.c的第1391行附近，加入以下代码，使得TLB偶尔不一致或者并发“踩雷”时，权限异常导致的page fault能够有豁免机会（见附录详解）：</p>
 
 <pre>
-config PAGE_FAULT_HOOK
-    def_bool y
+#ifdef CONFIG_PAGE_HEAT_SAMPLE
+    down_read(&amp;(mm-&gt;page_heat_sample.lock));
+    if(mm-&gt;page_heat_sample.on_access_error &amp;&amp;
+        mm-&gt;page_heat_sample.on_access_error(mm, error_code, address))
+    {
+        up_read(&amp;(mm-&gt;page_heat_sample.lock));
+        up_read(&amp;mm-&gt;mmap_sem);
+        return;
+    }
+    up_read(&amp;(mm-&gt;page_heat_sample.lock));
+#endif
 </pre>
 
 <p><img src="6.png"></p>
+
+<p>第七步，在arch/x86/Kconfig的最前面，加上如下代码，让以上所有CONFIG_PAGE_HEAT_SAMPLE使能：</p>
+
+<pre>
+config PAGE_HEAT_SAMPLE
+    def_bool y
+</pre>
+
+<p><img src="7.png"></p>
 
 <p>OK，编译内核：</p>
 
@@ -144,6 +136,36 @@ sudo make install
 </pre>
 
 <p>重启即可使用新的Kernel了！</p>
+
+<p>========================附录：on_acces_error的作用=================</p>
+
+<p>首先介绍一下背景知识：当MMU发现一个页异常时，会触发硬件中断，即page fault，并且给定一个error_code，指明发生page fault的原因。在x86上，error_code的第一位指明是缺页还是页权限错误，第二位指明是读访问还是写访问，第三位指明是用户态访问还是内核态访问等等，定义可见arch/x86/include/asm/traps.h末尾：</p>
+
+<p><img src="8.png"></p>
+
+<p>可见，error_code只会指出是不是权限异常导致的，却不会指出到底是什么权限的缺失导致的。</p>
+
+<p>我们考虑一个多线程的情况。假设一个进程拥有两个线程A和B，且某一时刻A和B分别运行在core 1和core 2上。若A和B同时访问同一个页，恰巧该页上有“地雷”，那么core 1和core 2同时触发page fault。假设core 1先执行了on_fault()，清除了“地雷”，并且直接退出了page fault，回到用户态继续执行。当core 2执行on_fault()时，发现该页不存在“地雷”，因此认为该page fault与“地雷”无关，就返回0，执行kernel原本的page fault逻辑。由于“地雷”是通过权限异常触发的（x86上使用_PAGE_USER位），因此kernel原本的access_error()函数检查error_code发现，该page fault是一个错误的访问权限导致的，于是发送SIGSEGV信号杀死进程。</p>
+
+<p>除了多线程并发踩同一个雷会导致该bug，某些不保证TLB一致性的CPU也会导致该bug。假设某个页上有“地雷”，运行在core 1上的线程A先“踩雷”，触发了page fault，在on_fault()内部“排雷”，并直接return回用户态继续运行。尽管页表中的该PTE已经没有了“地雷”，且core 1的TLB也刷新了，但是core 2的TLB中该页的PTE副本依旧有“地雷”。于是，当稍后运行在core 2上的线程B访问该页时，TLB中的“地雷”使得core 2触发page fault。可是，当core 2调用on_fault()后发现，该页并不存在“地雷”，因此认为该page fault与“地雷”无关，于是on_fault()返回0，执行kernel中原本的page fault逻辑。接着又是一样的桥段——由于“地雷”是通过权限异常触发的（x86上使用_PAGE_USER位），因此kernel原本的access_error()函数检查error_code发现，该page fault是一个错误的访问权限导致的，于是发送SIGSEGV信号杀死进程。</p>
+
+<p>那么，新增的on_access_error()函数指针做了什么呢？第六步的代码很显然，如果kernel通过access_error()发现page fault是错误的权限导致的，那么就会调用我们的on_access_error()，如果我们的on_access_error()返回0，那么才发送信号杀死进程，否则return（我称之为“豁免”，就好像发了一块“免死令牌”）。我现在的策略是，<strong><font color="red">如果连续256次权限异常都发生在同一个地址上，那么才返回0（允许杀死进程），否则都返回1（豁免）</font></strong>。</p>
+
+<p>这样设计为何可以解决这个bug呢？分四种情况讨论：
+
+<ol>
+<li>对于绝大多数的“踩雷”，在第五步的代码中就正常的“排雷”并且返回用户态继续执行了。</li> 
+<li>对于上述第一种情况，core 2的权限异常被“豁免”一次，也return回用户态继续执行了。要连续并发地踩到同一个雷，概率是指数级减小，两个线程要连续256次地同时踩同一个有雷的页，是决不可能的事情（尽管概率上依旧可能发生，但是工程上完全可以忽略）。</li>
+<li>对于上述第二种情况，core 2的权限异常被“豁免”一次后，core 2的TLB会自动加载该页对应的PTE，因此不会再次因为不一致的TLB而陷入page fault。</li>
+<li>如果应用程序本身有bug，试图访问不该访问的内存（比如写一个只读的地址），那么触发page fault，on_access_error()给与第一次豁免后，一返回用户态，应用程序又尝试重新执行该访问，于是又在同一个地址触发page fault。只要on_access_error()不停地给与豁免，应用程序就会不停地在同一个地址触发page fault。当次数超过256次后，on_access_error()不再给与豁免，允许kernel发送SIGSEGV杀死进程。</li>
+</ol>
+
+<p>因此，对于绝大多数情况，性能开销只是踩雷和排雷的开销。对于上述两种情况，也就是多了一次page fault，但因为偶尔发生，性能损耗忽略不计。而对于程序有bug的情况，尽管本来一次page fault就能杀死进程，而现在需要256次page fault才能杀死进程，但是对于安全性而言，结果都是一样的，应用程序都没有任何作恶的机会。而对于一个即将被杀死的进程、或者说一个有bug的程序，讨论性能有何意义呢？
+</p>
+
+<p>最后解释一个问题，为何是256次？对于上述第一种情况，该数字可能只要8或16或者稍微更大些即可，一个小概率P再弄个好几次方，小到可以忽略即可。而对于第二种情况，这个数字只要超过core的数目即可，因为最极端的情况就是每一个core都发生一次page fault然后自动加载最新的PTE。</p>
+
+</p>
 
                 </div>
                         </article>
