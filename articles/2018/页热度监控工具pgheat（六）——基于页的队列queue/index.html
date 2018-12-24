@@ -1,0 +1,244 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>页热度监控工具pgheat（六）——基于页的队列queue</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">页热度监控工具pgheat（六）——基于页的队列queue</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>现在可以随机埋雷和拆雷了，也就是说可以通过page fault对页访问信息进行采样了。那么如何把这些信息传递给决策层呢？为了实现“能力与策略分离”，并且保证kernel代码的稳定性，决策逻辑一定得运行在用户态。于是问题就成了如何从内核态向用户态传递消息了。方案呼之欲出——消息队列呀。</p>
+
+<p>最初我有这么两种实现方案：
+<ol>
+    <li>内核态实现一个队列，用户态使用read/ioctl等系统调用来读取时，kernel使用copy_to_user()等API将一部分消息复制到用户的buffer中。</li>
+    <li>内核态与用户态共享一段内存，该内存作为一个环形队列。内核态与用户态使用原子操作进行同步。</li>
+</ol>
+方案一的优势是实现中规中矩，安全性高，kernel对队列实现的改动不会影响到用户态；劣势则是需要额外的内存复制。方案二的优势是省去了内存复制，劣势则是：一、环形队列容量不易扩展；二、kernel与用户态代码有逻辑耦合。
+</p>
+
+<p>最终我采用了方案一，因为我发现用户态通常都不能容忍消息的丢失，因此队列必须能无限扩展，不能因为用户态偶尔read晚了而舍弃消息。而每条消息只有16字节（见后续博客），以一秒钟平均10000条消息为例，也就只需要额外复制160KB的数据量而已，因此方案一的劣势基本可以忽略。</p>
+
+<p>类似于之前《<a href="../页热度监控工具pgheat（三）——高内聚稀疏数组vmarray/index.html">页热度监控工具pgheat（三）——高内聚稀疏数组vmarray</a>》中设计的vmarray一样，内核态的容器类数据结构应该优先考虑使用页作为内存分配单元。我的设计很简单，队列由多个链表节点构成，每一个链表节点都是一个页，除了页开头存放next node、read position和write position外，其余空间都用来存放元素。其结构如下图所示：</p>
+
+<p><img src="1.png"></p>
+
+<p>图中有三个节点，每一个就是一个4K内存页。节点的第一个8字节是一个指向下一个节点的指针；第二个8字节是该节点内读取的位置；第三个8字节是该节点内写入的位置。图中灰色的格子是有效数据。比如第一个节点中，第一个灰色格子的索引是4（从0计数），所以head就是4；而最后一个灰色格子的索引是6，所以tail就是7。由于4K页内很可能不能完全被填满，因此最后有少许空余空间。当需要向队列尾部增加元素时，将最后一个（last指针指向的)节点的tail加一即可。如果最后一个节点空间已被用完，则新分配一个节点。当需要从队列头部读取元素时，将第一个（first指针指向的）节点的head加一即可。如果第一个节点都被读完，则释放节点。</p>
+
+<p>唯一一个需要注意的问题是——当从队列头部pop元素时，返回了当前head所指向的元素的地址，并将head加一。即是head已经等于tail，也不能释放节点，因为调用者还没有读取元素内容。因此，节点释放时机应该是下一次调用pop。</p>
+
+<p>代码很简单，分为queue.h和queue.c。</p>
+
+<p>queue.h</p>
+
+<pre>
+#ifndef QUEUE_H
+#define QUEUE_H
+
+#include "common.h"
+
+// a node in queue
+struct queue_node
+{
+    struct queue_node* next;    // next node
+    size_t head;    // the head position in this node
+    size_t tail;    // the tail position in this node
+};
+
+struct queue
+{
+    // constants, keep unchange after init
+    size_t entry_size;      // size of user entry in this queue
+    size_t entry_per_page;  // how many entries in a node (one page is one node)
+    void* (*func_alloc_page)(void* privdata);   // the function to allocate a page
+    void (*func_free_page)(void* page, void* privdata); // the function to free a page
+    void* privdata;         // the privdata to the two functions above
+
+    struct queue_node* first;   // the first node
+    struct queue_node* last;    // the last node
+
+    // statistics
+    size_t length;      // how many entries in the queue
+    size_t page_count;  // how many pages used
+};
+
+// init
+//      entry_size: size of of user's element, sizeof(struct user_ele)
+//      page_size: size of a memory page, usually 4096
+//      func_alloc_page: the function to allocate a page
+//      func_free_page: the function to free a page
+//      privdata: user's privdata to the two functions above
+// return 0 if succeed, or error code if failed.
+int queue_init(struct queue* queue, size_t entry_size, size_t page_size,
+    void* (*func_alloc_page)(void* privdata),
+    void (*func_free_page)(void* page, void* privdata),
+    void* privdata);
+
+// add an entry to the tail of the queue
+// return the pointer of the new entry, or NULL if no memory
+void* queue_add(struct queue* queue);
+
+// take an entry from the head of the queue
+// return the pointer of the poped entry, or NULL if the queue is empty
+void* queue_take(struct queue* queue);
+
+// glance at the head of the queue, but not remove it
+// return the pointer of the first entry, or NULL if the queue is empty
+void* queue_glance(struct queue* queue);
+
+// release the resources
+//      destructor: the destructor to destroy every element, or NULL
+void queue_deinit(struct queue* queue, void (*destructor)(void* value));
+
+#endif
+</pre>
+
+<p>queue.c</p>
+
+<pre>
+#include "queue.h"
+
+int queue_init(struct queue* queue, size_t entry_size, size_t page_size,
+    void* (*func_alloc_page)(void* privdata),
+    void (*func_free_page)(void* page, void* privdata),
+    void* privdata)
+{
+    struct queue_node* node;
+    assert(queue);
+    if(unlikely(!(queue-&gt;entry_size = entry_size)))
+        ERROR0(-EINVAL, "param &lt;entry_size = 0&gt; is not allowed");
+    if(unlikely(page_size &lt; sizeof(struct queue_node) + entry_size))
+        ERROR1(-EINVAL, "param &lt;page_size = %lu&gt; is too small", page_size);
+    queue-&gt;entry_per_page = (page_size - sizeof(struct queue_node)) / entry_size;
+    if(unlikely(!(queue-&gt;func_alloc_page = func_alloc_page)))
+        ERROR0(-EINVAL, "param &lt;func_alloc_page = NULL&gt; is not allowed");
+    if(unlikely(!(queue-&gt;func_free_page = func_free_page)))
+        ERROR0(-EINVAL, "param &lt;func_free_page = NULL&gt; is not allowed");
+    queue-&gt;privdata = privdata;
+    if(unlikely(!(node = func_alloc_page(privdata))))
+        ERROR0(-ENOMEM, "func_alloc_page(privdata) failed");
+    node-&gt;next = NULL;
+    node-&gt;head = 0;
+    node-&gt;tail = 0;
+    queue-&gt;first = queue-&gt;last = node;
+    queue-&gt;length = 0;
+    queue-&gt;page_count = 1;
+    return 0;
+}
+
+void* queue_add(struct queue* queue)
+{
+    struct queue_node* last;
+    void* entry;
+    assert(queue);
+    last = queue-&gt;last;
+    assert(last);
+    if(likely(last-&gt;tail &lt; queue-&gt;entry_per_page))
+        entry = (char*)last + sizeof(struct queue_node) + queue-&gt;entry_size * last-&gt;tail;
+    else
+    {
+        if(unlikely(!(last = queue-&gt;func_alloc_page(queue-&gt;privdata))))
+            ERROR0(NULL, "queue-&gt;func_alloc_page(queue-&gt;privdata) failed");
+        queue-&gt;page_count++;
+        last-&gt;next = NULL;
+        last-&gt;head = 0;
+        last-&gt;tail = 0;
+        queue-&gt;last-&gt;next = last;
+        queue-&gt;last = last;
+        entry = (char*)last + sizeof(struct queue_node);
+    }
+    last-&gt;tail++;
+    queue-&gt;length++;
+    return entry;
+}
+
+static void* generic_get_head(struct queue* queue, int remove)
+{
+    struct queue_node* first;
+    void* entry;
+    if(unlikely(!queue-&gt;length))
+        return NULL;
+    first = queue-&gt;first;
+    assert(first);
+    assert(first-&gt;tail &lt;= queue-&gt;entry_per_page);
+    if(unlikely(first-&gt;head == first-&gt;tail))
+    {
+        assert(first-&gt;tail == queue-&gt;entry_per_page);
+        queue-&gt;first = first-&gt;next;
+        assert(queue-&gt;first);
+        queue-&gt;func_free_page(first, queue-&gt;privdata);
+        assert(queue-&gt;page_count);
+        queue-&gt;page_count--;
+        first = queue-&gt;first;
+    }
+    assert(first-&gt;head &lt; first-&gt;tail);
+    entry = (char*)first + sizeof(struct queue_node) + queue-&gt;entry_size * first-&gt;head;
+    if(remove)
+    {
+        first-&gt;head++;
+        queue-&gt;length--;
+    }
+    return entry;
+}
+
+void* queue_take(struct queue* queue)
+{
+    assert(queue);
+    return generic_get_head(queue, 1);
+}
+
+void* queue_glance(struct queue* queue)
+{
+    assert(queue);
+    return generic_get_head(queue, 0);
+}
+
+void queue_deinit(struct queue* queue, void (*destructor)(void* value))
+{
+    struct queue_node* node;
+    assert(queue);
+    node = queue-&gt;first;
+    while(node)
+    {
+        struct queue_node* next = node-&gt;next;
+        assert(node-&gt;head &lt;= node-&gt;tail);
+        if(destructor)
+        {
+            size_t i = node-&gt;head;
+            char* value = (char*)node + sizeof(struct queue_node) + queue-&gt;entry_size * i;
+            for(; i &lt; node-&gt;tail; i++)
+            {
+                destructor(value);
+                value += queue-&gt;entry_size;
+            }
+        }
+        queue-&gt;length -= node-&gt;tail - node-&gt;head;
+        queue-&gt;func_free_page(node, queue-&gt;privdata);
+        assert(queue-&gt;page_count);
+        queue-&gt;page_count--;
+        node = next;
+    }
+    assert(!queue-&gt;length);
+    assert(!queue-&gt;page_count);
+}
+</pre>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
