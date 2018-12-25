@@ -1,0 +1,820 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>页热度监控工具pgheat（七）——连接三方的接口interact</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">页热度监控工具pgheat（七）——连接三方的接口interact</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>就差最后一步了——即一个枢纽，连接kernel、地雷、和用户，它有两方面的职责：
+<ul>
+    <li>连通kernel与user space，如处理用户的请求、读取消息队列；</li>
+    <li>连通kernel与landmines，如提供并注册kernel中的钩子函数、写入消息队列。</li>
+</ul>
+</p>
+
+<p>总共有8条命令，都是通过ioctl()调用：
+<pre>
+#define INTERACT_INIT_HOOK      1222
+#define INTERACT_DETECT_PAGES   1223
+#define INTERACT_SET_LANDMINES  1224
+#define INTERACT_READ_EVENTS    1225
+#define INTERACT_STAT           1226
+#define INTERACT_GET_VMAS       1227
+#define INTERACT_GET_TIME       1228
+#define INTERACT_DEINIT_HOOK    1229
+</pre>
+下面依次介绍。</p>
+
+<p>===================命令一，INTERACT_INIT_HOOK===================</p>
+
+<p>该命令是所有后续命令的前提，用于初始化文件描述符。用户态通过
+<pre>ioctl(fd, INTERACT_INIT_HOOK, pid)</pre>
+进行初始化，只有一个pid作为参数。执行成功返回0，否则返回一个错误码（比如-EINVAL表示错误的参数，-ENOMEM表示可用内存不足等等）。每一个文件描述符最多只能绑定一个进程的虚拟地址空间，一个进程的虚拟地址空间也只能绑定最多一个文件描述符。
+</p>
+
+<p>==================命令二，INTERACT_DETECT_PAGES=================</p>
+
+<p>初始化之后，通常都会调用该命令，以探测存在哪些“友好页”，以构建候选集合。该命令调用方法为
+<pre>ioctl(fd, INTERACT_DETECT_PAGES, NULL)</pre>
+没有参数。成功返回0，失败返回错误码。</p>
+
+<p>==================命令三，INTERACT_SET_LANDMINES==================</p>
+
+<p>在探测了所有“友好页”之后，就可以随机投放地雷了。该命令需要如下结构体作为参数：
+<pre>
+// parameter of command INTERACT_SET_LANDMINES
+struct interact_param_set_landmines
+{
+    size_t count;       // the count of pages to set landmiens
+    size_t* set_count;  // where to put the count of successfully set landmines (can be null)
+};
+</pre>
+第一个参数是试图投放的个数。第二个参数指向一个size_t，实际投放的个数将存储于该变量中。调用示例如下：
+<pre>
+size_t set_count;
+struct interact_param_set_landmines set;
+set.count = 1000;
+set.set_count = &amp;set_count;
+ioctl(fd, INTERACT_SET_LANDMINES, &amp;set);
+printf("actually set count: %lu\n", set_count);
+</pre>
+</p>
+
+<p>==================命令四，INTERACT_READ_EVENTS=================</p>
+
+<p>投放了地雷之后，就会陆续有地雷被触发。投放和触发都有事件加入消息队列中。每一条消息的数据结构是这样的：
+<pre>
+#define INTERACT_EVENT_TYPE_SET                 0
+#define INTERACT_EVENT_TYPE_TRIGGERED_BY_READ   1
+#define INTERACT_EVENT_TYPE_TRIGGERED_BY_WRITE  2
+#define INTERACT_EVENT_TYPE_TRIGGERED_BY_EXEC   3
+
+// the event of a landmine
+struct interact_event
+{
+    uint64_t timestamp : 62;    // time when this event happened (us)
+    uint64_t type : 2;          // what the event is
+    unsigned long address;      // virtual address where it happened
+};
+</pre>
+首先是事件发生的时间戳（暂定单位是微秒）。第二个是事件类型，有埋雷、读触发、写触发和取指令触发四种。第三个则是触发的虚拟内存地址。</p>
+
+<p>该命令需要如下数据结构作为参数：
+<pre>
+// parameter of command INTERACT_READ_EVENTS
+struct interact_param_read_events
+{
+    struct interact_event* buffer;  // user buffer
+    size_t capacity;    // the capacity of user buffer
+    size_t* count;      // where to put the count of successfully read events (can be null)
+};
+</pre>
+其中buffer是用户态缓冲区，用于写入消息。capacity是buffer的长度，即最多容纳的event的个数。count指向一个size_t，实际读取的event个数将存入该变量中。调用示例如下：
+<pre>
+struct interact_event events[64];
+size_t read_count;
+struct interact_param_read_events read;
+read.buffer = events;
+read.capacity = 64;
+read.count = &amp;read_count;
+ioctl(fd, INTERACT_READ_EVENTS, &amp;read);
+printf("read count": %lu\n", read_count);
+for(int i = 0; i &lt; read_count; i++)
+    printf("time: %lu, type: %u, address: %lx\n", 
+        events[i].timestamp, events[i].type, events[i].address);
+</pre>
+</p>
+
+<p>======================命令五，INTERACT_STAT=======================</p>
+
+<p>用户态可以通过该命令获取一些状态与统计信息。该命令需要如下数据结构作为参数：
+<pre>
+// parameter of command INTERACT_STAT
+struct interact_param_stat
+{
+    int reset_triggered_count;  // whether to reset triggered counter
+    size_t* triggered_count;    // where to put the triggered count (can be null)
+    size_t* alternative_count;  // where to put the alternative count (can be null)
+    size_t* page_count;         // where to put the count of friendly pages (can be null)
+    size_t* event_queue_length; // where to put the length of event queue (can be null)
+};
+</pre>
+第一个参数表示是否清空triggered_count。第二个参数指向一个size_t，触发的地雷数量将保存在该变量中。后面几个都一样，分别是“友好页”候选集大小、“友好页”总数、消息队列长度。使用示例如下：
+<pre>
+size_t triggered_count, alternative_count, page_count;
+struct interact_param_stat stat =
+{
+    .reset_triggered_count = 1,
+    .triggered_count = &amp;triggered_count,
+    .alternative_count = &amp;alternative_count,
+    .page_count = &amp;page_count,
+    .event_queue_length = NULL,
+};
+ioctl(fd, INTERACT_STAT, &amp;stat);
+printf("triggered count: %lu\n", triggered_count);
+printf("alternative count: %lu\n", alternative_count);
+printf("page count: %lu\n", page_count);
+</pre>
+</p>
+
+<p>=====================命令六，INTERACT_GET_VMAS=======================</p>
+
+<p>用户有时可能需要知道有哪些内存段（比如需要全局排序）。这个时候，就可以调用这个命令。kernel中的struct vm_area_struct除了描述虚拟地址的起讫地址以外，还有很多其他的信息。但是用户态决策层只需要起讫地址，因此我们返回的并不是真正的VMA，而是VMA快照。用户态使用该命令时需要传入如下数据结构作为参数：
+<pre>
+// parameter of command INTERACT_GET_VMAS
+struct interact_param_get_vmas
+{
+    struct interact_vma     // a snapshot of VMA (virtual memory area)
+    {
+        unsigned long start;    // the starting address
+        unsigned long end;      // the ending address
+    }*
+    buffer;
+    size_t capacity;    // the capacity of the buffer
+    size_t* length;     // where to put the count of VMAs (this value is always the count of
+                        //   VMAs in the process, may larger than 'capacity')
+};
+</pre>
+buffer是用户态缓冲区。capacity是buffer能够容纳的vma个数。length指向一个size_t，实际读取的vma个数存入该变量中。调用示例如下：
+<pre>
+struct interact_vma vmas[64];
+size_t length;
+struct interact_param_get_vmas get_vmas;
+get_vmas.buffer = vmas;
+get_vmas.capacity = 64;
+get_vmas.length = &amp;length;
+ioctl(fd, INTERACT_GET_VMAS, &amp;get_vmas);
+for(int i = 0; i &lt; length; i++)
+    printf("%lx - %lx\n", vmas[i].start, vmas[i].end);
+</pre>
+</p>
+
+<p>======================命令七，INTERACT_GET_TIME====================</p>
+
+<p>尽管目前消息的时间戳的定义是“1970年1月1日到现在的微秒数”，但是说不定将来变了呢，比如变成了指令周期数，或者是时钟中断数等等在用户态不太容易获取的计时方式。而用户的逻辑可能依赖于当前时间，因此需要提供接口给用户，以获取当前时间。该命令需要一个uint64_t的指针，指定当前时间存放到哪个变量中。调用示例如下：
+<pre>
+uint64_t current_time;
+ioctl(fd, INTERACT_GET_TIME, &amp;current_time);
+printf("current time: %lu\n", current_time);
+</pre>
+</p>
+
+<p>======================命令八，INTERACT_DEINIT_HOOK=================</p>
+
+<p>这个其实都不能算命令。当用户态不再想检测页热度了，可以调用该命令来释放所占用的资源。该命令执行后，文件描述符恢复到调用INTERACT_INIT_HOOK之前的状态。当然，如果直接close(fd)效果也是会执行析构操作的。该命令不需要任何参数，直接
+<pre>ioctl(fd, INTERACT_DEINIT_HOOK, NULL);</pre>
+即可。
+</p>
+
+<p>代码杂但是简单。先是interact.h：</p>
+
+<pre>
+#ifndef INTERACT_H
+#define INTERACT_H
+
+#include "queue.h"
+#include "common.h"
+#include "landmines.h"
+
+#include &lt;linux/fs.h&gt;
+#include &lt;linux/types.h&gt;
+
+#define INTERACT_INIT_HOOK      1222
+#define INTERACT_DETECT_PAGES   1223
+#define INTERACT_SET_LANDMINES  1224
+#define INTERACT_READ_EVENTS    1225
+#define INTERACT_STAT           1226
+#define INTERACT_GET_VMAS       1227
+#define INTERACT_GET_TIME       1228
+#define INTERACT_DEINIT_HOOK    1229
+
+#define INTERACT_EVENT_TYPE_SET                 0
+#define INTERACT_EVENT_TYPE_TRIGGERED_BY_READ   1
+#define INTERACT_EVENT_TYPE_TRIGGERED_BY_WRITE  2
+#define INTERACT_EVENT_TYPE_TRIGGERED_BY_EXEC   3
+
+// the event of a landmine
+struct interact_event
+{
+    uint64_t timestamp : 62;    // time when this event happened (us)
+    uint64_t type : 2;          // what the event is
+    unsigned long address;      // virtual address where it happened
+};
+
+struct interact
+{
+    struct landmines landmines; // to manage landmines
+    struct queue queue;         // a event quue
+    spinlock_t queue_lock;      // protect the queue
+    struct
+    {
+        unsigned long address;  // where page fault happened last time 
+        size_t count;   // how many times page faults happened on this address continuously
+    }
+    access_error_detector;
+    struct file* file;          // the binding file descriptor
+};
+
+// parameter of command INTERACT_SET_LANDMINES
+struct interact_param_set_landmines
+{
+    size_t count;       // the count of pages to set landmiens
+    size_t* set_count;  // where to put the count of successfully set landmines (can be null)
+};
+
+// parameter of command INTERACT_READ_EVENTS
+struct interact_param_read_events
+{
+    struct interact_event* buffer;  // user buffer
+    size_t capacity;    // the capacity of user buffer
+    size_t* count;      // where to put the count of successfully read events (can be null)
+};
+
+// parameter of command INTERACT_STAT
+struct interact_param_stat
+{
+    int reset_triggered_count;  // whether to reset triggered counter
+    size_t* triggered_count;    // where to put the triggered count (can be null)
+    size_t* alternative_count;  // where to put the alternative count (can be null)
+    size_t* page_count;         // where to put the count of friendly pages (can be null)
+    size_t* event_queue_length; // where to put the length of event queue (can be null)
+};
+
+// parameter of command INTERACT_GET_VMAS
+struct interact_param_get_vmas
+{
+    struct interact_vma     // a snapshot of VMA (virtual memory area)
+    {
+        unsigned long start;    // the starting address
+        unsigned long end;      // the ending address
+    }*
+    buffer;
+    size_t capacity;    // the capacity of the buffer
+    size_t* length;     // where to put the count of VMAs (this value is always the count of
+                        //   VMAs in the process, may larger than 'capacity')
+};
+
+// call this function to init
+void interact_init(void);
+
+// handle ioctl()
+long interact_ioctl(struct file* file, unsigned int cmd, unsigned long arg);
+
+// handle close()
+int interact_release(struct inode* inode, struct file* file);
+
+#endif
+</pre>
+
+<p>然后是interact.c：</p>
+
+<pre>
+#include "interact.h"
+
+#include &lt;linux/slab.h&gt;
+#include &lt;linux/time.h&gt;
+#include &lt;linux/delay.h&gt;
+#include &lt;linux/uaccess.h&gt;
+#include &lt;linux/sched/mm.h&gt;
+
+#define FD_LOCK_COUNT           256
+#define FD_LOCK_INDEX(file)                                     \
+({                                                              \
+    size_t address = (size_t)(file);                            \
+    uint8_t* bytes = (uint8_t*)(&amp;address);                      \
+    unsigned index = bytes[0] + bytes[1] + bytes[2] + bytes[3]  \
+         + bytes[4] + bytes[5] + bytes[6] + bytes[7];           \
+    index % FD_LOCK_COUNT;                                      \
+})
+
+#define CURRENT_TIMESTAMP()             \
+({                                      \
+    struct timeval tv;                  \
+    do_gettimeofday(&amp;tv);               \
+    tv.tv_sec * 1000000 + tv.tv_usec;   \
+})
+
+#define ACCESS_ERROR_DETECTOR_COUNT     128
+
+#define ATOMIC_GET_U64(name)    (name)
+
+#define DEINIT_WAIT_MS      1000
+
+static struct semaphore fd_locks[FD_LOCK_COUNT];
+
+static int add_event(struct interact* interact, unsigned long address, int type)
+{
+    struct interact_event* event;
+    uint64_t timestamp = CURRENT_TIMESTAMP();
+    assert((timestamp &gt;&gt; 62) == 0);
+    assert((type &amp; ~3) == 0);
+    spin_lock(&amp;(interact-&gt;queue_lock));
+    if(unlikely(!(event = queue_add(&amp;(interact-&gt;queue)))))
+    {
+        spin_unlock(&amp;(interact-&gt;queue_lock));
+        ERROR0(-ENOMEM, "queue_add(&amp;(interact-&gt;queue)) failed");
+    }
+    event-&gt;timestamp = timestamp;
+    event-&gt;type = type;
+    event-&gt;address = address;
+    spin_unlock(&amp;(interact-&gt;queue_lock));
+    return 0;
+}
+
+static int add_trigger_event_for_landmines(int type, unsigned long address, void* privdata)
+{
+    int ret;
+    assert(privdata);
+    if(unlikely(ret = add_event(privdata, address, type)))
+    {
+        assert(ret &lt; 0);
+        ERROR2(ret, "add_event(interact, %lx, %d) failed", address, type);
+    }
+    return 0;
+}
+
+static int on_fault(struct mm_struct* mm, unsigned long errcode, unsigned long address)
+{
+    struct interact* interact = mm-&gt;page_heat_sample.privdata;
+    int ret;
+    assert(interact);
+    if(unlikely((ret = landmines_on_page_fault(&amp;(interact-&gt;landmines),
+        errcode, address, add_trigger_event_for_landmines, interact)) &lt; 0))
+        ERROR2(1, "landmines_on_page_fault(&amp;(interact-&gt;landmines), %lx, %lx, ...) failed",
+            errcode, address);
+    return ret;
+}
+
+static int on_access_error(struct mm_struct* mm, unsigned long errcode, unsigned long address)
+{
+    struct interact* interact = mm-&gt;page_heat_sample.privdata;
+    assert(interact);
+    if(unlikely(interact-&gt;access_error_detector.address == address))
+    {
+        interact-&gt;access_error_detector.count++;
+        return interact-&gt;access_error_detector.count &lt; ACCESS_ERROR_DETECTOR_COUNT;
+    }
+    else
+    {
+        interact-&gt;access_error_detector.address = address;
+        interact-&gt;access_error_detector.count = 0;
+        return 1;
+    }
+}
+
+static pte_t on_fork(struct mm_struct* mm, struct mm_struct* dst_mm, pte_t pte)
+{
+    return landmines_recover_pte(pte);
+}
+
+static void* alloc_page_for_queue(void* privdata)
+{
+    return (void*)__get_free_page(GFP_ATOMIC);
+}
+
+static void free_page_for_queue(void* page, void* privdata)
+{
+    free_page((unsigned long)page);
+}
+
+static struct mm_struct* get_mm_by_vpid(pid_t nr)
+{
+    struct pid* pid;
+    struct task_struct* task;
+    struct mm_struct* mm = NULL;
+    rcu_read_lock();
+    if((pid = find_vpid(nr)) &amp;&amp; (task = pid_task(pid, PIDTYPE_PID)))
+    {
+        mm = task-&gt;mm;
+        mmget(mm);
+    }
+    rcu_read_unlock();
+    return mm;
+}
+
+static int do_init_hook(struct file* file, pid_t pid)
+{
+    struct mm_struct* mm;
+    struct interact* interact;
+    int ret;
+    if(file-&gt;private_data)
+        ERROR0(-EINVAL, "this fd has been inited already");
+    if(!(mm = get_mm_by_vpid(pid)))
+        ERROR1(-ESRCH, "no such process whose pid = %d\n", pid);
+    if(unlikely(!(interact = kmalloc(sizeof(struct interact), GFP_KERNEL))))
+    {
+        mmput(mm);
+        ERROR0(-ENOMEM, "kmalloc(sizeof(struct interact), GFP_KERNEL) failed");
+    }
+    if(unlikely(ret = landmines_init(&amp;(interact-&gt;landmines), mm)))
+    {
+        kfree(interact);
+        mmput(mm);
+        ERROR0(ret, "landmines_init(&amp;(interact-&gt;landmines), mm) failed");
+    }
+    if(unlikely(ret = queue_init(&amp;(interact-&gt;queue), sizeof(struct interact_event), PAGE_SIZE,
+        alloc_page_for_queue, free_page_for_queue, NULL)))
+    {
+        landmines_deinit(&amp;(interact-&gt;landmines));
+        kfree(interact);
+        mmput(mm);
+        ERROR0(ret, "queue_init(&amp;(interact-&gt;queue), ...) failed");
+    }
+    spin_lock_init(&amp;(interact-&gt;queue_lock));
+    interact-&gt;access_error_detector.address = 0;
+    interact-&gt;access_error_detector.count = 0;
+    interact-&gt;file = file;
+    down_write(&amp;(mm-&gt;page_heat_sample.lock));
+    if(mm-&gt;page_heat_sample.on_fault || mm-&gt;page_heat_sample.on_access_error ||
+        mm-&gt;page_heat_sample.on_fork || mm-&gt;page_heat_sample.on_exit || 
+        mm-&gt;page_heat_sample.privdata)
+    {
+        up_write(&amp;(mm-&gt;page_heat_sample.lock));
+        queue_deinit(&amp;(interact-&gt;queue), NULL);
+        landmines_deinit(&amp;(interact-&gt;landmines));
+        kfree(interact);
+        mmput(mm);
+        ERROR0(-EINVAL, "page_heat_sample of this process is not NULL");
+    }
+    mm-&gt;page_heat_sample.on_fault = on_fault;
+    mm-&gt;page_heat_sample.on_access_error = on_access_error;
+    mm-&gt;page_heat_sample.on_fork = on_fork;
+    mm-&gt;page_heat_sample.privdata = interact;
+    up_write(&amp;(mm-&gt;page_heat_sample.lock));
+    file-&gt;private_data = mm;
+    return 0;
+}
+
+static int do_detect_pages(struct file* file)
+{
+    struct mm_struct* mm;
+    struct interact* interact;
+    int ret;
+    if(!(mm = file-&gt;private_data))
+        ERROR0(-EINVAL, "this fd has not been inited yet");
+    down_read(&amp;(mm-&gt;page_heat_sample.lock));
+    interact = mm-&gt;page_heat_sample.privdata;
+    assert(interact);
+    ret = landmines_detect_pages(&amp;(interact-&gt;landmines));
+    up_read(&amp;(mm-&gt;page_heat_sample.lock));
+    if(unlikely(ret))
+        ERROR0(ret, "landmines_detect_pages() failed");
+    return 0;
+}
+
+static int add_set_event_for_landmines(unsigned long address, void* privdata)
+{
+    int ret;
+    assert(privdata);
+    if(unlikely(ret = add_event(privdata, address, INTERACT_EVENT_TYPE_SET)))
+    {
+        assert(ret &lt; 0);
+        ERROR2(ret, "add_event(privdata, %lx, %d) failed", address, INTERACT_EVENT_TYPE_SET);
+    }
+    return 0;
+}
+
+static int do_set_landmines(struct file* file, struct interact_param_set_landmines* param)
+{
+    struct mm_struct* mm;
+    struct interact* interact;
+    ssize_t new_set_count;
+    if(!(mm = file-&gt;private_data))
+        ERROR0(-EINVAL, "this fd has not been inited yet");
+    down_read(&amp;(mm-&gt;page_heat_sample.lock));
+    interact = mm-&gt;page_heat_sample.privdata;
+    assert(interact);
+    new_set_count = landmines_set(&amp;(interact-&gt;landmines), param-&gt;count,
+        add_set_event_for_landmines, interact);
+    up_read(&amp;(mm-&gt;page_heat_sample.lock));
+    if(unlikely(new_set_count &lt; 0))
+        ERROR1((int)new_set_count, "landmines_set(&amp;(interact-&gt;landmines), %lu, ...) failed",
+            param-&gt;count);
+    if(param-&gt;set_count &amp;&amp; unlikely(put_user(new_set_count, param-&gt;set_count)))
+        ERROR1(-EIO, "put_user(new_set_count, %p) failed", param-&gt;set_count);
+    return 0;
+}
+
+static int do_read_events(struct file* file, struct interact_param_read_events* param)
+{
+    struct mm_struct* mm;
+    struct interact* interact;
+    size_t i;
+    if(!(mm = file-&gt;private_data))
+        ERROR0(-EINVAL, "this fd has not been inited yet");
+    down_read(&amp;(mm-&gt;page_heat_sample.lock));
+    interact = mm-&gt;page_heat_sample.privdata;
+    assert(interact);
+    for(i = 0; i &lt; param-&gt;capacity; i++)
+    {
+        void* event;
+        spin_lock(&amp;(interact-&gt;queue_lock));
+        event = queue_take(&amp;(interact-&gt;queue));
+        spin_unlock(&amp;(interact-&gt;queue_lock));
+        if(unlikely(!event))
+            break;
+        if(unlikely(copy_to_user(param-&gt;buffer + i, event, sizeof(struct interact_event))))
+        {
+            up_read(&amp;(mm-&gt;page_heat_sample.lock));
+            ERROR1(-EIO, "copy_to_user(%p, ..., sizeof(struct interact_event)) failed", 
+                param-&gt;buffer + i);
+        }
+    }
+    up_read(&amp;(mm-&gt;page_heat_sample.lock));
+    if(param-&gt;count &amp;&amp; unlikely(put_user(i, param-&gt;count)))
+        ERROR1(-EIO, "put_user(i, %p) failed", param-&gt;count);
+    return 0;
+}
+
+static int do_stat(struct file* file, struct interact_param_stat* param)
+{
+    struct mm_struct* mm;
+    struct interact* interact;
+    if(!(mm = file-&gt;private_data))
+        ERROR0(-EINVAL, "this fd has not been inited yet");
+    down_read(&amp;(mm-&gt;page_heat_sample.lock));
+    interact = mm-&gt;page_heat_sample.privdata;
+    assert(interact);
+    if(param-&gt;triggered_count)
+    {
+        size_t n = landmines_get_triggered_count(&amp;(interact-&gt;landmines), 
+            param-&gt;reset_triggered_count);
+        if(unlikely(put_user(n, param-&gt;triggered_count)))
+        {
+            up_read(&amp;(mm-&gt;page_heat_sample.lock));
+            ERROR1(-EIO, "put_user(n, %p) failed", param-&gt;triggered_count);
+        }
+    }
+    if(param-&gt;alternative_count)
+    {
+        size_t n = landmines_get_alternative_count(&amp;(interact-&gt;landmines));
+        if(unlikely(put_user(n, param-&gt;alternative_count)))
+        {
+            up_read(&amp;(mm-&gt;page_heat_sample.lock));
+            ERROR1(-EIO, "put_user(n, %p) failed", param-&gt;alternative_count);
+        }
+    }
+    if(param-&gt;page_count)
+    {
+        size_t n = landmines_get_page_count(&amp;(interact-&gt;landmines));
+        if(unlikely(put_user(n, param-&gt;page_count)))
+        {
+            up_read(&amp;(mm-&gt;page_heat_sample.lock));
+            ERROR1(-EIO, "put_user(n, %p) failed", param-&gt;page_count);
+        }
+    }
+    if(param-&gt;event_queue_length)
+    {
+        size_t n = ATOMIC_GET_U64(interact-&gt;queue.length);
+        if(unlikely(put_user(n, param-&gt;event_queue_length)))
+        {
+            up_read(&amp;(mm-&gt;page_heat_sample.lock));
+            ERROR1(-EIO, "put_user(n, %p) failed", param-&gt;event_queue_length);
+        }
+    }
+    up_read(&amp;(mm-&gt;page_heat_sample.lock));
+    return 0;
+}
+
+static int do_get_vmas(struct file* file, struct interact_param_get_vmas* param)
+{
+    struct mm_struct* mm;
+    struct vm_area_struct* vma;
+    size_t length = 0;
+    if(!(mm = file-&gt;private_data))
+        ERROR0(-EINVAL, "this fd has not been inited yet");
+    down_read(&amp;(mm-&gt;mmap_sem));
+    vma = mm-&gt;mmap;
+    while(vma &amp;&amp; length &lt; param-&gt;capacity)
+    {
+        if(likely(landmines_is_friendly_vma(vma)))
+        {
+            struct interact_vma* snapshot = param-&gt;buffer + length;
+            if(unlikely(put_user(vma-&gt;vm_start, &amp;(snapshot-&gt;start))))
+            {
+                up_read(&amp;(mm-&gt;mmap_sem));
+                ERROR1(-EIO, "put_user(vma-&gt;vm_start, %p) failed", &amp;(snapshot-&gt;start));
+            }
+            if(unlikely(put_user(vma-&gt;vm_end, &amp;(snapshot-&gt;end))))
+            {
+                up_read(&amp;(mm-&gt;mmap_sem));
+                ERROR1(-EIO, "put_user(vma-&gt;vm_end, %p) failed", &amp;(snapshot-&gt;end));
+            }
+            length++;
+        }
+        vma = vma-&gt;vm_next;
+    }
+    up_read(&amp;(mm-&gt;mmap_sem));
+    if(param-&gt;length &amp;&amp; unlikely(put_user(length, param-&gt;length)))
+        ERROR1(-EIO, "put_user(length, %p) failed", param-&gt;length);
+    return 0;
+}
+
+static int do_get_time(uint64_t* ptime)
+{
+    uint64_t current_time = CURRENT_TIMESTAMP();
+    if(unlikely(put_user(current_time, ptime)))
+        ERROR2(-EIO, "put_user(%llu, %p) failed", current_time, ptime);
+    return 0;
+}
+
+static int do_deinit_hook(struct file* file, int check)
+{
+    struct mm_struct* mm;
+    struct interact* interact;
+    int ret;
+    if(!(mm = file-&gt;private_data))
+    {
+        if(check)
+            ERROR0(-EINVAL, "this fd has not been inited yet");
+        else
+            return 0;
+    }
+    down_read(&amp;(mm-&gt;page_heat_sample.lock));
+    interact = mm-&gt;page_heat_sample.privdata;
+    assert(interact);
+    ret = landmines_recover_all(&amp;(interact-&gt;landmines));
+    up_read(&amp;(mm-&gt;page_heat_sample.lock));
+    if(unlikely(ret))
+        ERROR0(ret, "landmines_recover_all() failed");
+    msleep(DEINIT_WAIT_MS);
+    down_write(&amp;(mm-&gt;page_heat_sample.lock));
+    mm-&gt;page_heat_sample.on_fault = NULL;
+    mm-&gt;page_heat_sample.on_access_error = NULL;
+    mm-&gt;page_heat_sample.on_fork = NULL;
+    mm-&gt;page_heat_sample.privdata = NULL;
+    up_write(&amp;(mm-&gt;page_heat_sample.lock));
+    queue_deinit(&amp;(interact-&gt;queue), NULL);
+    landmines_deinit(&amp;(interact-&gt;landmines));
+    kfree(interact);
+    file-&gt;private_data = NULL;
+    mmput(mm);
+    return 0;
+}
+
+void interact_init(void)
+{
+    int i;
+    for(i = 0; i &lt; FD_LOCK_COUNT; i++)
+        sema_init(fd_locks + i, 1);
+}
+
+long interact_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
+{
+    int ret;
+    struct semaphore* lock = fd_locks + FD_LOCK_INDEX(file);
+    down(lock);
+    if(cmd == INTERACT_INIT_HOOK)
+        ret = do_init_hook(file, (pid_t)arg);
+    else if(cmd == INTERACT_DETECT_PAGES)
+        ret = do_detect_pages(file);
+    else if(cmd == INTERACT_SET_LANDMINES)
+    {
+        struct interact_param_set_landmines param;
+        if(unlikely(copy_from_user(&amp;param, (void*)arg, sizeof(param))))
+            ERROR0(-EIO, "copy_from_user(&amp;param, (void*)arg, sizeof(param)) failed");
+        ret = do_set_landmines(file, &amp;param);
+    }
+    else if(cmd == INTERACT_READ_EVENTS)
+    {
+        struct interact_param_read_events param;
+        if(unlikely(copy_from_user(&amp;param, (void*)arg, sizeof(param))))
+            ERROR0(-EIO, "copy_from_user(&amp;param, (void*)arg, sizeof(param)) failed");
+        ret = do_read_events(file, &amp;param);
+    }
+    else if(cmd == INTERACT_STAT)
+    {
+        struct interact_param_stat param;
+        if(unlikely(copy_from_user(&amp;param, (void*)arg, sizeof(param))))
+            ERROR0(-EIO, "copy_from_user(&amp;param, (void*)arg, sizeof(param)) failed");
+        ret = do_stat(file, &amp;param);
+    }
+    else if(cmd == INTERACT_GET_VMAS)
+    {
+        struct interact_param_get_vmas param;
+        if(unlikely(copy_from_user(&amp;param, (void*)arg, sizeof(param))))
+            ERROR0(-EIO, "copy_from_user(&amp;param, (void*)arg, sizeof(param)) failed");
+        ret = do_get_vmas(file, &amp;param);
+    }
+    else if(cmd == INTERACT_GET_TIME)
+        ret = do_get_time((uint64_t*)arg);
+    else if(cmd == INTERACT_DEINIT_HOOK)
+        ret = do_deinit_hook(file, 1);
+    else
+    {
+        up(lock);
+        ERROR1(-EINVAL, "unknown command: %u\n", cmd);
+    }
+    up(lock);
+    return ret;
+}
+
+int interact_release(struct inode* inode, struct file* file)
+{
+    return do_deinit_hook(file, 0);
+}
+</pre>
+
+<p>从实现中可以看到，我对file结构体做了一个hash，然后获取对应的信号量。这样做的目的是为了确保同一个文件描述符只能串行地执行各个命令。</p>
+
+<p>至此，重要的代码都完成了。最后提供一个main.c，包装成一个内核模块的形式：</p>
+
+<pre>
+#include "common.h"
+#include "interact.h"
+
+#include &lt;linux/fs.h&gt;
+#include &lt;linux/module.h&gt;
+#include &lt;linux/proc_fs.h&gt;
+
+#define MODULE_NAME     "pgheat"
+#define MODULE_PROT     0666
+
+static struct file_operations fops =
+{
+    .owner = THIS_MODULE,
+    .unlocked_ioctl = interact_ioctl,
+    .release = interact_release,
+};
+
+static int init(void)
+{
+    interact_init();
+    if(!proc_create(MODULE_NAME, MODULE_PROT, NULL, &amp;fops))
+        ERROR2(-EIO, "proc_create('%s', %x, NULL, &amp;fops) failed", MODULE_NAME, MODULE_PROT);
+    return 0;
+}
+
+static void cleanup(void)
+{
+    remove_proc_entry(MODULE_NAME, NULL);
+}
+
+module_init(init);
+module_exit(cleanup);
+
+MODULE_LICENSE("Dual BSD/GPL");
+</pre>
+
+<p>main.c决定了模块的对外接口文件是/proc/pgheat，访问权限是666。</p>
+
+<p>Makefile</p>
+
+<pre>
+obj-m := pgheat.o
+pgheat-objs := vmarray.o vpfnset.o landmines.o queue.o interact.o main.o
+KERNEL_DIR := /lib/modules/$(shell uname -r)/build
+PWD := $(shell pwd)
+
+all:
+	make -C $(KERNEL_DIR) SUBDIRS=$(PWD) modules
+
+clean:
+	rm -rf *.o *.ko *.mod.c .*.cmd .cache.mk .tmp_versions Module.symvers modules.order
+
+.PHONY: clean
+</pre>
+
+<p>执行make，得到pgheat.ko。我终于完成了内核态所有的代码！</p>
+
+                </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
