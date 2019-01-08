@@ -22,16 +22,17 @@
 </ul>
 </p>
 
-<p>总共有8条命令，都是通过ioctl()调用：
+<p>总共有9条命令，都是通过ioctl()调用：
 <pre>
-#define INTERACT_INIT_HOOK      1222
-#define INTERACT_DETECT_PAGES   1223
-#define INTERACT_SET_LANDMINES  1224
-#define INTERACT_READ_EVENTS    1225
-#define INTERACT_STAT           1226
-#define INTERACT_GET_VMAS       1227
-#define INTERACT_GET_TIME       1228
-#define INTERACT_DEINIT_HOOK    1229
+#define INTERACT_INIT_HOOK          1200
+#define INTERACT_SET_COOLING_TIME   1201
+#define INTERACT_DETECT_PAGES       1202
+#define INTERACT_SET_LANDMINES      1203
+#define INTERACT_READ_EVENTS        1204
+#define INTERACT_STAT               1205
+#define INTERACT_GET_VMAS           1206
+#define INTERACT_GET_TIME           1207
+#define INTERACT_DEINIT_HOOK        1208
 </pre>
 下面依次介绍。</p>
 
@@ -42,13 +43,20 @@
 进行初始化，只有一个pid作为参数。执行成功返回0，否则返回一个错误码（比如-EINVAL表示错误的参数，-ENOMEM表示可用内存不足等等）。每一个文件描述符最多只能绑定一个进程的虚拟地址空间，一个进程的虚拟地址空间也只能绑定最多一个文件描述符。
 </p>
 
-<p>==================命令二，INTERACT_DETECT_PAGES=================</p>
+<p>==================命令二，INTERACT_SET_COOLING_TIME================</p>
+
+<p>该命令用来配置页的冷却时间。用户态通过
+<pre>ioctl(fd, INTERACT_SET_COOLING_TIME, cooling_time)</pre>
+进行设置。
+</p>
+
+<p>==================命令三，INTERACT_DETECT_PAGES=================</p>
 
 <p>初始化之后，通常都会调用该命令，以探测存在哪些“友好页”，以构建候选集合。该命令调用方法为
 <pre>ioctl(fd, INTERACT_DETECT_PAGES, NULL)</pre>
 没有参数。成功返回0，失败返回错误码。</p>
 
-<p>==================命令三，INTERACT_SET_LANDMINES==================</p>
+<p>==================命令四，INTERACT_SET_LANDMINES==================</p>
 
 <p>在探测了所有“友好页”之后，就可以随机投放地雷了。该命令需要如下结构体作为参数：
 <pre>
@@ -70,7 +78,7 @@ printf("actually set count: %lu\n", set_count);
 </pre>
 </p>
 
-<p>==================命令四，INTERACT_READ_EVENTS=================</p>
+<p>==================命令五，INTERACT_READ_EVENTS=================</p>
 
 <p>投放了地雷之后，就会陆续有地雷被触发。投放和触发都有事件加入消息队列中。每一条消息的数据结构是这样的：
 <pre>
@@ -115,7 +123,7 @@ for(int i = 0; i &lt; read_count; i++)
 </pre>
 </p>
 
-<p>======================命令五，INTERACT_STAT=======================</p>
+<p>======================命令六，INTERACT_STAT=======================</p>
 
 <p>用户态可以通过该命令获取一些状态与统计信息。该命令需要如下数据结构作为参数：
 <pre>
@@ -147,7 +155,7 @@ printf("page count: %lu\n", page_count);
 </pre>
 </p>
 
-<p>=====================命令六，INTERACT_GET_VMAS=======================</p>
+<p>=====================命令七，INTERACT_GET_VMAS=======================</p>
 
 <p>用户有时可能需要知道有哪些内存段（比如需要全局排序）。这个时候，就可以调用这个命令。kernel中的struct vm_area_struct除了描述虚拟地址的起讫地址以外，还有很多其他的信息。但是用户态决策层只需要起讫地址，因此我们返回的并不是真正的VMA，而是VMA快照。用户态使用该命令时需要传入如下数据结构作为参数：
 <pre>
@@ -179,7 +187,7 @@ for(int i = 0; i &lt; length; i++)
 </pre>
 </p>
 
-<p>======================命令七，INTERACT_GET_TIME====================</p>
+<p>======================命令八，INTERACT_GET_TIME====================</p>
 
 <p>尽管目前消息的时间戳的定义是“1970年1月1日到现在的微秒数”，但是说不定将来变了呢，比如变成了指令周期数，或者是时钟中断数等等在用户态不太容易获取的计时方式。而用户的逻辑可能依赖于当前时间，因此需要提供接口给用户，以获取当前时间。该命令需要一个uint64_t的指针，指定当前时间存放到哪个变量中。调用示例如下：
 <pre>
@@ -189,7 +197,7 @@ printf("current time: %lu\n", current_time);
 </pre>
 </p>
 
-<p>======================命令八，INTERACT_DEINIT_HOOK=================</p>
+<p>======================命令九，INTERACT_DEINIT_HOOK=================</p>
 
 <p>这个其实都不能算命令。当用户态不再想检测页热度了，可以调用该命令来释放所占用的资源。该命令执行后，文件描述符恢复到调用INTERACT_INIT_HOOK之前的状态。当然，如果直接close(fd)效果也是会执行析构操作的。该命令不需要任何参数，直接
 <pre>ioctl(fd, INTERACT_DEINIT_HOOK, NULL);</pre>
@@ -209,14 +217,15 @@ printf("current time: %lu\n", current_time);
 #include &lt;linux/fs.h&gt;
 #include &lt;linux/types.h&gt;
 
-#define INTERACT_INIT_HOOK      1222
-#define INTERACT_DETECT_PAGES   1223
-#define INTERACT_SET_LANDMINES  1224
-#define INTERACT_READ_EVENTS    1225
-#define INTERACT_STAT           1226
-#define INTERACT_GET_VMAS       1227
-#define INTERACT_GET_TIME       1228
-#define INTERACT_DEINIT_HOOK    1229
+#define INTERACT_INIT_HOOK          1200
+#define INTERACT_SET_COOLING_TIME   1201
+#define INTERACT_DETECT_PAGES       1202
+#define INTERACT_SET_LANDMINES      1203
+#define INTERACT_READ_EVENTS        1204
+#define INTERACT_STAT               1205
+#define INTERACT_GET_VMAS           1206
+#define INTERACT_GET_TIME           1207
+#define INTERACT_DEINIT_HOOK        1208
 
 #define INTERACT_EVENT_TYPE_SET                 0
 #define INTERACT_EVENT_TYPE_TRIGGERED_BY_READ   1
@@ -475,6 +484,20 @@ static int do_init_hook(struct file* file, pid_t pid)
     return 0;
 }
 
+static int do_set_cooling_time(struct file* file, uint64_t cooling_time)
+{
+    struct mm_struct* mm;
+    struct interact* interact;
+    if(!(mm = file-&gt;private_data))
+        ERROR0(-EINVAL, "this fd has not been inited yet");
+    down_read(&amp;(mm-&gt;page_heat_sample.lock));
+    interact = mm-&gt;page_heat_sample.privdata;
+    assert(interact);
+    landmines_set_cooling_time(&amp;(interact-&gt;landmines), cooling_time);
+    up_read(&amp;(mm-&gt;page_heat_sample.lock));
+    return 0;
+}
+
 static int do_detect_pages(struct file* file)
 {
     struct mm_struct* mm;
@@ -696,6 +719,8 @@ long interact_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
     down(lock);
     if(cmd == INTERACT_INIT_HOOK)
         ret = do_init_hook(file, (pid_t)arg);
+    else if(cmd == INTERACT_SET_COOLING_TIME)
+        ret = do_set_cooling_time(file, (uint64_t)arg);
     else if(cmd == INTERACT_DETECT_PAGES)
         ret = do_detect_pages(file);
     else if(cmd == INTERACT_SET_LANDMINES)

@@ -1,7 +1,7 @@
 <html>
     <head>
         <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-        <title>页热度监控工具pgheat（六）——基于页的队列queue</title>
+        <title>页热度监控工具pgheat（五）——基于页的队列queue</title>
         <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
     </head>
     <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
@@ -11,11 +11,11 @@
                     <div id="content" role="main">        
                         <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
                             <header class="entry-header">
-                                <h1 class="entry-title">页热度监控工具pgheat（六）——基于页的队列queue</h1>
+                                <h1 class="entry-title">页热度监控工具pgheat（五）——基于页的队列queue</h1>
                             </header>
                             <div class="entry-content">
 
-<p>现在可以随机埋雷和拆雷了，也就是说可以通过page fault对页访问信息进行采样了。那么如何把这些信息传递给决策层呢？为了实现“能力与策略分离”，并且保证kernel代码的稳定性，决策逻辑一定得运行在用户态。于是问题就成了如何从内核态向用户态传递消息了。方案呼之欲出——消息队列呀。</p>
+<p>如何把埋雷和拆雷这些信息传递给决策层呢？为了实现“能力与策略分离”，并且保证kernel代码的稳定性，决策逻辑一定得运行在用户态。于是问题就成了如何从内核态向用户态传递消息了。方案呼之欲出——消息队列呀。</p>
 
 <p>最初我有这么两种实现方案：
 <ol>

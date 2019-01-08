@@ -1,7 +1,7 @@
 <html>
     <head>
         <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-        <title>页热度监控工具pgheat（五）——地雷管理类landmines</title>
+        <title>页热度监控工具pgheat（六）——地雷管理类landmines</title>
         <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
     </head>
     <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
@@ -11,11 +11,11 @@
                     <div id="content" role="main">        
                         <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
                             <header class="entry-header">
-                                <h1 class="entry-title">页热度监控工具pgheat（五）——地雷管理类landmines</h1>
+                                <h1 class="entry-title">页热度监控工具pgheat（六）——地雷管理类landmines</h1>
                             </header>
                             <div class="entry-content">
 
-<p>有了vpfnset之后，就可以构建整个系统的核心了——landmines，即管理“埋雷”的工具类。landmines类提供了“埋雷”、“排雷”等操作，外部调用者只需要按照接口定义进行使用即可，不需要知道“地雷”到底是通过何种手段实现的（比如说，在x86_64上，通过PAGE_USER标志位来实现“地雷”）。</p>
+<p>有了vpfnset和queue之后，就可以构建整个系统的核心了——landmines，即管理“埋雷”的工具类。landmines类提供了“埋雷”、“排雷”等操作，外部调用者只需要按照接口定义进行使用即可，不需要知道“地雷”到底是通过何种手段实现的（比如说，在x86_64上，通过PAGE_USER标志位来实现“地雷”）。</p>
 
 <p>最初我“投放地雷”的策略是在虚拟地址空间里随机投放，如果选中的页已经有雷，那么则跳过，否则投放。但是，实践发现，这样的投放效率会非常低下。比如说，一个进程开辟了10GB的地址空间，其中只有10M空间是频繁访问的，而其他内存几乎不访问。那么一开始投雷时，基本都能投上，但是到后来，投雷效率越来越低，到了最后，9G 1014M的冷数据空间都被投上了地雷，只有10M热数据空间才能新投放，于是投放效率只有千分之一不到！</p>
 
@@ -35,6 +35,8 @@
 
 <p>地雷管理类提供了随机埋雷的接口，指定地雷的个数，即可在目标进程的虚拟地址空间中投放指定数目地雷。另外，当触发page fault时，调用排雷的接口，把地雷拆除，并且回收“友好页号”。当触发地雷时，可以判断出是读访问、写访问还是取指令访问导致了page fault，于是，决策层不仅仅只有热度信息，还有内存读写类型信息。</p>
 
+<p>在第一版实现之后，我发现一个问题：很多page fault其实是由热页导致的。热页在“踩雷”后，很快又被“投雷”，之后又很快“踩雷”。对这些热页的采样频率太高，消耗了很多CPU时间。而事实上，采样频率只要达到一定值就可以，不需要很高。如果可以限制某个页最高采样频率，就可以省出更多资源去增加冷页的采样频率。于是我的改进就是，把踩雷后的地址放入一个队列，每10秒（间隔可以设置）把队列中的地址放入候选集中，以此控制“轮回”的时间间隔。</p>
+
 <p>OK，需要文字描述的就这么多，其他细节代码都写的很清楚了～</p>
 
 <p>首先是landmines.h，定义了对外接口，接口是平台无关的：</p>
@@ -43,6 +45,7 @@
 #ifndef LANDMINES_H
 #define LANDMINES_H
 
+#include "queue.h"
 #include "common.h"
 #include "vpfnset.h"
 
@@ -58,6 +61,10 @@ struct landmines
     size_t page_count;      // count of friendly pages
     struct vpfnset alts;    // the alternative pages to set landmines
     spinlock_t alts_lock;   // protect field 'alts'
+    struct queue coolings;  // the recently triggered pages need to cool
+    spinlock_t coolings_lock;   // protect field 'coolings'
+    uint64_t cooling_time;  // time to cool
+    uint64_t cooling_deadline;  // when to merge 'coolings' to 'alts'
     size_t triggered_count; // the count of triggered landmines totally
 };
 
@@ -65,6 +72,10 @@ struct landmines
 //      mm: the virtual memory space of a process to be monitored
 // return 0 when succeed, or error code otherwise
 int landmines_init(struct landmines* landmines, struct mm_struct* mm);
+
+// set cooling time
+//      cooling_time: time to cool (us)
+void landmines_set_cooling_time(struct landmines* landmines, uint64_t cooling_time);
 
 // scan the whole virtual memory space to find out friendly pages
 // return 0 when succeed, or error code otherwise
@@ -138,6 +149,7 @@ pte_t landmines_recover_pte(pte_t pte);
 
 #include &lt;asm/traps.h&gt;
 #include &lt;linux/slab.h&gt;
+#include &lt;linux/time.h&gt;
 #include &lt;linux/random.h&gt;
 
 #define ADDRESS_BITS        48
@@ -156,6 +168,13 @@ pte_t landmines_recover_pte(pte_t pte);
 #define ATOMIC_SET_U64(name, val)       (name) = (val)
 #define ATOMIC_GET_AND_RESET_U64(name)  __sync_fetch_and_and(&amp;(name), 0)
 
+#define CURRENT_TIMESTAMP()             \
+({                                      \
+    struct timeval tv;                  \
+    do_gettimeofday(&amp;tv);               \
+    tv.tv_sec * 1000000 + tv.tv_usec;   \
+})
+
 static void* alloc_zeroed_page_for_vpfnset(void* privdata)
 {
     return (void*)get_zeroed_page(GFP_ATOMIC);
@@ -171,6 +190,16 @@ static size_t random_for_vpfnset(void* privdata)
     return get_random_long();
 }
 
+static void* alloc_page_for_queue(void* privdata)
+{
+    return (void*)__get_free_page(GFP_ATOMIC);
+}
+
+static void free_page_for_queue(void* page, void* privdata)
+{
+    free_page((unsigned long)page);
+}
+
 int landmines_init(struct landmines* landmines, struct mm_struct* mm)
 {
     int ret;
@@ -183,8 +212,20 @@ int landmines_init(struct landmines* landmines, struct mm_struct* mm)
         alloc_zeroed_page_for_vpfnset, free_page_for_vpfnset, random_for_vpfnset, NULL)))
         ERROR0(ret, "vpfnset_init(&amp;(landmines-&gt;alts), ...) failed");
     spin_lock_init(&amp;(landmines-&gt;alts_lock));
+    if(unlikely(ret = queue_init(&amp;(landmines-&gt;coolings), sizeof(unsigned long), PAGE_SIZE,
+        alloc_page_for_queue, free_page_for_queue, NULL)))
+        ERROR0(ret, "queue_init(&amp;(landmines-&gt;coolings), ...) failed");
+    spin_lock_init(&amp;(landmines-&gt;coolings_lock));
+    landmines-&gt;cooling_time = 0;
+    landmines-&gt;cooling_deadline = 0;
     landmines-&gt;triggered_count = 0;
     return 0;
+}
+
+void landmines_set_cooling_time(struct landmines* landmines, uint64_t cooling_time)
+{
+    assert(landmines);
+    landmines-&gt;cooling_time = cooling_time;
 }
 
 static pte_t* get_pte(struct mm_struct* mm, unsigned long vaddr, spinlock_t** pte_lock)
@@ -232,7 +273,7 @@ error:
     return NULL;
 }
 
-static inline int add_alternative(struct landmines* landmines, unsigned long vaddr)
+static int add_alternative(struct landmines* landmines, unsigned long vaddr)
 {
     unsigned long vpfn = vaddr &gt;&gt; PAGE_SHIFT;
     int ret;
@@ -245,13 +286,46 @@ static inline int add_alternative(struct landmines* landmines, unsigned long vad
     return 0;
 }
 
-static inline unsigned long pop_alternative(struct landmines* landmines)
+static unsigned long pop_alternative(struct landmines* landmines)
 {
     unsigned long vpfn;
     spin_lock(&amp;(landmines-&gt;alts_lock));
     vpfn = vpfnset_pop(&amp;(landmines-&gt;alts), 0);
     spin_unlock(&amp;(landmines-&gt;alts_lock));
     return vpfn &lt;&lt; PAGE_SHIFT;
+}
+
+static int add_coolings(struct landmines* landmines, unsigned long vaddr)
+{
+    unsigned long* v;
+    spin_lock(&amp;(landmines-&gt;coolings_lock));
+    if(unlikely(!(v = queue_add(&amp;(landmines-&gt;coolings)))))
+    {
+        spin_unlock(&amp;(landmines-&gt;coolings_lock));
+        return -ENOMEM;
+    }
+    (*v) = vaddr;
+    spin_unlock(&amp;(landmines-&gt;coolings_lock));
+    return 0;
+}
+
+static int merge_coolings(struct landmines* landmines)
+{
+    while(1)
+    {
+        int ret;
+        unsigned long *v, vaddr;
+        spin_lock(&amp;(landmines-&gt;coolings_lock));
+        if(unlikely(!(v = queue_take(&amp;(landmines-&gt;coolings)))))
+        {
+            spin_unlock(&amp;(landmines-&gt;coolings_lock));
+            return 0;
+        }
+        vaddr = (*v);
+        spin_unlock(&amp;(landmines-&gt;coolings_lock));
+        if(unlikely((ret = add_alternative(landmines, vaddr))))
+            return ret;
+    }
 }
 
 int landmines_detect_pages(struct landmines* landmines)
@@ -279,7 +353,7 @@ int landmines_detect_pages(struct landmines* landmines)
                 pte_unmap_unlock(ppte, pte_lock);
                 if(IS_PTE_ACCESSABLE(pte))
                 {
-                    if(unlikely(ret = add_alternative(landmines, vaddr)))
+                    if(unlikely((ret = add_alternative(landmines, vaddr))))
                     {
                         assert(ret &lt; 0);
                         up_read(&amp;(mm-&gt;mmap_sem));
@@ -339,15 +413,25 @@ static struct vm_area_struct* find_friendly_vma(struct mm_struct* mm, unsigned l
 ssize_t landmines_set(struct landmines* landmines, size_t count,
     int (*func_on_set)(unsigned long vaddr, void* privdata), void* privdata)
 {
+    uint64_t current_time = CURRENT_TIMESTAMP();
     struct mm_struct* mm;
     size_t i, new_set_count = 0;
+    int ret;
     assert(landmines);
+    if(current_time &gt;= landmines-&gt;cooling_deadline)
+    {
+        if(unlikely((ret = merge_coolings(landmines))))
+        {
+            assert(ret &lt; 0);
+            ERROR0(ret, "merger_coolings(landmines) failed");
+        }
+        landmines-&gt;cooling_deadline = current_time + landmines-&gt;cooling_time;
+    }
     mm = landmines-&gt;mm;
     down_read(&amp;(mm-&gt;mmap_sem));
     for(i = 0; i &lt; count; i++)
     {
         unsigned long vaddr = pop_alternative(landmines);
-        int ret;
         if(unlikely(vaddr == 0))
             break;
         if(unlikely(!find_friendly_vma(mm, vaddr)))
@@ -371,11 +455,15 @@ int landmines_on_page_fault(struct landmines* landmines,
     struct mm_struct* mm;
     pte_t *ppte, pte;
     spinlock_t* pte_lock;
-    int type, func_ret = 0;
+    int ret, type, func_ret = 0;
     assert(landmines);
     if(unlikely(IS_PAGE_FAULT_BY_NO_PAGE(errcode)))
     {
-        add_alternative(landmines, vaddr);
+        if(unlikely((ret = add_alternative(landmines, vaddr))))
+        {
+            assert(ret &lt; 0);
+            ERROR1(ret, "add_alternative(landmines, %lx) failed", vaddr);
+        }
         return 0;
     }
     mm = landmines-&gt;mm;
@@ -399,7 +487,11 @@ int landmines_on_page_fault(struct landmines* landmines,
         func_ret = func_on_unset(type, vaddr, privdata);
     pte_unmap_unlock(ppte, pte_lock);
     ATOMIC_INC_U64(landmines-&gt;triggered_count);
-    add_alternative(landmines, vaddr);
+    if(unlikely((ret = add_coolings(landmines, vaddr))))
+    {
+        assert(ret &lt; 0);
+        ERROR1(ret, "add_coolings(landmines, %lx) failed", vaddr);
+    }
     if(unlikely(func_ret &lt; 0))
         return func_ret;
     return type;
@@ -470,6 +562,7 @@ void landmines_deinit(struct landmines* landmines)
 {
     assert(landmines);
     vpfnset_deinit(&amp;(landmines-&gt;alts));
+    queue_deinit(&amp;(landmines-&gt;coolings), NULL);
 }
 
 int landmines_is_friendly_vma(struct vm_area_struct* vma)
