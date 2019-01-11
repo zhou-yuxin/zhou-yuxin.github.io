@@ -55,7 +55,7 @@
 #define LANDMINES_TRIGGERED_BY_WRITE  2
 #define LANDMINES_TRIGGERED_BY_EXEC   3
 
-struct landmines 
+struct landmines
 {
     struct mm_struct* mm;   // the virtual memory space that's monitored
     size_t page_count;      // count of friendly pages
@@ -63,8 +63,7 @@ struct landmines
     spinlock_t alts_lock;   // protect field 'alts'
     struct queue coolings;  // the recently triggered pages need to cool
     spinlock_t coolings_lock;   // protect field 'coolings'
-    uint64_t cooling_time;  // time to cool
-    uint64_t cooling_deadline;  // when to merge 'coolings' to 'alts'
+    uint64_t cooling_time;  // time to cool (ms)
     size_t triggered_count; // the count of triggered landmines totally
 };
 
@@ -74,7 +73,7 @@ struct landmines
 int landmines_init(struct landmines* landmines, struct mm_struct* mm);
 
 // set cooling time
-//      cooling_time: time to cool (us)
+//      cooling_time: time to cool (ms)
 void landmines_set_cooling_time(struct landmines* landmines, uint64_t cooling_time);
 
 // scan the whole virtual memory space to find out friendly pages
@@ -122,7 +121,7 @@ size_t landmines_get_triggered_count(struct landmines* landmines, int reset);
 size_t landmines_get_alternative_count(struct landmines* landmines);
 
 // get the count of friendly pages
-// return the page count 
+// return the page count
 size_t landmines_get_page_count(struct landmines* landmines);
 
 // recover all pages in the virtual memory space,
@@ -168,12 +167,11 @@ pte_t landmines_recover_pte(pte_t pte);
 #define ATOMIC_SET_U64(name, val)       (name) = (val)
 #define ATOMIC_GET_AND_RESET_U64(name)  __sync_fetch_and_and(&amp;(name), 0)
 
-#define CURRENT_TIMESTAMP()             \
-({                                      \
-    struct timeval tv;                  \
-    do_gettimeofday(&amp;tv);               \
-    tv.tv_sec * 1000000 + tv.tv_usec;   \
-})
+struct cooling
+{
+    uint64_t deadline;
+    unsigned long address;
+};
 
 static void* alloc_zeroed_page_for_vpfnset(void* privdata)
 {
@@ -208,16 +206,15 @@ int landmines_init(struct landmines* landmines, struct mm_struct* mm)
         ERROR0(-EINVAL, "param &lt;mm = NULL&gt; is not allowed");
     landmines-&gt;mm = mm;
     landmines-&gt;page_count = 0;
-    if(unlikely(ret = vpfnset_init(&amp;(landmines-&gt;alts), MAX_PAGE_COUNT, PAGE_SIZE, 
+    if(unlikely(ret = vpfnset_init(&amp;(landmines-&gt;alts), MAX_PAGE_COUNT, PAGE_SIZE,
         alloc_zeroed_page_for_vpfnset, free_page_for_vpfnset, random_for_vpfnset, NULL)))
         ERROR0(ret, "vpfnset_init(&amp;(landmines-&gt;alts), ...) failed");
     spin_lock_init(&amp;(landmines-&gt;alts_lock));
-    if(unlikely(ret = queue_init(&amp;(landmines-&gt;coolings), sizeof(unsigned long), PAGE_SIZE,
+    if(unlikely(ret = queue_init(&amp;(landmines-&gt;coolings), sizeof(struct cooling), PAGE_SIZE,
         alloc_page_for_queue, free_page_for_queue, NULL)))
         ERROR0(ret, "queue_init(&amp;(landmines-&gt;coolings), ...) failed");
     spin_lock_init(&amp;(landmines-&gt;coolings_lock));
     landmines-&gt;cooling_time = 0;
-    landmines-&gt;cooling_deadline = 0;
     landmines-&gt;triggered_count = 0;
     return 0;
 }
@@ -225,7 +222,7 @@ int landmines_init(struct landmines* landmines, struct mm_struct* mm)
 void landmines_set_cooling_time(struct landmines* landmines, uint64_t cooling_time)
 {
     assert(landmines);
-    landmines-&gt;cooling_time = cooling_time;
+    landmines-&gt;cooling_time = HZ * cooling_time / 1000;
 }
 
 static pte_t* get_pte(struct mm_struct* mm, unsigned long vaddr, spinlock_t** pte_lock)
@@ -266,7 +263,7 @@ static pte_t* get_pte(struct mm_struct* mm, unsigned long vaddr, spinlock_t** pt
     }
     assert(pte_lock);
     (*pte_lock) = lock;
-    return pte;  
+    return pte;
 
 error:
     spin_unlock(&amp;(mm-&gt;page_table_lock));
@@ -295,37 +292,46 @@ static unsigned long pop_alternative(struct landmines* landmines)
     return vpfn &lt;&lt; PAGE_SHIFT;
 }
 
-static int add_coolings(struct landmines* landmines, unsigned long vaddr)
+static int add_cooling(struct landmines* landmines, unsigned long vaddr)
 {
-    unsigned long* v;
+    struct cooling* cooling;
+    uint64_t deadline = jiffies_64 + landmines-&gt;cooling_time;
     spin_lock(&amp;(landmines-&gt;coolings_lock));
-    if(unlikely(!(v = queue_add(&amp;(landmines-&gt;coolings)))))
+    if(unlikely(!(cooling = queue_add(&amp;(landmines-&gt;coolings)))))
     {
         spin_unlock(&amp;(landmines-&gt;coolings_lock));
         return -ENOMEM;
     }
-    (*v) = vaddr;
+    cooling-&gt;deadline = deadline;
+    cooling-&gt;address = vaddr;
     spin_unlock(&amp;(landmines-&gt;coolings_lock));
     return 0;
 }
 
 static int merge_coolings(struct landmines* landmines)
 {
+    uint64_t current_time = jiffies_64;
     while(1)
     {
         int ret;
-        unsigned long *v, vaddr;
+        struct cooling *cooling;
+        uint64_t deadline;
+        unsigned long address;
         spin_lock(&amp;(landmines-&gt;coolings_lock));
-        if(unlikely(!(v = queue_take(&amp;(landmines-&gt;coolings)))))
+        if(unlikely(!(cooling = queue_take(&amp;(landmines-&gt;coolings)))))
         {
             spin_unlock(&amp;(landmines-&gt;coolings_lock));
             return 0;
         }
-        vaddr = (*v);
+        deadline = cooling-&gt;deadline;
+        address = cooling-&gt;address;
         spin_unlock(&amp;(landmines-&gt;coolings_lock));
-        if(unlikely((ret = add_alternative(landmines, vaddr))))
+        if(unlikely((ret = add_alternative(landmines, address))))
             return ret;
+        if(unlikely(current_time &lt; deadline))
+            return 0;
     }
+    return 0;
 }
 
 int landmines_detect_pages(struct landmines* landmines)
@@ -413,19 +419,14 @@ static struct vm_area_struct* find_friendly_vma(struct mm_struct* mm, unsigned l
 ssize_t landmines_set(struct landmines* landmines, size_t count,
     int (*func_on_set)(unsigned long vaddr, void* privdata), void* privdata)
 {
-    uint64_t current_time = CURRENT_TIMESTAMP();
     struct mm_struct* mm;
     size_t i, new_set_count = 0;
     int ret;
     assert(landmines);
-    if(current_time &gt;= landmines-&gt;cooling_deadline)
+    if(unlikely((ret = merge_coolings(landmines))))
     {
-        if(unlikely((ret = merge_coolings(landmines))))
-        {
-            assert(ret &lt; 0);
-            ERROR0(ret, "merger_coolings(landmines) failed");
-        }
-        landmines-&gt;cooling_deadline = current_time + landmines-&gt;cooling_time;
+        assert(ret &lt; 0);
+        ERROR0(ret, "merger_coolings(landmines) failed");
     }
     mm = landmines-&gt;mm;
     down_read(&amp;(mm-&gt;mmap_sem));
@@ -437,7 +438,7 @@ ssize_t landmines_set(struct landmines* landmines, size_t count,
         if(unlikely(!find_friendly_vma(mm, vaddr)))
             continue;
         if(likely((ret = set_landmine_at(mm, vaddr, func_on_set, privdata)) == 1))
-            new_set_count++; 
+            new_set_count++;
         else if(unlikely(ret &lt; 0))
         {
             up_read(&amp;(mm-&gt;mmap_sem));
@@ -487,10 +488,10 @@ int landmines_on_page_fault(struct landmines* landmines,
         func_ret = func_on_unset(type, vaddr, privdata);
     pte_unmap_unlock(ppte, pte_lock);
     ATOMIC_INC_U64(landmines-&gt;triggered_count);
-    if(unlikely((ret = add_coolings(landmines, vaddr))))
+    if(unlikely((ret = add_cooling(landmines, vaddr))))
     {
         assert(ret &lt; 0);
-        ERROR1(ret, "add_coolings(landmines, %lx) failed", vaddr);
+        ERROR1(ret, "add_cooling(landmines, %lx) failed", vaddr);
     }
     if(unlikely(func_ret &lt; 0))
         return func_ret;

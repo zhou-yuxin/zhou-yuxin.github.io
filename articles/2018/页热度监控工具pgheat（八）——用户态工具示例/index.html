@@ -1,0 +1,109 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>热度监控工具pgheat（八）——用户态工具示例</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">热度监控工具pgheat（八）——用户态工具示例</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>kernel态的pgheat.ko提供了/proc/pgheat接口，能够通过各种命令操作指定进程，现在就要写一个用户态的工具，以演示pgheat.ko的使用。</p>
+
+<p>首先，把pgheat.ko的交互接口整合成一个头文件pgheat.h：</p>
+
+<pre>
+#ifndef PGHEAT_H
+#define PGHEAT_H
+
+#include "common.h"
+
+#define PGHEAT_MODULE_PATH  "/proc/pgheat"
+
+#define PGHEAT_CMD_INIT_HOOK        1200
+#define PGHEAT_SET_COOLING_TIME     1201
+#define PGHEAT_CMD_DETECT_PAGES     1202
+#define PGHEAT_CMD_SET_LANDMINES    1203
+#define PGHEAT_CMD_READ_EVENTS      1204
+#define PGHEAT_CMD_STAT             1205
+#define PGHEAT_CMD_GET_VMAS         1206
+#define PGHEAT_CMD_GET_TIME         1207
+#define PGHEAT_CMD_DEINIT_HOOK      1208
+
+#define PGHEAT_EVENT_TYPE_SET                   0
+#define PGHEAT_EVENT_TYPE_TRIGGERED_BY_READ     1
+#define PGHEAT_EVENT_TYPE_TRIGGERED_BY_WRITE    2
+#define PGHEAT_EVENT_TYPE_TRIGGERED_BY_EXEC     3
+
+// the event of a triggered landmine
+struct pgheat_event
+{
+    uint64_t timestamp : 62;    // time when this event happened (CPU ticks)
+    uint64_t type : 2;          // what the event is
+    unsigned long address;      // virtual address where it happened
+};
+
+// parameter of command PGHEAT_CMD_SET_LANDMINES
+struct pgheat_param_set_landmines
+{
+    size_t count;       // the count of pages to set landmiens
+    size_t* set_count;  // where to put the count of successfully set landmines (can be null)
+};
+
+// parameter of command PGHEAT_CMD_READ_EVENTS
+struct pgheat_param_read_events
+{
+    struct pgheat_event* buffer;  // user buffer
+    size_t capacity;    // the capacity of user buffer
+    size_t* count;      // where to put the count of successfully read events (can be null)
+};
+
+// parameter of command PGHEAT_CMD_STAT
+struct pgheat_param_stat
+{
+    int reset_triggered_count;  // whether to reset triggered counter
+    size_t* triggered_count;    // where to put the triggered count (can be null)
+    size_t* alternative_count;  // where to put the alternative count (can be null)
+    size_t* page_count;         // where to put the count of friendly pages (can be null)
+    size_t* event_queue_length; // where to put the length of event queue (can be null)
+};
+
+// parameter of command PGHEAT_CMD_GET_VMAS
+struct pgheat_param_get_vmas
+{
+    struct pgheat_vma   // a snapshot of VMA (virtual memory area)
+    {
+        unsigned long start;    // the starting address
+        unsigned long end;      // the ending address
+    }*
+    buffer;
+    size_t capacity;    // the capacity of the buffer
+    size_t* length;     // where to put the count of VMAs (this value is always the count of
+                        //   VMAs in the process, may larger than 'capacity')
+};
+
+#endif
+</pre>
+
+<p>我们还需要《<a href="../页热度监控工具pgheat（三）——高内聚稀疏数组vmarray/index.html">页热度监控工具pgheat（三）——高内聚稀疏数组vmarray</a>》里的common.h、vmarray.h和vmarray.c。</p>
+
+
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+                <div id="site-generator">周坚石@南京大学软件学院 504849766@qq.com</div>
+            </footer>
+        </div>
+    </body>
+</html>
