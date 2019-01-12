@@ -28,7 +28,7 @@
 #define PGHEAT_MODULE_PATH  "/proc/pgheat"
 
 #define PGHEAT_CMD_INIT_HOOK        1200
-#define PGHEAT_SET_COOLING_TIME     1201
+#define PGHEAT_CMD_SET_COOLING_TIME 1201
 #define PGHEAT_CMD_DETECT_PAGES     1202
 #define PGHEAT_CMD_SET_LANDMINES    1203
 #define PGHEAT_CMD_READ_EVENTS      1204
@@ -94,7 +94,316 @@ struct pgheat_param_get_vmas
 
 <p>我们还需要《<a href="../页热度监控工具pgheat（三）——高内聚稀疏数组vmarray/index.html">页热度监控工具pgheat（三）——高内聚稀疏数组vmarray</a>》里的common.h、vmarray.h和vmarray.c。</p>
 
+<p>main.c：</p>
 
+<pre>
+#include "common.h"
+#include "pgheat.h"
+#include "vmarray.h"
+
+#include &lt;time.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;float.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/ioctl.h&gt;
+
+#define PAGE_SIZE               4096
+#define MAX_VPFN                ((size_t)1 &lt;&lt; 36)
+
+#define COOLING_TIME            5000    // cooling time (ms)
+#define SET_LANDMINE_RATIO      0.005f  // set_count = RATIO * page_count
+#define LOOP_INTERVAL           100000  // interval (us) to set landmines
+#define SHOW_INTERVAL           5       // interval (sec) to show results
+#define EXP_AVG_WEIGHT          0.15f   // the weight of new interval
+#define MAX_LINES               256     // the max lines to show results
+#define MAX_VMAS                1024    // the max VMAs
+#define ENOUGH_SAMPLE_COUNT     3       // average is valid if count is enough
+#define LONG_INTERVAL_THRESHOLD 1000000
+
+struct page_info
+{
+    uint64_t set_time;  // when a landmine is set to this page
+    float interval;     // the average interval from setting to triggering
+    uint32_t count;     // how many samples
+};
+
+static void* alloc_zeroed_page_for_vmarray(void* privdata)
+{
+    return malloc(PAGE_SIZE);
+}
+
+static void free_page_for_vmarray(void* page, void* privdata)
+{
+    free(page);
+}
+
+static int init_pgheat(pid_t pid)
+{
+    int ret;
+    if((ret = open(PGHEAT_MODULE_PATH, O_RDWR)) &lt; 0)
+        ERROR1(ret, "open('%s', O_RDWR) failed", PGHEAT_MODULE_PATH);
+    int fd = ret;
+    if((ret = ioctl(fd, PGHEAT_CMD_INIT_HOOK, pid)) &lt; 0)
+    {
+        close(fd);
+        ERROR2(ret, "ioctl(%d, PGHEAT_CMD_INIT_HOOK, %d) failed", fd, pid);
+    }
+    if((ret = ioctl(fd, PGHEAT_CMD_SET_COOLING_TIME, COOLING_TIME)) &lt; 0)
+    {
+        close(fd);
+        ERROR2(ret, "ioctl(%d, PGHEAT_CMD_SET_COOLING_TIME, %u) failed", fd, COOLING_TIME);
+    }
+    if((ret = ioctl(fd, PGHEAT_CMD_DETECT_PAGES, NULL)) &lt; 0)
+    {
+        close(fd);
+        ERROR1(ret, "ioctl(%d, PGHEAT_CMD_DETECT_PAGES, NULL) failed", fd);
+    }
+    return fd;
+}
+
+static ssize_t set_landmines(int fd, float ratio)
+{
+    size_t alt_count;
+    struct pgheat_param_stat param_stat =
+    {
+        .reset_triggered_count = 1,
+        .triggered_count = NULL,
+        .alternative_count = &amp;alt_count,
+        .page_count = NULL,
+        .event_queue_length = NULL,
+    };
+    int ret;
+    if((ret = ioctl(fd, PGHEAT_CMD_STAT, &amp;param_stat)) &lt; 0)
+        ERROR1(ret, "ioctl(%d, PGHEAT_CMD_STAT, ...) failed", fd);
+    size_t set_count;
+    struct pgheat_param_set_landmines param_set =
+    {
+        .count = (size_t)(alt_count * ratio),
+        .set_count = &amp;set_count,
+    };
+    if((ret = ioctl(fd, PGHEAT_CMD_SET_LANDMINES, &amp;param_set)) &lt; 0)
+        ERROR1(ret, "ioctl(%d, PGHEAT_CMD_SET_LANDMINES, ...) failed", fd);
+    return set_count;
+}
+
+static void update_page(struct page_info* info, struct pgheat_event* event)
+{
+    if(event-&gt;type == PGHEAT_EVENT_TYPE_SET)
+        info-&gt;set_time = event-&gt;timestamp;
+    else
+    {
+        assert(info-&gt;set_time);
+        assert(event-&gt;timestamp &gt;= info-&gt;set_time);
+        uint64_t interval = event-&gt;timestamp - info-&gt;set_time;
+        info-&gt;set_time = 0;
+        info-&gt;interval = info-&gt;interval * (1 - EXP_AVG_WEIGHT) + interval * EXP_AVG_WEIGHT;
+        if(info-&gt;count &lt; UINT32_MAX)
+            info-&gt;count++;
+    }
+}
+
+static ssize_t handle_events(int fd, struct vmarray* pages)
+{
+    struct pgheat_event events[256];
+    size_t read_count, handled_count = 0;
+    struct pgheat_param_read_events param_read =
+    {
+        .buffer = events,
+        .capacity = 256,
+        .count = &amp;read_count,
+    };
+    do
+    {
+        int ret;
+        if((ret = ioctl(fd, PGHEAT_CMD_READ_EVENTS, &amp;param_read)))
+            ERROR1(ret, "ioctl(%d, PGHEAT_CMD_READ_EVENTS, ...) failed", fd);
+        size_t i;
+        for(i = 0; i &lt; read_count; i++)
+        {
+            struct pgheat_event* event = events + i;
+            unsigned long vpfn = event-&gt;address / PAGE_SIZE;
+            struct page_info* info = vmarray_access(pages, vpfn, 1);
+            if(!info)
+                ERROR1(-ENOMEM, "vmarray_access(pages, %lx, 1) failed", vpfn);
+            update_page(info, event);
+        }
+        handled_count += read_count;
+    }
+    while(read_count == param_read.capacity);
+    return handled_count;
+}
+
+static int show_distribution(int fd, struct vmarray* pages,
+    float min_hz, float max_hz, unsigned columns, unsigned lines)
+{
+    if(min_hz &gt;= max_hz)
+        ERROR2(-EINVAL, "param &lt;min_hz = %f&gt; is not less than &lt;max_hz = %f&gt;", min_hz, max_hz);
+    float hz_range = max_hz - min_hz;
+    if(lines &gt; MAX_LINES)
+        ERROR1(-EINVAL, "param &lt;lines = %u&gt; is too large", lines);
+    size_t hz_counts[MAX_LINES] = {0};
+    int ret, i, j;
+    uint64_t current_time;
+    if((ret = ioctl(fd, PGHEAT_CMD_GET_TIME, &amp;current_time)) &lt; 0)
+        ERROR1(ret, "ioctl(%d, PGHEAT_CMD_GET_TIME, ...) failed", fd);
+    size_t vma_count;
+    struct pgheat_vma vmas[MAX_VMAS];
+    struct pgheat_param_get_vmas get_vmas =
+    {
+        .buffer = vmas,
+        .capacity = MAX_VMAS,
+        .length = &amp;vma_count,
+    };
+    if((ret = ioctl(fd, PGHEAT_CMD_GET_VMAS, &amp;get_vmas)) &lt; 0)
+        ERROR1(ret, "ioctl(%d, PGHEAT_CMD_GET_VMAS, &amp;get_vmas) failed", fd);
+    if(vma_count == MAX_VMAS)
+        ERROR1(-EINVAL, "&lt;vma_count = %lu&gt; is too large", vma_count);
+    for(i = 0; i &lt; vma_count; i++)
+    {
+        unsigned long vaddr;
+        for(vaddr = vmas[i].start; vaddr &lt; vmas[i].end; vaddr += PAGE_SIZE)
+        {
+            struct page_info* info = vmarray_access(pages, vaddr / PAGE_SIZE, 0);
+            if(!info)
+                continue;
+            float interval;
+            if(info-&gt;count &lt; ENOUGH_SAMPLE_COUNT)
+                interval = FLT_MAX;
+            else if(info-&gt;set_time &amp;&amp; info-&gt;set_time + LONG_INTERVAL_THRESHOLD &lt; current_time)
+            {
+                struct page_info copy_info = (*info);
+                struct pgheat_event event =
+                {
+                    .timestamp = current_time,
+                    .type = PGHEAT_EVENT_TYPE_TRIGGERED_BY_WRITE,
+                    .address = vaddr,
+                };
+                update_page(&amp;copy_info, &amp;event);
+                interval = copy_info.interval;
+            }
+            else
+                interval = info-&gt;interval;
+            float hz = 500000 / interval;
+            int index = (hz - min_hz) / hz_range * lines;
+            if(index &gt;= lines)
+                index = lines - 1;
+            else if(index &lt; 0)
+                index = 0;
+            hz_counts[index]++;
+        }
+    }
+    size_t max_count = 1;
+    for(i = 0; i &lt; lines; i++)
+        if(hz_counts[i] &gt; max_count)
+            max_count = hz_counts[i];
+    for(i = 0; i &lt; lines; i++)
+    {
+        float hz_floor = hz_range * i / lines;
+        printf("%6.2f : %8lu ", hz_floor, hz_counts[i]);
+        for(j = columns * hz_counts[i] / max_count; j &gt; 0; j--)
+            fputc('|', stdout);
+        fputc('\n', stdout);
+    }
+    fputc('\n', stdout);
+    return 0;
+}
+
+int main(int argc, char* argv[])
+{
+    pid_t pid;
+    float min_hz, max_hz;
+    unsigned columns, lines, interval;
+    if(argc != 7 ||
+        sscanf(argv[1], "%d", &amp;pid) != 1 ||
+        sscanf(argv[2], "%f", &amp;min_hz) != 1 ||
+        sscanf(argv[3], "%f", &amp;max_hz) != 1 ||
+        sscanf(argv[4], "%u", &amp;columns) != 1 ||
+        sscanf(argv[5], "%u", &amp;lines) != 1 ||
+        sscanf(argv[6], "%u", &amp;interval) != 1)
+    {
+        printf("USAGE: %s &lt;pid&gt; &lt;min_hz&gt; &lt;max_hz&gt; &lt;columns&gt; &lt;lines&gt; &lt;interval&gt;\n", argv[0]);
+        return -EINVAL;
+    }
+    int ret;
+    struct vmarray pages;
+    if((ret = vmarray_init(&amp;pages, MAX_VPFN, sizeof(struct page_info), PAGE_SIZE,
+        alloc_zeroed_page_for_vmarray, free_page_for_vmarray, NULL)) &lt; 0)
+        ERROR0(ret, "vmarray_init(&amp;pages, ...) failed");
+    int fd = init_pgheat(pid);
+    if(fd &lt; 0)
+    {
+        vmarray_deinit(&amp;pages, NULL);
+        ERROR1(fd, "init_pgheat(%d) failed", pid);
+    }
+    time_t time_base = 0;
+    while(1)
+    {
+        ssize_t landmine_count, event_count;
+        if((landmine_count = set_landmines(fd, SET_LANDMINE_RATIO)) &lt; 0)
+        {
+            close(fd);
+            vmarray_deinit(&amp;pages, NULL);
+            ERROR2((int)landmine_count, "set_landmines(%d, %f) failed", fd, SET_LANDMINE_RATIO);
+        }
+        if((event_count = handle_events(fd, &amp;pages)) &lt; 0)
+        {
+            close(fd);
+            vmarray_deinit(&amp;pages, NULL);
+            ERROR1((int)event_count, "handle_events(%d, &amp;pages) failed", fd);
+        }
+        printf("set: %lu, read: %lu\r", landmine_count, event_count);
+        fflush(stdout);
+        time_t current_time = time(NULL);
+        if(current_time - time_base &gt;= SHOW_INTERVAL)
+        {
+            if((ret = show_distribution(fd, &amp;pages, min_hz, max_hz, columns, lines)) &lt; 0)
+            {
+                close(fd);
+                vmarray_deinit(&amp;pages, NULL);
+                ERROR1(ret, "show_distribution(%d, ...) failed", fd);
+            }
+            time_base = current_time;
+        }
+        usleep(LOOP_INTERVAL);
+    }
+    return 0;
+}
+</pre>
+
+<p>然后编译：</p>
+
+<pre>
+gcc *.c -o pgheat
+</pre>
+
+<p>得到可执行文件pgheat。</p>
+
+<p>==============================DEMO=================================</p>
+
+<p>就以Redis为例。首先启动redis-server：</p>
+
+<pre>
+src/redis-server --protected-mode no
+</pre>
+
+<p>然后启动redis-benchmark：</p>
+
+<pre>
+src/redis-benchmark -t set -r 1000000 -n 1000000 -d 1000 -P 32 -q -l
+</pre>
+
+<p>假设redis-server的PID是1234，那么启动pgheat：</p>
+
+<pre>./pgheat 1234 0 10 100 40 5</pre>
+
+<p>第一个参数是pid，第二个参数是显示的最小频率，第三个参数是显示的最大频率，第四个参数是柱状图最大宽度（列数），第五个参数是柱状图的行数，第六个参数是刷新间隔。</p>
+
+<p>pgheat工作了几分钟后，会显示出这样的图像：</p>
+
+<p><img src="1.png"></p>
+
+<p>比如第一行的含义就是，频率介于[0, 0.25) Hz的页有11938个。</p>
 
                             </div>
                         </article>
