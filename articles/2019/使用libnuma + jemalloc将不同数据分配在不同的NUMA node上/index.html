@@ -1,0 +1,384 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>使用libnuma + jemalloc将不同数据分配在不同的NUMA node上</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">使用libnuma + jemalloc将不同数据分配在不同的NUMA node上</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>之前基于DAX（Direct Access）模式的NVM改了一版Redis，基本思想就是在pmem-aware filesystem上mmap一个很大的文件，作为内存空间。然后把sds和ziplist这两个占用大量空间、但是访问比较顺序的数据结构分配在NVM上。但是这样做有一个比较大的问题，就是不能自然地支持Copy on Write（以下简称COW）。这是因为，既然要使用DAX，那么mmap必须是共享映射，而既然是共享映射，那么fork()出来的子进程可以实时看到文件内容的改动。于是RDB、AOF rewriting和replication所依赖的COW特性就被破坏了。尽管我们后来实现了用户态的COW来补救，但是解决方案终究不完美。但是，为了支持PBA（Pointer based AOF，在AOF中只记录sds在NVM上的地址，而不记录实际内容，从而大幅缩短AOF文件长度，提升性能），这是唯一的方案。</p>
+
+<p>后来，某互联网巨头T，对于持久化并不在意，但是对于内存比例很敏感。什么是内存比例呢？比如说，一条SET命令，创建了一个键值对。该键值对的sds可以放在NVM上，但是其他的数据结构（比如dictEntry）必须放在DRAM上，以利用其COW的特性。这些额外的数据结构的大小基本是固定，假设是64字节。那么，如果值很大，比如有1KB，那么DRAM和NVM的使用比例是64 : 1024 = 1 : 16，于是，可以买大量的NVM和少量的DRAM，从而大幅降低硬件成本。但是，如果值比较小，比如都是写64字节左右的短字符串，那么DRAM和NVM的使用比例是1 : 1，此时NVM的价格优势不太明显。T公司遇到的情况就是后者。</p>
+
+<p>为此，我们考虑针对volatile场景（就是把redis当作纯粹的缓存使用，不需要RDB和AOF等持久化能力）做一些优化。基本思路是这样的：首先，启用NVM as NUMA node特性，即把NVM作为一个单独的NUMA节点，该节点上有大量的内存空间（其实都是NVM硬件），但是没有CPU核心。之后，让redis里面所有的数据结构的内存分配来自DRAM的NUMA节点，而sds和ziplist来自NVM的内存节点。这样的好处是，sds和ziplist所占用的内存依旧来自NVM，其他数据结构依旧在DRAM上，但是，NVM也天然地支持COW了，于是如果DRAM被用完，也可以把数据结构放到NVM上（最多是性能问题，但没有功能问题）。</p>
+
+<p>如何让kernel把NVM当作NUMA节点的问题我就略过了，因为这个不是重点。重点在于libnuma的坑。首先，我们需要让jemalloc管理不同的内存，可以参考《<a href="../../2018/libmemkind探究（一）——让jemalloc管理指定的空间/index.html">libmemkind探究（一）——让jemalloc管理指定的空间</a>》。为什么需要jemalloc呢？因为libnuma是以页为单位分配内存的，libnuma分得的内存需要用jemalloc来细分。不过，由于jemalloc已经升级到了5.1.0版本了，chunk的概念被extent取代了，所以代码也要变了。这里给出新的test.c：</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;jemalloc.h&gt;
+
+void* nvm_extent_alloc(extent_hooks_t* extent_hooks,
+    void* new_addr, size_t size, size_t alignment, bool* zero,
+    bool* commit, unsigned arena_index)
+{
+    // TODO: allocate from NVM by libnuma
+    return NULL;
+}
+
+bool nvm_extent_dalloc(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, bool committed, unsigned arena_index)
+{
+    // TODO: free to NVM by libnuma
+    return false;
+}
+
+void nvm_extent_destroy(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, bool committed, unsigned arena_index)
+{
+}
+
+bool nvm_extent_commit(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return false;
+}
+
+bool nvm_extent_decommit(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return true;
+}
+
+bool nvm_extent_purge(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return true;
+}
+
+bool nvm_extent_split(extent_hooks_t *extent_hooks,
+    void *addr, size_t size, size_t size_a, size_t size_b, bool committed, unsigned arena_index)
+{
+    return false;
+}
+
+bool nvm_extent_merge(extent_hooks_t* extent_hooks,
+    void *addr_a, size_t size_a, void *addr_b, size_t size_b, bool committed, unsigned arena_index)
+{
+    return false;
+}
+
+extent_hooks_t nvm_extent_hooks =
+{
+    .alloc = nvm_extent_alloc,
+    .dalloc = nvm_extent_dalloc,
+    .destroy = nvm_extent_destroy,
+    .commit = nvm_extent_commit,
+    .decommit = nvm_extent_decommit,
+    .purge_lazy = nvm_extent_purge,
+    .purge_forced = nvm_extent_purge,
+    .split = nvm_extent_split,
+    .merge = nvm_extent_merge,
+};
+
+int main()
+{
+    unsigned nvm_arena_index;
+    size_t unsigned_size = sizeof(unsigned);
+    if(je_mallctl("arenas.create", (void*)&amp;nvm_arena_index, &amp;unsigned_size, NULL, 0))
+    {
+        fprintf(stderr, "je_mallctl('arenas.create', ...) failed!\n");
+        exit(1);
+    }
+    char cmd[64];
+    sprintf(cmd, "arena.%u.extent_hooks", nvm_arena_index);
+    extent_hooks_t* phooks = &amp;nvm_extent_hooks;
+    if(je_mallctl(cmd, NULL, NULL, (void*)&amp;phooks, sizeof(extent_hooks_t*)))
+    {
+        fprintf(stderr, "je_mallctl('%s', ...) failed!\n", cmd);
+        exit(1);
+    }
+    <font color="red">void* dram_ptr = je_malloc(128);
+    void* nvm_ptr = je_mallocx(128, MALLOCX_ARENA(nvm_arena_index) | MALLOCX_TCACHE_NONE);</font>
+    printf("dram_ptr: %p, nvm_ptr: %p\n", dram_ptr, nvm_ptr);
+    return 0;
+}
+</pre>
+
+<p>可见，单独为NVM创建一个arena之后，DRAM的内存分配依旧使用默认方式，而NVM内存分配则指定新建的arena。</p>
+
+<p>现在，需要使用libnuma为该新建的arena提供底层的支持。假设当前系统有两个NUMA node，node 0是DRAM，node 1是NVM。那么完善后的代码如下：</p>
+
+<pre>
+#include &lt;numa.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;jemalloc.h&gt;
+
+#define PAGE_SIZE   4096
+
+int nvm_node = -1;
+
+void* nvm_extent_alloc(extent_hooks_t* extent_hooks,
+    void* new_addr, size_t size, size_t alignment, bool* zero,
+    bool* commit, unsigned arena_index)
+{
+    <font color="red">assert(size % PAGE_SIZE == 0);
+    if(new_addr)
+        return NULL;
+    assert(nvm_node &gt;= 0);
+    void* mem = numa_alloc_onnode(size, nvm_node);
+    if(!mem)
+        return NULL;
+    (*zero) = false;
+    (*commit) = true;
+    return mem;</font>
+}
+
+bool nvm_extent_dalloc(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, bool committed, unsigned arena_index)
+{
+    assert((size_t)addr % PAGE_SIZE == 0);
+    assert(size % PAGE_SIZE == 0);
+    numa_free(addr, size);
+    return false;
+}
+
+void nvm_extent_destroy(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, bool committed, unsigned arena_index)
+{
+}
+
+bool nvm_extent_commit(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return false;
+}
+
+bool nvm_extent_decommit(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return true;
+}
+
+bool nvm_extent_purge(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return true;
+}
+
+bool nvm_extent_split(extent_hooks_t *extent_hooks,
+    void *addr, size_t size, size_t size_a, size_t size_b, bool committed, unsigned arena_index)
+{
+    return false;
+}
+
+bool nvm_extent_merge(extent_hooks_t* extent_hooks,
+    void *addr_a, size_t size_a, void *addr_b, size_t size_b, bool committed, unsigned arena_index)
+{
+    return false;
+}
+
+extent_hooks_t nvm_extent_hooks =
+{
+    .alloc = nvm_extent_alloc,
+    .dalloc = nvm_extent_dalloc,
+    .destroy = nvm_extent_destroy,
+    .commit = nvm_extent_commit,
+    .decommit = nvm_extent_decommit,
+    .purge_lazy = nvm_extent_purge,
+    .purge_forced = nvm_extent_purge,
+    .split = nvm_extent_split,
+    .merge = nvm_extent_merge,
+};
+
+int main()
+{
+    nvm_node = 1;
+    unsigned nvm_arena_index;
+    size_t unsigned_size = sizeof(unsigned);
+    if(je_mallctl("arenas.create", (void*)&amp;nvm_arena_index, &amp;unsigned_size, NULL, 0))
+    {
+        fprintf(stderr, "je_mallctl('arenas.create', ...) failed!\n");
+        exit(1);
+    }
+    char cmd[64];
+    sprintf(cmd, "arena.%u.extent_hooks", nvm_arena_index);
+    extent_hooks_t* phooks = &amp;nvm_extent_hooks;
+    if(je_mallctl(cmd, NULL, NULL, (void*)&amp;phooks, sizeof(extent_hooks_t*)))
+    {
+        fprintf(stderr, "je_mallctl('%s', ...) failed!\n", cmd);
+        exit(1);
+    }
+    void* dram_ptr = je_malloc(128);
+    printf("dram_ptr: %p\n", dram_ptr);
+    void* nvm_ptr = je_mallocx(128, MALLOCX_ARENA(nvm_arena_index) | MALLOCX_TCACHE_NONE);
+    printf("nvm_ptr: %p\n", nvm_ptr);
+    return 0;
+}
+</pre>
+
+<p>通过numa_alloc_onnode()函数，可以指定从哪个NUMA node分配内存。一开始工作得很正常，直到遇到了NVM节点内存不够用的情况。我们希望的是，sds和ziplist优先从NVM分，但是如果NVM用完了，则从其他节点分。换言之，我们希望
+<pre>
+void* numa_alloc_onnode(size_t size, int node);
+</pre>
+中的node是一个preference而不是command。然而，该函数确实是把node当作一个命令而非建议，当NVM节点内存不够时，直接触发了kernel的OOM，导致进程被杀死。为此，我开始寻找解决方案。中间的各种弯路就跳过，就说最后的思路历程吧。</p>
+
+<p>
+<pre>
+man numa
+</pre>
+之后，可以numa_alloc_*函数总共就只有5个，分别为：
+<pre>
+void *numa_alloc_onnode(size_t size, int node);
+void *numa_alloc_local(size_t size);
+void *numa_alloc_interleaved(size_t size);
+void *numa_alloc_interleaved_subset(size_t size, struct bitmask *nodemask);
+void *numa_alloc(size_t size);
+</pre>
+各自的介绍：
+</p>
+
+<p><img src="1.jpg"></p>
+
+<p>首先，numa_alloc_onnode()直接pass掉，因为已经验证它把node当作命令而不是建议。numa_alloc_local()也明显不可以，因为NVM的节点是Memory-Only的虚拟节点，没有CPU核心，因此使用numa_alloc_local()分配的内存肯定是DRAM。numa_alloc_interleaved()会在当前进程被允许的节点之间交替地分配内存页，那么在内存充足的情况下，就有一半概率分配DRAM，一半概率分配NVM，也不符合要求。numa_alloc()也无法控制分配的内存来自哪个节点。<font color="red">那么看来只有numa_alloc_interleaved_subset()。该函数会在nodemask指定的那些节点中交替地分配内存。那么，如果nodemask中只有NVM节点呢？那么该函数理所当然就只会在NVM节点上分配内存～而且经过验证，如同除去numa_alloc_onnode()之外的所有numa_alloc_*函数一样，numa_alloc_interleaved_subset()在指定的节点上分配失败后，会转到其他节点去分配。</font>这行为就是我想要的！</p>
+
+<p>于是，最后的代码如下：</p>
+
+<pre>
+#include &lt;numa.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;jemalloc.h&gt;
+
+#define PAGE_SIZE   4096
+
+<font color="red">struct bitmask* nodemask = NULL;</font>
+
+void* nvm_extent_alloc(extent_hooks_t* extent_hooks,
+    void* new_addr, size_t size, size_t alignment, bool* zero,
+    bool* commit, unsigned arena_index)
+{
+    assert(size % PAGE_SIZE == 0);
+    if(new_addr)
+        return NULL;
+    assert(nodemask);
+    <font color="red">void* mem = numa_alloc_interleaved_subset(size, nodemask);</font>
+    if(!mem)
+        return NULL;
+    (*zero) = false;
+    (*commit) = true;
+    return mem;
+}
+
+bool nvm_extent_dalloc(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, bool committed, unsigned arena_index)
+{
+    assert((size_t)addr % PAGE_SIZE == 0);
+    assert(size % PAGE_SIZE == 0);
+    numa_free(addr, size);
+    return false;
+}
+
+void nvm_extent_destroy(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, bool committed, unsigned arena_index)
+{
+}
+
+bool nvm_extent_commit(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return false;
+}
+
+bool nvm_extent_decommit(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return true;
+}
+
+bool nvm_extent_purge(extent_hooks_t* extent_hooks,
+    void* addr, size_t size, size_t offset, size_t length, unsigned arena_index)
+{
+    return true;
+}
+
+bool nvm_extent_split(extent_hooks_t *extent_hooks,
+    void *addr, size_t size, size_t size_a, size_t size_b, bool committed, unsigned arena_index)
+{
+    return false;
+}
+
+bool nvm_extent_merge(extent_hooks_t* extent_hooks,
+    void *addr_a, size_t size_a, void *addr_b, size_t size_b, bool committed, unsigned arena_index)
+{
+    return false;
+}
+
+extent_hooks_t nvm_extent_hooks =
+{
+    .alloc = nvm_extent_alloc,
+    .dalloc = nvm_extent_dalloc,
+    .destroy = nvm_extent_destroy,
+    .commit = nvm_extent_commit,
+    .decommit = nvm_extent_decommit,
+    .purge_lazy = nvm_extent_purge,
+    .purge_forced = nvm_extent_purge,
+    .split = nvm_extent_split,
+    .merge = nvm_extent_merge,
+};
+
+int main()
+{
+    <font color="red">nodemask = numa_parse_nodestring("1");</font>
+    unsigned nvm_arena_index;
+    size_t unsigned_size = sizeof(unsigned);
+    if(je_mallctl("arenas.create", (void*)&amp;nvm_arena_index, &amp;unsigned_size, NULL, 0))
+    {
+        fprintf(stderr, "je_mallctl('arenas.create', ...) failed!\n");
+        exit(1);
+    }
+    char cmd[64];
+    sprintf(cmd, "arena.%u.extent_hooks", nvm_arena_index);
+    extent_hooks_t* phooks = &amp;nvm_extent_hooks;
+    if(je_mallctl(cmd, NULL, NULL, (void*)&amp;phooks, sizeof(extent_hooks_t*)))
+    {
+        fprintf(stderr, "je_mallctl('%s', ...) failed!\n", cmd);
+        exit(1);
+    }
+    void* dram_ptr = je_malloc(128);
+    printf("dram_ptr: %p\n", dram_ptr);
+    void* nvm_ptr = je_mallocx(128, MALLOCX_ARENA(nvm_arena_index) | MALLOCX_TCACHE_NONE);
+    printf("nvm_ptr: %p\n", nvm_ptr);
+    return 0;
+}
+</pre>
+
+<p>于是，
+<pre>
+je_mallocx(128, MALLOCX_ARENA(nvm_arena_index) | MALLOCX_TCACHE_NONE);
+</pre>
+会优先在node 1上分配，node 1分配失败会在其他节点上分配～
+</p>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+				<div id="site-generator"></div>
+				<script src="../../../footer.js"></script>
+            </footer>
+        </div>
+    </body>
+</html>
