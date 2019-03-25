@@ -1,0 +1,66 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>KVM内存访问采样（一）——扩展页表EPT的结构</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">KVM内存访问采样（一）——扩展页表EPT的结构</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>之前很长时间一直在忙活KVM的内存访问地址的采样，以判断冷热页，然后把热页放在DRAM上，把冷页放到NVM上，使得在性能小幅度下降的情况下，硬件成本大幅下降。前面的一系列博客描述了一种基于page fault的访问地址采样方案，即通过周期性地把页表中的读写权限位清零，迫使进程访问内存时，CPU陷入page fault，从而得到一次采样。后来我发现，该方案只对普通的进程有效，对于KVM是无效的。研究清楚KVM内存虚拟化的原理以后，我才明白为什么，以及如何移植到KVM上。因此，这篇博客的重点就在于厘清EPT（Extended Page Table，扩展页表）的结构以及工作原理。
+</p>
+
+<p>EPT是Intel VT-x技术中内存虚拟化的子模块。为什么需要内存虚拟化呢？假设一台宿主机Host上运行了Linux，该宿主机上又运行了两个虚拟机A和B，各自里面也都运行了一个Linux。运行在虚拟机中的操作系统并不知道自己运行在虚拟机中，那么很可能在两个虚拟机中，各自存在进程Pa和Pb，他们都使用了同一个物理地址0x1234。结果，虚拟机A中的进程Pa和虚拟机B中的进程Pb可以互相访问数据，这是不合理也不安全的。如同页表为进程创造了虚拟地址使得进程可以互不干扰一样，在虚拟化技术中，我们需要扩展页表为操作系统创作虚拟的物理地址。这样，当虚拟机中的进程访问内存时，虚拟机中的进程发出的是虚拟地址（Guest Virtual Address, GVA），该虚拟地址通过虚拟机中的页表转化成虚拟机以为的物理地址（Guest Physical Address, GPA）。到这一步，虚拟机中地址翻译过程与Host上是一模一样的。只是，CPU判断出当前处于虚拟机环境中，于是再通过查询EPT来把GPA转换为宿主机的物理地址（Host Physical Address，HPA）。因此，虚拟机的地址翻译需要两步，这也就是为什么虚拟机中的进程要比宿主机中的进程更慢的原因（尤其对于占用内存很多的进程）。</p>
+
+<p>那么，要通过修改页表的权限位来截获内存访问，就有两个方案：
+<ol>
+<li>修改虚拟机的页表</li>
+<li>修改虚拟机的扩展页表</li>
+</ol>
+</p>
+
+<p>第一个方案很难操作，因为：
+<ol>
+<li>尽管虚拟机内部使用的页表也是由CR3寄存器所指，但是该页表中的所有物理地址其实都是GPA，并不能直接操作。</li>
+<li>CR3指向的页表是虚拟机中当前时刻运行在当前core上的进程的页表，而不是整个虚拟机的页表。</li>
+<li>虚拟机内部有进程调度，进程一调度，CR3指向的页表就会改变，那么同步问题将难以控制。</li>
+<li>即使触发page fault，也会陷入虚拟机OS的page fault处理例程中，难以在Host上截获。</li>
+</ol>
+</p>
+
+<p>第二个方案则容易地多。首先，EPT映射的是整个虚拟机的地址空间，而且触发page fault会陷入Host的处理例程。</p>
+
+<p>选定了方向，那么就需要看看如何才能触发EPT的page fault。查看《<a href="https://www.intel.com/content/www/us/en/architecture-and-technology/64-ia-32-architectures-software-developers-manual.html">Intel Software Developer's Manual</a>》, Volume 3, Chapter 28 VMX Support for Address Translation，可以得知，EPT跟普通页表很类似，也是四级结构，分别叫做PML4、PDPTE、PDE和PTE，每一级的结构都很相似。以第一级PML4为例，结构如下：</p>
+
+<p><img src="1.png"></p>
+
+<p>一条PML4条目控制了512GB的地址空间。可以看到，bit 0是表示是否可读，bit 1表示是否可写，bit 2表示是否可执行，bit 10表示用户态是否可执行（比如虚拟机内部的进程）。bit [12, 48)是下一级页表的地址（4K对齐，所以低12位全为0）。当然，每一级页表不完全相同，再看看第二级，也就是PDPTE：</p>
+
+<p><img src="2.png"></p>
+
+<p>有意思了，居然有两个版本的PDPTE。当一个PDPTE条目的bit 7是1时，表示该页表直接映射了一个1GB的物理地址（该1GB的虚拟地址空间直接映射到对应的1GB物理地址空间），物理地址的首地址是bit [30, 48)，那么地址翻译就完成了，不需要访问下一级页表了。反之，当bit 7是0时，表示还有下一级页表，下一级页表的地址是bit [12, 48) * 4K。事实上，PDE也是如此，可以直接映射2MB的地址，也可以指向下一级页表。2MB的巨页就是通过第三级页表直接映射实现的。其实通过第二级页表直接映射，还可以实现1GB的超巨页。</p>
+
+<p>看来，不管哪一级页表，bit 0, bit 1, bit 2, bit 10四个权限位都是一样的。因此，想要监测某一种类型的内存访问，只有把某一级页表上相应的bit清零即可。这样，当该页表项管辖的区域被访问时，EPT Violation就会被触发（其实就是page fault，只是VM中叫做EPT Violation）。</p>
+
+<p><font color="red">这里有一个坑，就是，如果bit 0是0，那么bit 1, bit2和bit 10必须是0，不然会触发EPT Misconfigurations。</font>可以看28.2.3.1 EPT Misconfigurations一节。</p>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+				<div id="site-generator"></div>
+				<script src="../../../footer.js"></script>
+            </footer>
+        </div>
+    </body>
+</html>
