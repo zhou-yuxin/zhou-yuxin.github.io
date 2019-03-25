@@ -1,0 +1,390 @@
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>KVM内存访问采样（二）——根据QEMU的pid找到kvm结构体和EPT根地址</title>
+        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
+    </head>
+    <body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
+        <div id="page" class="hfeed">
+            <div id="main">
+                <div id="primary">
+                    <div id="content" role="main">        
+                        <article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
+                            <header class="entry-header">
+                                <h1 class="entry-title">KVM内存访问采样（二）——根据QEMU的pid找到kvm结构体和EPT根地址</h1>
+                            </header>
+                            <div class="entry-content">
+
+<p>要在EPT上面操作权限位，首先就得找到EPT页表的根地址。而用户肯定是通过传入QEMU进程的pid来指定需要监测的虚拟机的，因此问题就成了：如何通过QEMU的pid找到EPT页表的根地址。</p>
+
+<p>本来我是一筹莫展的，完全不知道pid与EPT页表之间是怎么关联的。我就先看了kvm的API以及网上的<a href="http://soulxu.github.io/blog/2014/08/11/use-kvm-api-write-emulator/">demo</a>，发现任何虚拟机管理软件，都可以通过打开/dev/kvm设备文件来新建虚拟机，并且可用ioctl()来操纵它。那么我就立刻意识到，QEMU的文件描述符中，肯定有kvm的文件描述符。于是，我启动一个QEMU，查看/proc/&lt;pid&gt;/fd：</p>
+
+<p><img src="1.png"></p>
+
+<p>果不其然，有一个/dev/kvm和好几个anon_inode:kvm-*。通过对比kvm的API，我很肯定，/dev/kvm是通过
+<pre>
+dev_fd = open("/dev/kvm", O_RDWR);
+</pre>
+创建的。而anon_inode:kvm-vm应该就是
+<pre>
+vm_fd = ioctl(dev_fd, KVM_CREATE_VM, 0);
+</pre>
+创建的。而四个anon_inode:kvm-vcpu:*则是通过
+<pre>
+vcpu_fd = ioctl(vm_fd, KVM_CREATE_VCPU, vcpu_id);
+</pre>
+创建的。因为我启动qemu时指定了-smp 4，所以有4个VCPU。
+</p>
+
+<p>接着，我去查看kernel中KVM相关实现。在virt/kvm/kvm_main.c中找到了/dev/kvm的ioctl()的实现：</p>
+
+<pre>
+static long kvm_dev_ioctl(struct file *filp,
+              unsigned int ioctl, unsigned long arg)
+{
+    long r = -EINVAL;
+
+    switch (ioctl) {
+    case KVM_GET_API_VERSION:
+        if (arg) 
+            goto out;
+        r = KVM_API_VERSION;
+        break;
+    <font color="red">case KVM_CREATE_VM:
+        r = kvm_dev_ioctl_create_vm(arg);
+        break;</font>
+    case KVM_CHECK_EXTENSION:
+        r = kvm_vm_ioctl_check_extension_generic(NULL, arg);
+        break;
+    case KVM_GET_VCPU_MMAP_SIZE:
+        if (arg) 
+            goto out;
+        r = PAGE_SIZE;     /* struct kvm_run */
+#ifdef CONFIG_X86
+        r += PAGE_SIZE;    /* pio data page */
+#endif
+#ifdef CONFIG_KVM_MMIO
+        r += PAGE_SIZE;    /* coalesced mmio ring page */
+#endif
+        break;
+    case KVM_TRACE_ENABLE:
+    case KVM_TRACE_PAUSE:
+    case KVM_TRACE_DISABLE:
+        r = -EOPNOTSUPP;
+        break;
+    default:
+        return kvm_arch_dev_ioctl(filp, ioctl, arg);
+    }
+out:
+    return r;
+}
+</pre>
+
+<p>而kvm_dev_ioctl_create_vm()的实现就在上方：</p>
+
+<pre>
+static int kvm_dev_ioctl_create_vm(unsigned long type)
+{
+    int r;
+    struct kvm *kvm;
+    struct file *file;
+
+    <font color="red">kvm = kvm_create_vm(type);</font>
+    if (IS_ERR(kvm))
+        return PTR_ERR(kvm);
+#ifdef CONFIG_KVM_MMIO
+    r = kvm_coalesced_mmio_init(kvm);
+    if (r &lt; 0)
+        goto put_kvm;
+#endif
+    r = get_unused_fd_flags(O_CLOEXEC);
+    if (r &lt; 0)
+        goto put_kvm;
+
+    <font color="red">file = anon_inode_getfile("kvm-vm", &amp;kvm_vm_fops, kvm, O_RDWR);</font>
+    if (IS_ERR(file)) {
+        put_unused_fd(r);
+        r = PTR_ERR(file);
+        goto put_kvm;
+    }
+
+    /*
+     * Don't call kvm_put_kvm anymore at this point; file-&gt;f_op is
+     * already set, with -&gt;release() being kvm_vm_release().  In error
+     * cases it will be called by the final fput(file) and will take
+     * care of doing kvm_put_kvm(kvm).
+     */
+    if (kvm_create_vm_debugfs(kvm, r) &lt; 0) {
+        put_unused_fd(r);
+        fput(file);
+        return -ENOMEM;
+    }
+    kvm_uevent_notify_change(KVM_EVENT_CREATE_VM, kvm);
+
+    fd_install(r, file);
+    return r;
+
+put_kvm:
+    kvm_put_kvm(kvm);
+    return r;
+}
+</pre>
+
+<p>kvm_create_vm()创建了一个struct kvm结构体，应该就是我需要的东西。而这个结构体被传入了anon_inode_getfile()中。该函数实现在fs/anon_inodes.c中：</p>
+
+<pre>
+struct file *anon_inode_getfile(const char *name,
+                const struct file_operations *fops,
+                void *priv, int flags)
+{
+    struct file *file;
+
+    if (IS_ERR(anon_inode_inode))
+        return ERR_PTR(-ENODEV);
+
+    if (fops-&gt;owner &amp;&amp; !try_module_get(fops-&gt;owner))
+        return ERR_PTR(-ENOENT);
+
+    /*
+     * We know the anon_inode inode count is always greater than zero,
+     * so ihold() is safe.
+     */
+    ihold(anon_inode_inode);
+    file = alloc_file_pseudo(anon_inode_inode, anon_inode_mnt, name,
+                 flags &amp; (O_ACCMODE | O_NONBLOCK), fops);
+    if (IS_ERR(file))
+        goto err;
+
+    file-&gt;f_mapping = anon_inode_inode-&gt;i_mapping;
+
+    <font color="red">file-&gt;private_data = priv;</font>
+
+    return file;
+
+err:
+    iput(anon_inode_inode);
+    module_put(fops-&gt;owner);
+    return file;
+}
+</pre>
+
+<p>果然，kvm结构体作为参数priv，赋值给了struct file的private_data字段。</p>
+
+<p>于是，通过pid找到struct kvm的方案呼之欲出：
+<ol>
+<li>通过指定的pid，找到该进程的struct task_struct；</li>
+<li>由该task_struct找到该进程struct files_struct，里面记录了所有打开的文件；</li>
+<li>遍历files_struct中所有文件，找到一个路径为“anon_inode:kvm-vm”的struct file；</li>
+<li>该struct file的private_data就是我们要的struct kvm。</li>
+</ol>
+实现代码如下：
+</p>
+
+<pre>
+static int get_kvm_by_vpid(pid_t nr, struct kvm** kvmp)
+{
+    struct pid* pid;
+    struct task_struct* task;
+    struct files_struct* files;
+    int fd, max_fds;
+    struct kvm* kvm = NULL;
+    rcu_read_lock();
+    if(!(pid = find_vpid(nr)))
+    {
+        rcu_read_unlock();
+        ERROR1(-ESRCH, "no such process whose pid = %d", nr);
+    }
+    if(!(task = pid_task(pid, PIDTYPE_PID)))
+    {
+        rcu_read_unlock();
+        ERROR1(-ESRCH, "no such process whose pid = %d", nr);
+    }
+    files = task-&gt;files;
+    max_fds = files_fdtable(files)-&gt;max_fds;
+    for(fd = 0; fd &lt; max_fds; fd++)
+    {
+        struct file* file;
+        char buffer[32];
+        char* fname;
+        if(!(file = fcheck_files(files, fd)))
+            continue;
+        fname = d_path(&amp;(file-&gt;f_path), buffer, sizeof(buffer));
+        if(fname &lt; buffer || fname &gt;= buffer + sizeof(buffer))
+            continue;
+        if(strcmp(fname, "anon_inode:kvm-vm") == 0)
+        {
+            kvm = file-&gt;private_data;
+            assert(kvm);
+            kvm_get_kvm(kvm);
+            break;
+        }
+    }
+    rcu_read_unlock();
+    if(!kvm)
+        ERROR1(-EINVAL, "process (pid = %d) has no kvm", nr);
+    (*kvmp) = kvm;
+    return 0;
+}
+</pre>
+
+<p>那么，struct kvm怎么找到EPT的根地址呢？首先，我基本断定，通过struct kvm是肯定可以得到EPT根地址的，因为一旦一个VCPU被调度上CPU core上时，EPT根地址肯定需要被加载入VT-x的某个寄存器中。这就好比在Host上，struct task_struct中肯定包含了CR3寄存器的值，以便进程调度上core时，可以切换到正确的页表。</p>
+
+<p>struct kvm定义在include/linux/kvm_host.h中：</p>
+
+<pre>
+struct kvm {
+    spinlock_t mmu_lock;
+    struct mutex slots_lock;
+    struct mm_struct *mm; /* userspace tied to this vm */
+    struct kvm_memslots __rcu *memslots[KVM_ADDRESS_SPACE_NUM];
+    <font color="red">struct kvm_vcpu *vcpus[KVM_MAX_VCPUS];
+
+    /*
+     * created_vcpus is protected by kvm-&gt;lock, and is incremented
+     * at the beginning of KVM_CREATE_VCPU.  online_vcpus is only
+     * incremented after storing the kvm_vcpu pointer in vcpus,
+     * and is accessed atomically.
+     */
+    atomic_t online_vcpus;
+    int created_vcpus;</font>
+    int last_boosted_vcpu;
+    struct list_head vm_list;
+......
+</pre>
+
+<p>vcpus字段是一个数组，里面是各个vcpu结构体的指针，vcpus[0] ~ vcpus[created_vcpus - 1]都是有效的vcpu。struct kvm_vcpu的定义如下：</p>
+
+<pre>
+struct kvm_vcpu {
+    struct kvm *kvm;
+#ifdef CONFIG_PREEMPT_NOTIFIERS
+    struct preempt_notifier preempt_notifier;
+#endif
+    int cpu;
+    int vcpu_id;
+    int srcu_idx;
+......
+    bool preempted;
+    <font color="red">struct kvm_vcpu_arch arch;</font>
+    struct dentry *debugfs_dentry;
+};
+</pre>
+
+<p>而struct kvm_vcpu_arch定义在arch/x86/include/asm/kvm_host.h：</p>
+
+<pre>
+struct kvm_vcpu_arch {
+    /*
+     * rip and regs accesses must go through
+     * kvm_{register,rip}_{read,write} functions.
+     */
+    unsigned long regs[NR_VCPU_REGS];
+    u32 regs_avail;
+    u32 regs_dirty;
+
+    unsigned long cr0;
+    unsigned long cr0_guest_owned_bits;
+    unsigned long cr2;
+    unsigned long cr3;
+    unsigned long cr4;
+    unsigned long cr4_guest_owned_bits;
+    unsigned long cr8;
+......
+    /*
+     * Paging state of the vcpu
+     *
+     * If the vcpu runs in guest mode with two level paging this still saves
+     * the paging mode of the l1 guest. This context is always used to
+     * handle faults.
+     */
+    <font color="red">struct kvm_mmu *mmu;</font>
+......
+};
+</pre>
+
+<p>终于，在struct kvm_mmu中找到了一个字段root_hpa，这就是EPT根地址：</p>
+
+<pre>
+/*
+ * x86 supports 4 paging modes (5-level 64-bit, 4-level 64-bit, 3-level 32-bit,
+ * and 2-level 32-bit).  The kvm_mmu structure abstracts the details of the
+ * current mmu mode.
+ */
+struct kvm_mmu {
+    void (*set_cr3)(struct kvm_vcpu *vcpu, unsigned long root);
+    unsigned long (*get_cr3)(struct kvm_vcpu *vcpu);
+    u64 (*get_pdptr)(struct kvm_vcpu *vcpu, int index);
+    int (*page_fault)(struct kvm_vcpu *vcpu, gva_t gva, u32 err,
+              bool prefault);
+    void (*inject_page_fault)(struct kvm_vcpu *vcpu,
+                  struct x86_exception *fault);
+    gpa_t (*gva_to_gpa)(struct kvm_vcpu *vcpu, gva_t gva, u32 access,
+                struct x86_exception *exception);
+    gpa_t (*translate_gpa)(struct kvm_vcpu *vcpu, gpa_t gpa, u32 access,
+                   struct x86_exception *exception);
+    int (*sync_page)(struct kvm_vcpu *vcpu,
+             struct kvm_mmu_page *sp);
+    void (*invlpg)(struct kvm_vcpu *vcpu, gva_t gva, hpa_t root_hpa);
+    void (*update_pte)(struct kvm_vcpu *vcpu, struct kvm_mmu_page *sp,
+               u64 *spte, const void *pte);
+    <font color="red">hpa_t root_hpa;</font>
+    union kvm_mmu_role mmu_role;
+    u8 root_level;
+    u8 shadow_root_level;
+    u8 ept_ad;
+    bool direct_map;
+......
+};
+</pre>
+
+<p>所以，总结一下，通过
+<pre>
+kvm->vcpus[i]->arch.mmu->root_hpa
+</pre>
+可以获取到EPT根地址。另外，需要确认一点，不同的VCPU，最终用的root_hpa都是相同的，也就是说，整个kvm虚拟机用的是同一张扩展页表。这里给出源码：
+</p>
+
+<pre>
+static int get_ept_root(struct kvm* kvm, uint64_t** rootp)
+{
+    uint64_t root = 0;
+    int i, vcpu_count = atomic_read(&amp;(kvm-&gt;online_vcpus));
+    for(i = 0; i &lt; vcpu_count; i++)
+    {
+        struct kvm_vcpu* vcpu = kvm_get_vcpu(kvm, i);
+        uint64_t root_of_vcpu;
+        if(!vcpu)
+            ERROR2(-ENXIO, "vcpu[%d] of process (pid = %d) is uncreated",
+                i, kvm-&gt;userspace_pid);
+#if LINUX_VERSION_CODE &gt;= KERNEL_VERSION(4, 20, 0)
+        root_of_vcpu = vcpu-&gt;arch.mmu-&gt;root_hpa;
+#else
+        root_of_vcpu = vcpu-&gt;arch.mmu.root_hpa;
+#endif
+        if(!root_of_vcpu)
+            ERROR1(-EINVAL, "vcpu[%d] is uninitialized", i);
+        if(!root)
+            root = root_of_vcpu;
+        else if(root != root_of_vcpu)
+            ERROR2(-EFAULT, "ept root of vcpu[%d] is %llx, different from other vcpus'",
+                i, root_of_vcpu);
+    }
+    (*rootp) = root ? (uint64_t*)__va(root) : NULL;
+    return 0;
+}
+</pre>
+
+<p>可以看到，最后得到的EPT根地址，经过__va()处理，从物理地址变换成了可以在kernel态访问的逻辑地址。</p>
+
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+            <footer id="colophon" role="contentinfo">
+				<div id="site-generator"></div>
+				<script src="../../../footer.js"></script>
+            </footer>
+        </div>
+    </body>
+</html>
