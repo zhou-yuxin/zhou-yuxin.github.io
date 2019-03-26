@@ -5,7 +5,8 @@
 	</head>
 	<body>
 		<ul style="display:none">
-			<li>2019年03月25日 KVM内存访问采样（二）——根据QEMU的pid找到kvm结构体和EPT根地址</li>
+			<li>2019年03月27日 KVM内存访问采样（三）——“埋雷”策略</li>
+			<li>2019年03月26日 KVM内存访问采样（二）——根据QEMU的pid找到kvm结构体和EPT根地址</li>
 			<li>2019年03月25日 KVM内存访问采样（一）——扩展页表EPT的结构</li>
 			<li>2019年03月15日 使用libnuma + jemalloc将不同数据分配在不同的NUMA node上</li>
 			<li>2018年12月20日 页热度监控工具pgheat（八）——用户态工具示例</li>
@@ -166,39 +167,40 @@
 		</ul>
 		<h1>欢迎来到我的博客~</h1>
 		<h2>不要怀疑CSS没有加载成功，因为确实没有CSS！</h2>
-		<p><img src="alipay.png"></p>
 		<table id="articles">
-			<tr id="rowExample" style="display:none">
+			<tr id="row_example" style="display: none">
 				<td id="index"></td>
 				<td><a id="title"></a></td>
 				<td id="date"></td>
 			</tr>
 		</table>
 	</body>
-	<script src="jquery.js"></script>
 	<script>
-		$(document).ready(function()
+		window.onload = function()
 		{
-			var lis=$("li");
-			for(var i=0;i<lis.length;i++)
+			var tr_articles = document.getElementById("articles");
+			var tr_row = document.getElementById("row_example");
+			var td_index = document.getElementById("index");
+			var td_title = document.getElementById("title");
+			var td_date = document.getElementById("date");
+			var list = document.getElementsByTagName("li");
+			for(var i = 0; i < list.length; i++)
 			{
-				var info=lis.eq(i).html();
-				var index=info.indexOf(" ");
-				if(index<0)
-					continue;
-				var date=info.substring(0,index);
-				var title=info.substring(index+1);
-				$("#index").html(lis.length-i);
-				$("#title").html(title);
-				$("#date").html(date);
-				var year=date.substring(0,4);
-				var directory=title.replace(/\//g,"-").replace(/\./g,"_");
-				var href="./articles/"+year+"/"+directory+"/index.html";
-				$("#title").attr("href",href);
-				var row=$("#rowExample").clone();
-				row.show();
-				$("#articles").append(row);
+				var info = list[i].innerText;
+				var index = info.indexOf(" ");
+				var date = info.substring(0, index);
+				var title = info.substring(index + 1);
+				td_index.innerText = list.length - i;
+				td_title.innerText = title;
+				td_date.innerText = date;
+				var year = date.substring(0, 4);
+				var directory = title.replace(/\//g, "-").replace(/\./g, "_");
+				var href = "./articles/" + year + "/" + directory + "/index.html";
+				td_title.href = href;
+				var row = tr_row.cloneNode(true);
+				row.style = "";
+				tr_articles.appendChild(row);
 			}
-		});
+		};
 	</script>
 </html>

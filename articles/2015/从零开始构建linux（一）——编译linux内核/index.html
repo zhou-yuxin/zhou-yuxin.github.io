@@ -1,227 +1,139 @@
-﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>从零开始构建linux（一）——编译linux内核</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">从零开始构建linux（一）——编译linux内核</h1>
-							</header>
-							<div class="entry-content">
-							
-<p>通常说起linux，脑子里就会想到ubuntu、debian、suse等等著名的发行版。然而，这些发行版的体积太过庞大，很多功能从来都用不着。对于有洁癖的人——比如我——总是想自己裁剪内核和外围的应用程序，制作自己的linux系统。</p>
+﻿<script src="../../../style.js"></script>
 
-<p>其实自己制作linux系统并不是一件很复杂的事情，只可惜网上的各种资料良莠不齐，我经过了各种试验，把各篇教程结合在一起看，终于成功了。</p>
+<pre id="title">从零开始构建linux（一）——编译linux内核</pre>
 
-<p>本着循序渐进的原则，本篇博客分为多个试验阶段。</p>
-
-<p>============阶段一：安装宿主机CentOS==============</p>
-
-<p>为了方便在做试验时上网查资料，我决定在虚拟机中做试验。首先得在虚拟机中安装一个功能较为齐全的linux，用它来编译linux内核、busybox，以及制作initrd和根文件系统等。</p>
-
-<p>我选用VirtualBox虚拟机。在VirtualBox中创建一个名为diylinux的虚拟机，内存大小1024MB，一个固定大小的8GB硬盘，开启PAE/NX（设置-&gt;系统-&gt;处理器-&gt;扩展特性）。在虚拟机的存储-&gt;IDE控制器中加入一个光驱，放入<a href="http://pan.baidu.com/s/1slEDAKd">CentOS-6.6-i386-minimal.iso</a>，启动虚拟机。</p>
-
-<p>启动后画面如下，选择第二个选项Install system with basic video driver</p>
-
-<p><img src="1.jpg"></p>
-
-<p>出现Disc Found对话框后，选择Skip。选择简体中文后Next，在键盘布局那里用默认的“美国英语式”后Next，在存储设备那里选择第一个“基本存储设备”然后Next，主机名保持默认后Next，时区默认上海后Next，根密码输入123456后Next。然后就是安装方式，选择最后一个“创建自定义布局”后Next。简单起见，我把8GB的硬盘分成一个ext3分区用了挂着/，和一个象征性的swap分区，然后Next，如图：</p>
-
-<p><img src="2.jpg"></p>
-
-<p>然后在安装引导程序的页面点击最后一个Next，CentOS6即开始安装，如图：</p>
-
-<p><img src="3.jpg"></p>
-
-<p>进入系统后，输入账号root，密码123456，即可登录系统，如图：</p>
-
-<p><img src="4.jpg"></p>
-
-<p>===============阶段二：编译linux内核===============</p>
-
-<p>宿主机搭建好了，那么就要开始编译linux内核了。这个linux内核就是给我们自己搭建的linux使用的。</p>
-
-<p>首先要下载内核源码。我使用最经典的linux 2.6版本。</p>
-
-<p>由于CentOS默认没有开启网卡，所以需要手动开启一下：</p>
-
-<pre>
+<pre id="content">
+通常说起linux，脑子里就会想到ubuntu、debian、suse等等著名的发行版。然而，这些发行版的体积太过庞大，很多功能从来都用不着。对于有洁癖的人——比如我——总是想自己裁剪内核和外围的应用程序，制作自己的linux系统。
+其实自己制作linux系统并不是一件很复杂的事情，只可惜网上的各种资料良莠不齐，我经过了各种试验，把各篇教程结合在一起看，终于成功了。
+本着循序渐进的原则，本篇博客分为多个试验阶段。
+============阶段一：安装宿主机CentOS==============
+为了方便在做试验时上网查资料，我决定在虚拟机中做试验。首先得在虚拟机中安装一个功能较为齐全的linux，用它来编译linux内核、busybox，以及制作initrd和根文件系统等。
+我选用VirtualBox虚拟机。在VirtualBox中创建一个名为diylinux的虚拟机，内存大小1024MB，一个固定大小的8GB硬盘，开启PAE/NX（设置-&gt;系统-&gt;处理器-&gt;扩展特性）。在虚拟机的存储-&gt;IDE控制器中加入一个光驱，放入#HREF"http://pan.baidu.com/s/1slEDAKd"#-HREF1CentOS-6.6-i386-minimal.iso#-HREF2，启动虚拟机。
+启动后画面如下，选择第二个选项Install system with basic video driver
+1.jpg
+出现Disc Found对话框后，选择Skip。选择简体中文后Next，在键盘布局那里用默认的“美国英语式”后Next，在存储设备那里选择第一个“基本存储设备”然后Next，主机名保持默认后Next，时区默认上海后Next，根密码输入123456后Next。然后就是安装方式，选择最后一个“创建自定义布局”后Next。简单起见，我把8GB的硬盘分成一个ext3分区用了挂着/，和一个象征性的swap分区，然后Next，如图：
+2.jpg
+然后在安装引导程序的页面点击最后一个Next，CentOS6即开始安装，如图：
+3.jpg
+进入系统后，输入账号root，密码123456，即可登录系统，如图：
+4.jpg
+===============阶段二：编译linux内核===============
+宿主机搭建好了，那么就要开始编译linux内核了。这个linux内核就是给我们自己搭建的linux使用的。
+首先要下载内核源码。我使用最经典的linux 2.6版本。
+由于CentOS默认没有开启网卡，所以需要手动开启一下：
++++code
 ifup eth0
-</pre>
-
-<p>由于下载源码用到工具wget，所以先安装一下wget：</p>
-
-<pre>
+---code
+由于下载源码用到工具wget，所以先安装一下wget：
++++code
 yum install wget
-</pre>
-
-<p>然后用wget下载linux 2.6的内核源码包：</p>
-
-<pre>
+---code
+然后用wget下载linux 2.6的内核源码包：
++++code
 cd ~
 wget http://www.kernel.org/pub/linux/kernel/v2.6/longterm/v2.6.32/linux-2.6.32.67.tar.xz
-</pre>
-
-<p>下载完以后，在~下就有了linux-2.6.32.67.tar.xz。由于是xz格式，所以tar命令暂时无法解开，需要先安装xz命令：</p>
-
-<pre>
+---code
+下载完以后，在~下就有了linux-2.6.32.67.tar.xz。由于是xz格式，所以tar命令暂时无法解开，需要先安装xz命令：
++++code
 yum install xz
-</pre>
-
-<p>然后解压：</p>
-
-<pre>
+---code
+然后解压：
++++code
 tar xvf linux-2.6.32.67.tar.xz
-</pre>
-
-<p>这是就有了linux-2.6.32.67目录，进入之：</p>
-
-<pre>
+---code
+这是就有了linux-2.6.32.67目录，进入之：
++++code
 cd linux-2.6.32.67
-</pre>
-
-<p>由于配置编译选项时，会用到gcc和ncurses库，所以先安装gcc和ncurses：</p>
-
-<pre>
+---code
+由于配置编译选项时，会用到gcc和ncurses库，所以先安装gcc和ncurses：
++++code
 yum install gcc
 yum install ncurses-devel
-</pre>
-
-<p>进入目录后即可开始配置编译选项：</p>
-
-<pre>
+---code
+进入目录后即可开始配置编译选项：
++++code
 make i386_defconfig
 make menuconfig
-</pre>
-
-<p>make menuconfig会出现一个窗口如图：</p>
-
-<p><img src="5.jpg"></p>
-
-<p>为了节约编译时间和降低调试的复杂度，把第二项Enable Loadable module support取消掉，把Networking support取消掉，然后Exit。</p>
-
-<p>由于编译过程中需要用到perl，所以再安装perl：</p>
-
-<pre>
+---code
+make menuconfig会出现一个窗口如图：
+5.jpg
+为了节约编译时间和降低调试的复杂度，把第二项Enable Loadable module support取消掉，把Networking support取消掉，然后Exit。
+由于编译过程中需要用到perl，所以再安装perl：
++++code
 yum install perl-devel
-</pre>
-
-<p>最后即可开始编译：</p>
-
-<pre>
+---code
+最后即可开始编译：
++++code
 make bzImage
-</pre>
-
-<p>在漫长的等待之后，最终看见如下的画面：</p>
-
-<p><img src="6.jpg"></p>
-
-<p>注意其中的“Kernel: arch/x86/boot/bzImage is ready”，这个bzImage就是我们要的内核。</p>
-
-<p>把这个内核复杂到~目录下备用：</p>
-
-<pre>
+---code
+在漫长的等待之后，最终看见如下的画面：
+6.jpg
+注意其中的“Kernel: arch/x86/boot/bzImage is ready”，这个bzImage就是我们要的内核。
+把这个内核复杂到~目录下备用：
++++code
 cp arch/x86/boot/bzImage ~
-</pre>
-
-<p>可以看一个这个bzImage的属性：</p>
-
-<pre>
+---code
+可以看一个这个bzImage的属性：
++++code
 cd ~
 file bzImage
-</pre>
-
-<p>有如下字样“bzImage: Linux kernel x86 boot executable bzImage,version 2.6.32.67”，说明对了。</p>
-
-<p>=================阶段三：编译busybox===================</p>
-
-<p>光光有了linux内核而没有外围的应用程序是远远不够的，没有什么作用。最基本的应用程序就是各种linux命令，比如echo、ls、cat、ifconfig等等。在各种发行版中，每一个命令都是一个独立的应用程序。如果要自己一个个编译这些程序并布置好，那实在是太劳心了。好在有busybox这个神奇的工具。这个工具实现了一百多个常用命令的功能，而且使用上和独立的命令没有任何区别。</p>
-
-<p>它的原理是这样的：首先由一个名叫busybox的可执行文件，然后在/bin和/sbin下面创建很多指向busybox的软链接，比如/bin/echo -&gt; busybox，/bin/ls -&gt; busybox等等。当在shell中输入echo &#8220;hello&#8221;时，事实上内核执行的是busybox。那么问题就来了：busybox是怎么知道要执行echo的功能而不是ls的功能呢？其实很简单。用C语言写过复杂一点的程序的人应该知道，main函数是带参数的，即int main(int argc,char* argv[])，而argv[0]即为shell中输入的命令。所以通过解析argv[0]即可得知是那个命令了。</p>
-
-<p>首先要下载busybox的源码包：</p>
-
-<pre>
+---code
+有如下字样“bzImage: Linux kernel x86 boot executable bzImage,version 2.6.32.67”，说明对了。
+=================阶段三：编译busybox===================
+光光有了linux内核而没有外围的应用程序是远远不够的，没有什么作用。最基本的应用程序就是各种linux命令，比如echo、ls、cat、ifconfig等等。在各种发行版中，每一个命令都是一个独立的应用程序。如果要自己一个个编译这些程序并布置好，那实在是太劳心了。好在有busybox这个神奇的工具。这个工具实现了一百多个常用命令的功能，而且使用上和独立的命令没有任何区别。
+它的原理是这样的：首先由一个名叫busybox的可执行文件，然后在/bin和/sbin下面创建很多指向busybox的软链接，比如/bin/echo -&gt; busybox，/bin/ls -&gt; busybox等等。当在shell中输入echo &#8220;hello&#8221;时，事实上内核执行的是busybox。那么问题就来了：busybox是怎么知道要执行echo的功能而不是ls的功能呢？其实很简单。用C语言写过复杂一点的程序的人应该知道，main函数是带参数的，即int main(int argc,char* argv[])，而argv[0]即为shell中输入的命令。所以通过解析argv[0]即可得知是那个命令了。
+首先要下载busybox的源码包：
++++code
 cd ~
 wget http://busybox.net/downloads/busybox-1.20.2.tar.bz2
-</pre>
-
-<p>然后在~目录下就有了busybox-1.20.2.tar.bz2，解压：</p>
-
-<pre>
+---code
+然后在~目录下就有了busybox-1.20.2.tar.bz2，解压：
++++code
 tar xvf busybox-1.20.2.tar.bz2
-</pre>
-
-<p>这时就有了busybox-1.20.2目录了，进入目录并开始配置编译选项：</p>
-
-<pre>
+---code
+这时就有了busybox-1.20.2目录了，进入目录并开始配置编译选项：
++++code
 cd busybox-1.20.2
 make defconfig
 make menuconfig
-</pre>
-
-<p>在Busybox Settings &#8212;&gt;Build Options下的第一个选项Build BusyBox as a static binary(no shared libs)选上。因为我们的linux环境暂时还没有加入各种运行时库，所以必须静态链接。</p>
-
-<p>由于需要静态链接，所以我们的glibc必须有一个静态的版本，而当前系统是没有的，所以应该先安装一个：</p>
-
-<pre>
+---code
+在Busybox Settings &#8212;&gt;Build Options下的第一个选项Build BusyBox as a static binary(no shared libs)选上。因为我们的linux环境暂时还没有加入各种运行时库，所以必须静态链接。
+由于需要静态链接，所以我们的glibc必须有一个静态的版本，而当前系统是没有的，所以应该先安装一个：
++++code
 yum install glibc-static
-</pre>
-
-<p>然后可以开始编译了：</p>
-
-<pre>
+---code
+然后可以开始编译了：
++++code
 make
 make install
-</pre>
-
-<p>在片刻的等待之后，编译完成，ls一下会发现多了一个_install目录，进去看一下都是一些什么：</p>
-
-<pre>
+---code
+在片刻的等待之后，编译完成，ls一下会发现多了一个_install目录，进去看一下都是一些什么：
++++code
 cd _install
 ls
-</pre>
-
-<p><img src="7.jpg"></p>
-
-<p>里面是bin、sbin和usr，是不是很像linux的根目录了？是的，我们就是要用它来构建linux的根目录。</p>
-
-<p>至此busybox也编译完了。</p>
-
-<p>===================阶段四：无盘linux的运行===============</p>
-
-<p>离成功不远了。现在我们要开始制作一个在仅在内存中运行的linux，这个linux在运行时不访问硬盘。哈哈，是不是想到能够做一个liveCD或U盘系统呀？</p>
-
-<p>首先，在~目录下建一个文件夹名为rootfs，它是我们用来构建根目录的地方。然后把busybox下的那个_install目录中的内容全部复制到rootfs中：</p>
-
-<pre>
+---code
+7.jpg
+里面是bin、sbin和usr，是不是很像linux的根目录了？是的，我们就是要用它来构建linux的根目录。
+至此busybox也编译完了。
+===================阶段四：无盘linux的运行===============
+离成功不远了。现在我们要开始制作一个在仅在内存中运行的linux，这个linux在运行时不访问硬盘。哈哈，是不是想到能够做一个liveCD或U盘系统呀？
+首先，在~目录下建一个文件夹名为rootfs，它是我们用来构建根目录的地方。然后把busybox下的那个_install目录中的内容全部复制到rootfs中：
++++code
 cd ~
 mkdir rootfs
 cp -r busybox-1.20.2/_install/* rootfs
 cd rootfs
-</pre>
-
-<p>现在rootfs下已经有了bin、sbin、usr目录，好像还缺什么。现在来添加：</p>
-
-<pre>
+---code
+现在rootfs下已经有了bin、sbin、usr目录，好像还缺什么。现在来添加：
++++code
 mkdir proc mnt var tmp dev sys etc
-</pre>
-
-<p>同时在rootfs下还必须要有一个init文件，这个init文件可以是一个可执行的二进制文件，也可以是一个shell脚本，或者是指向前面两者的链接。init文件会在linux内核初始化就绪后被执行。方便起见，我们就把init做成一个指向bin/sh的软连接：</p>
-
-<pre>
+---code
+同时在rootfs下还必须要有一个init文件，这个init文件可以是一个可执行的二进制文件，也可以是一个shell脚本，或者是指向前面两者的链接。init文件会在linux内核初始化就绪后被执行。方便起见，我们就把init做成一个指向bin/sh的软连接：
++++code
 ln -s bin/sh init
-</pre>
-
-<p>dev目录下还必须有几个必要的设备console,null,tty,tty1,tty2,tty3,tty4：</p>
-
-<pre>
+---code
+dev目录下还必须有几个必要的设备console,null,tty,tty1,tty2,tty3,tty4：
++++code
 cd dev
 mknod console c 5 1
 mknod null c 1 3
@@ -230,64 +142,35 @@ mknod tty1 c 4 1
 mknod tty2 c 4 2
 mknod tty3 c 4 3
 mknod tty4 c 4 4
-</pre>
-
-<p>这些tty就是和用户交互的终端。</p>
-
-<p>好了，适用于一个内存linux的根文件系统就做好了，现在来制成一个压缩镜像吧：</p>
-
-<pre>
+---code
+这些tty就是和用户交互的终端。
+好了，适用于一个内存linux的根文件系统就做好了，现在来制成一个压缩镜像吧：
++++code
 cd ~/rootfs
 find . | cpio -H newc -o &gt; ../rootfs.img
 cd ../
 gzip rootfs.img -f
-</pre>
-
-<p>现在~目录下就有bzImage与rootfs.img.gz了：</p>
-
-<p><img src="8.jpg"></p>
-
-<p>把这两个文件复制到/boot目录下，然后打开vi编辑/boot/grub/grub.conf：</p>
-
-<pre>
+---code
+现在~目录下就有bzImage与rootfs.img.gz了：
+8.jpg
+把这两个文件复制到/boot目录下，然后打开vi编辑/boot/grub/grub.conf：
++++code
 cp bzImage rootfs.img.gz /boot
 vi /boot/grub/grub.conf
-</pre>
-
-<p>在/boot/grub/grub.conf的末尾添加入：</p>
-
-<pre>
+---code
+在/boot/grub/grub.conf的末尾添加入：
++++code
 title diylinux
 	root (hd0,0)
 	kernel /boot/bzImage rw root=/dev/ram
 	initrd /boot/rootfs.img.gz
+---code
+然后重启，在BIOS之后会看到启动画面：
+9.jpg
+此时要按任意键唤出选项：
+10.jpg
+要记得选择diylinux选项，然后将进入我们自制的linux的启动过程了。显示一大堆启动信息，然后画面定格：
+11.jpg
+可不要以为这个是死机了。请仔细看最后一句话“Please press enter to activate this console”，意思是说，让你按一下回车键，就可以激活控制台啦。按下回车后，出现了命令提示符&#8221;#&#8221;，此时可以输入各种命令啦。如图：
+12.jpg
 </pre>
-
-<p>然后重启，在BIOS之后会看到启动画面：</p>
-
-<p><img src="9.jpg"></p>
-
-<p>此时要按任意键唤出选项：</p>
-
-<p><img src="10.jpg"></p>
-
-<p>要记得选择diylinux选项，然后将进入我们自制的linux的启动过程了。显示一大堆启动信息，然后画面定格：</p>
-
-<p><img src="11.jpg"></p>
-
-<p>可不要以为这个是死机了。请仔细看最后一句话“Please press enter to activate this console”，意思是说，让你按一下回车键，就可以激活控制台啦。按下回车后，出现了命令提示符&#8221;#&#8221;，此时可以输入各种命令啦。如图：</p>
-
-<p><img src="12.jpg"></p>
-
-							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>
