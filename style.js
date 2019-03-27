@@ -3,9 +3,19 @@ function format_content(raw)
     var items = raw.split("\n");
     var formated = "";
     var in_code = false;
+    var replace_map = [[/&/g, "&amp;"], [/</g, "&lt;"], [/>/g, "&gt;"],
+        [/#RED/g, "<font color='red'>"], [/#-RED/g, "</font>"],
+        [/#HREF/g, "<a href="], [/#-HREF1/g, ">"], [/#-HREF2/g, "</a>"],
+        [/#TABLE/g, "<table>"], [/#-TABLE/g, "</table>"],
+        [/#TBODY/g, "<tbody>"], [/#-TBODY/g, "</tbody>"],
+        [/#TH/g, "<th>"], [/#-TH/g, "</th>"],
+        [/#TR/g, "<tr>"], [/#-TR/g, "</tr>"],
+        [/#TD/g, "<td>"], [/#-TD/g, "</td>"]];
     for(var i = 0; i < items.length; i++)
     {
         item = items[i];
+        for(var j = 0; j < replace_map.length; j++)
+          item = item.replace(replace_map[j][0], replace_map[j][1]);
         if(in_code)
         {
             if(item == "---code")
@@ -14,11 +24,7 @@ function format_content(raw)
                 in_code = false;
             }
             else
-            {
-                item = item.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-                      .replace(/#RED/g, "<font color='red'>").replace(/#-RED/g, "</font>");
                 formated += item + "\n";
-            }
         }
         else
         {
@@ -32,11 +38,7 @@ function format_content(raw)
                 in_code = true;
             }
             else
-            {
-                item = item.replace(/#HREF/g, "<a href=").replace(/#-HREF1/g, ">")
-                    .replace(/#-HREF2/g, "</a>");
                 formated += "<p>" + item + "</p>";
-            }
         }
     }
     return formated;

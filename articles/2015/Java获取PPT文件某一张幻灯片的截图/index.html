@@ -1,45 +1,23 @@
-﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>Java获取PPT文件某一张幻灯片的截图</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">Java获取PPT文件某一张幻灯片的截图</h1>
-							</header>
-							<div class="entry-content">
-							
-<p>用Java获取PPT文件中某一张幻灯片的截图（快照）这个需求还是挺常见的。比如用百度文库在线看PPT文件，就是百度的后台服务器把PPT转换成了一张张的图片传输到前台的。</p>
+﻿<script src="../../../style.js"></script>
 
-<p>实现是利用了Apache的POI项目，这个库可以让Java和Mircosoft的doc、xls、ppt等多张文档格式交互。本文只使用了和ppt有关的库。</p>
+<pre id="title">Java获取PPT文件某一张幻灯片的截图</pre>
 
-<p>一、首先要下载<a href="http://apache.fayea.com/poi/release/bin/poi-bin-3.13-20150929.tar.gz">poi-bin-3.12-20150511.tar.gz</a>，然后解压：</p>
-
-<pre>
+<pre id="content">
+用Java获取PPT文件中某一张幻灯片的截图（快照）这个需求还是挺常见的。比如用百度文库在线看PPT文件，就是百度的后台服务器把PPT转换成了一张张的图片传输到前台的。
+实现是利用了Apache的POI项目，这个库可以让Java和Mircosoft的doc、xls、ppt等多张文档格式交互。本文只使用了和ppt有关的库。
+一、首先要下载#HREF"http://apache.fayea.com/poi/release/bin/poi-bin-3.13-20150929.tar.gz"#-HREF1poi-bin-3.12-20150511.tar.gz#-HREF2，然后解压：
++++code
 cd ~
 wget http://apache.fayea.com/poi/release/bin/poi-bin-3.12-20150511.tar.gz
 tar xzvf poi-bin-3.12-20150511.tar.gz
-</pre>
-
-<p>只需要使用到其中的poi-3.12-20150511.jar与poi-scratchpad-3.12-20150511.jar两个jar包，如图：</p>
-
-<p><img src="1.jpg"></p>
-
-<p>二、新建Java工程（我命名为PPTFetch），把这两个jar包加入到Build Path中：</p>
-
-<p>选中PPTFetch，点击菜单栏中的Project ==&gt; Properties ==&gt; Java Build Path，在Libraries中加入poi-3.12-20150511.jar与poi-scratchpad-3.12-20150511.jar两个jar包，如图：</p>
-
-<p><img src="2.jpg"></p>
-
-<p>三、新建类zjs.util.PPTFetch，输入如下代码：</p>
-
-<pre>
+---code
+只需要使用到其中的poi-3.12-20150511.jar与poi-scratchpad-3.12-20150511.jar两个jar包，如图：
+1.jpg
+二、新建Java工程（我命名为PPTFetch），把这两个jar包加入到Build Path中：
+选中PPTFetch，点击菜单栏中的Project ==&gt; Properties ==&gt; Java Build Path，在Libraries中加入poi-3.12-20150511.jar与poi-scratchpad-3.12-20150511.jar两个jar包，如图：
+2.jpg
+三、新建类zjs.util.PPTFetch，输入如下代码：
++++code
 package zjs.util;
 
 import java.awt.Dimension;
@@ -92,11 +70,9 @@ public class PPTFetch
     }
 
 }
-</pre>
-
-<p>四、新建类Main，输入如下代码：</p>
-
-<pre>
+---code
+四、新建类Main，输入如下代码：
++++code
 import java.io.IOException;
 import zjs.util.PPTFetch;
 
@@ -133,42 +109,20 @@ public class Main
         }
     }
 }
-</pre>
-
-<p>至此，PPTFetch这个Java程序就完成了。</p>
-
-<p>如果导出为jar包使用，那么使用时，命令类似于：</p>
-
-<pre>
+---code
+至此，PPTFetch这个Java程序就完成了。
+如果导出为jar包使用，那么使用时，命令类似于：
++++code
 java -jar PPTFetch.jar '/home/zjs/POI技术.ppt' 0 '/home/zjs/page1.jpg'
+---code
+如果想直接在Eclipse中运行，可以设置运行的参数（Project ==&gt; Properties ==&gt; Run/Debug Settings），如图：
+3.jpg
+选中Main，点击Edit，在Arguments标签中的Program arguments中输入
++++code
+'/home/zjs/POI技术.ppt' 0 '/home/zjs/page1.jpg'
+---code
+4.jpg
+来看一下运行结果：
+5.jpg
+PPTFetch果然把“POI技术.ppt”的第1张幻灯片截图出来了，并保存为page1.jpg。注意，在参数中，幻灯片是从0开始计数的！另外就是，保存的格式由保存图片的后缀名决定，可以是jpg或png或其他各种图片格式，只要你安装的JRE支持。
 </pre>
-
-<p>如果想直接在Eclipse中运行，可以设置运行的参数（Project ==&gt; Properties ==&gt; Run/Debug Settings），如图：</p>
-
-<p><img src="3.jpg"></p>
-
-<p>选中Main，点击Edit，在Arguments标签中的Program arguments中输入</p>
-
-<pre>'/home/zjs/POI技术.ppt' 0 '/home/zjs/page1.jpg'</pre>
-
-<p><img src="4.jpg"></p>
-
-<p>来看一下运行结果：</p>
-
-<p><img src="5.jpg"></p>
-
-<p>
-PPTFetch果然把“POI技术.ppt”的第1张幻灯片截图出来了，并保存为page1.jpg。注意，在参数中，幻灯片是从0开始计数的！另外就是，保存的格式由保存图片的后缀名决定，可以是jpg或png或其他各种图片格式，只要你安装的JRE支持。</p>
-
-							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>

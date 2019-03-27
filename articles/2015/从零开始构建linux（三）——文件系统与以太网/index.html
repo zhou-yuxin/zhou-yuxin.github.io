@@ -1,283 +1,159 @@
-﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>从零开始构建linux（三）——文件系统与以太网</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">从零开始构建linux（三）——文件系统与以太网</h1>
-							</header>
-							<div class="entry-content">
+﻿<script src="../../../style.js"></script>
 
-<p>由于在之前编译内核的时候，为了编译速度快以及调试方便，我把<span style="color: #373737;">Enable Loadable module support和Networking support取消掉。这体现了linux可以按照自己需要进行裁剪的优越性。这篇文件要记录我是如何让linux拥有对文件系统的以及对网络设备的支持的。</span></p>
+<pre id="title">从零开始构建linux（三）——文件系统与以太网</pre>
 
-<p>其实也没什么特别，唯一的改动就是在配置内核编译选项的时候，有选择的把文件系统和网络设备的支持加上。</p>
-
-<p>====================阶段一：编译linux内核========================</p>
-
-<p>先启动虚拟机CentOS，进入linux 2.6内核源码的目录，由于之前已经编译过内核，所以为了避免上一次编译对这一次编译的影响，需要恢复一下：</p>
-
-<pre>
+<pre id="content">
+由于在之前编译内核的时候，为了编译速度快以及调试方便，我把Enable Loadable module support和Networking support取消掉。这体现了linux可以按照自己需要进行裁剪的优越性。这篇文件要记录我是如何让linux拥有对文件系统的以及对网络设备的支持的。
+其实也没什么特别，唯一的改动就是在配置内核编译选项的时候，有选择的把文件系统和网络设备的支持加上。
+====================阶段一：编译linux内核========================
+先启动虚拟机CentOS，进入linux 2.6内核源码的目录，由于之前已经编译过内核，所以为了避免上一次编译对这一次编译的影响，需要恢复一下：
++++code
 cd linux-2.6.32.67
 make mrproper
-</pre>
-
-<p>命令执行之后，会看到很多clean字样，如图：</p>
-
-<p><img src="1.jpg"></p>
-
-<p>这说明恢复成功了。</p>
-
-<p>接下来就是最重要的编译选项配置了。配置成怎样的呢？这就需要根据需要来了。一般的做法就是查看一下目标机器上用的都是一些什么硬件，然后把这些硬件的驱动程序编译进内核。就我们的需求而言，我们需要先确定我们的硬盘和网卡的型号，然后在内核编译选项中寻找这些硬件型号。如果能够找到，那么恭喜你，这个硬件肯定能用了；如果找不到相同型号的，但是查询相关资料得知，内核支持的某个型号的硬件与该硬件是兼容的，那么可以选上兼容型号的硬件的驱动，往往是能够使用的（不排除有些手气差的情况）；如果实在找不到，那么就说明这个版本的linux还没有开始支持这个硬件（通常因为这个硬件比较新或者比较小众），或许需要在以后的版本中才有支持。由于我们使用的是经典的linux 2.6版本，要做好有些硬件找不到的心理准备（介意的话可以去下载最新的内核）。</p>
-
-<p>为了确定硬件型号，需要用到lspci这个命令。由于minimal版本的CentOS是不自带这个命令的，所以要使用如下命令安装：</p>
-
-<pre>
+---code
+命令执行之后，会看到很多clean字样，如图：
+1.jpg
+这说明恢复成功了。
+接下来就是最重要的编译选项配置了。配置成怎样的呢？这就需要根据需要来了。一般的做法就是查看一下目标机器上用的都是一些什么硬件，然后把这些硬件的驱动程序编译进内核。就我们的需求而言，我们需要先确定我们的硬盘和网卡的型号，然后在内核编译选项中寻找这些硬件型号。如果能够找到，那么恭喜你，这个硬件肯定能用了；如果找不到相同型号的，但是查询相关资料得知，内核支持的某个型号的硬件与该硬件是兼容的，那么可以选上兼容型号的硬件的驱动，往往是能够使用的（不排除有些手气差的情况）；如果实在找不到，那么就说明这个版本的linux还没有开始支持这个硬件（通常因为这个硬件比较新或者比较小众），或许需要在以后的版本中才有支持。由于我们使用的是经典的linux 2.6版本，要做好有些硬件找不到的心理准备（介意的话可以去下载最新的内核）。
+为了确定硬件型号，需要用到lspci这个命令。由于minimal版本的CentOS是不自带这个命令的，所以要使用如下命令安装：
++++code
 yum install pciutils
-</pre>
+---code
+在我的虚拟机上，命令结果如下：
+2.jpg
+注意用红色圈出来的两行：
++++code
+IDE interface: Intel Corporation 82371AB/EB/MB PIIX4 IDE
 
-<p>在我的虚拟机上，命令结果如下：</p>
-
-<p><img src="2.jpg"></p>
-
-<p>注意用红色圈出来的两行：</p>
-
-<p>IDE interface: Intel Corporation 82371AB/EB/MB PIIX4 IDE</p>
-
-<p>Ethernet controller: Intel Corporation 82540EM Gigabit Ethernet Controller</p>
-
-<p>第一个IDE interface即IDE接口，我们的硬盘是IDE硬盘，所以需要IDE的驱动。第二个Ethernet controller即以太网控制器，通俗的说法就是网卡。相比于IDE接口，这个以太网控制器是重点，因为IDE接口的种类较少，基本相互兼容，不怎么容易出问题，而以太网控制器种类繁多，而且相互之间兼容性较低，一定要选对驱动才行。</p>
-
-<p>现在确定了这两个硬件设备以后，可以开始配置编译选项了：</p>
-
-<pre>
+Ethernet controller: Intel Corporation 82540EM Gigabit Ethernet Controller
+---code
+第一个IDE interface即IDE接口，我们的硬盘是IDE硬盘，所以需要IDE的驱动。第二个Ethernet controller即以太网控制器，通俗的说法就是网卡。相比于IDE接口，这个以太网控制器是重点，因为IDE接口的种类较少，基本相互兼容，不怎么容易出问题，而以太网控制器种类繁多，而且相互之间兼容性较低，一定要选对驱动才行。
+现在确定了这两个硬件设备以后，可以开始配置编译选项了：
++++code
 make i386_defconfig
 make menuconfig
-</pre>
-
-<p>make menuconfig会出现一个窗口如图：</p>
-
-<p><img src="3.jpg"></p>
-
-<p>首先把第二项Enable Loadable module support取消。如果选择了Enable Loadable module support，而且选择驱动的时候选了编译成模块，那么驱动程序就会被编译成模块，而不是编译进内核。编译进内核的缺点是内核比较庞大，加载较慢，优点是不用担心驱动被误删，并且不需要修改rootfs.img.gz（编译成模块的话，通常把模块放在文件系统中，内核启动后再加载）。</p>
-
-<p>在File systems中，选上Ext3 journalling file system support、Ext3 extended attributes、Ext3 POSIX Access Control Lists、Ext3 Security Labels，其他全部取消，如图：</p>
-
-<p><img src="4.jpg"></p>
-
-<p>当然，如果希望自己的系统支持别的文件系统，没有问题，要什么选什么，但是要注意编译后内核的大小。</p>
-
-<p>在Networking support中，把所有都取消掉，因为这些网络结构在PC上都不常见：</p>
-
-<p><img src="5.jpg"></p>
-
-<p>在Netwroking support ==&gt; Networking options中，把Packet socket、Packet socket: mmapped IO、Unix domain sockets、TCP/IP networking、IP: kernel level autoconfiguration、IP: DHCP support、IP: RARP support选上，其他的都取消，如图：</p>
-
-<p><img src="6.jpg"></p>
-
-<p>Device Drivers中的都是一些驱动程序，这个比较重要，尽量不要改动太多。</p>
-
-<p>接下来就是网卡驱动的选择，再次强调一下，我们的网卡型号是Ethernet controller: Intel Corporation 82540EM Gigabit Ethernet Controller。</p>
-
-<p>在Device Drivers ==&gt; Network device support中，把Ethernet （1000 Mbit）选上，其他全部取消。为何是Ethernet (1000 Mbit)呢？这是因为我们的网卡型号中有“Gigabit Ethernet ”，就是1G比特以太网的意思，而1G比特就是1000M比特呀。</p>
-
-<p>在Device Drivers ==&gt; Network device support ==&gt; Ethernet (1000 Mbit)中，我们很惊喜地看到，有一个选项Intel(R) pro/1000 Gigabit Ethernet support：</p>
-
-<p><img src="7.jpg"></p>
-
-<p>一定把这个选上，其他的可以按照默认来，因为默认选上的那些网络设备都是一些比较常见的。</p>
-
-<p>如果是别的网卡，也可以按照这样的思路去找哪个驱动程序。</p>
-
-<p>OK，至此全部配置完，Exit保存设置。</p>
-
-<p>然后就是编译啦：</p>
-
-<pre>
+---code
+make menuconfig会出现一个窗口如图：
+3.jpg
+首先把第二项Enable Loadable module support取消。如果选择了Enable Loadable module support，而且选择驱动的时候选了编译成模块，那么驱动程序就会被编译成模块，而不是编译进内核。编译进内核的缺点是内核比较庞大，加载较慢，优点是不用担心驱动被误删，并且不需要修改rootfs.img.gz（编译成模块的话，通常把模块放在文件系统中，内核启动后再加载）。
+在File systems中，选上Ext3 journalling file system support、Ext3 extended attributes、Ext3 POSIX Access Control Lists、Ext3 Security Labels，其他全部取消，如图：
+4.jpg
+当然，如果希望自己的系统支持别的文件系统，没有问题，要什么选什么，但是要注意编译后内核的大小。
+在Networking support中，把所有都取消掉，因为这些网络结构在PC上都不常见：
+5.jpg
+在Netwroking support ==&gt; Networking options中，把Packet socket、Packet socket: mmapped IO、Unix domain sockets、TCP/IP networking、IP: kernel level autoconfiguration、IP: DHCP support、IP: RARP support选上，其他的都取消，如图：
+6.jpg
+Device Drivers中的都是一些驱动程序，这个比较重要，尽量不要改动太多。
+接下来就是网卡驱动的选择，再次强调一下，我们的网卡型号是Ethernet controller: Intel Corporation 82540EM Gigabit Ethernet Controller。
+在Device Drivers ==&gt; Network device support中，把Ethernet （1000 Mbit）选上，其他全部取消。为何是Ethernet (1000 Mbit)呢？这是因为我们的网卡型号中有“Gigabit Ethernet ”，就是1G比特以太网的意思，而1G比特就是1000M比特呀。
+在Device Drivers ==&gt; Network device support ==&gt; Ethernet (1000 Mbit)中，我们很惊喜地看到，有一个选项Intel(R) pro/1000 Gigabit Ethernet support：
+7.jpg
+一定把这个选上，其他的可以按照默认来，因为默认选上的那些网络设备都是一些比较常见的。
+如果是别的网卡，也可以按照这样的思路去找哪个驱动程序。
+OK，至此全部配置完，Exit保存设置。
+然后就是编译啦：
++++code
 make bzImage
-</pre>
-
-<p>漫长的等待之后，就得到了bzImage（在arch/x86/boot/目录下）。</p>
-
-<p><img src="8.jpg"></p>
-
-<p>因为我们在<a href="../从零开始构建linux（一）——编译linux内核/index.html">《从零开始构建linux（一）——编译linux内核》</a>中已经制作好了rootfs.img.gz，并且配置好了grub，所以只要把bzImage复制到/boot目录下替换原来的内核即可。</p>
-
-<pre>
+---code
+漫长的等待之后，就得到了bzImage（在arch/x86/boot/目录下）。
+8.jpg
+因为我们在#HREF"../从零开始构建linux（一）——编译linux内核/index.html"#-HREF1《从零开始构建linux（一）——编译linux内核》#-HREF2中已经制作好了rootfs.img.gz，并且配置好了grub，所以只要把bzImage复制到/boot目录下替换原来的内核即可。
++++code
 cp arch/x86/boot/bzImage /boot
-</pre>
-
-<p>然后重启，在bios画面过后，记得按任意键选择diylinux进入系统：</p>
-
-<p><img src="9.jpg"></p>
-
-<p><img src="10.jpg"></p>
-
-<p>到这个画面后，按Enter键即可进入系统。</p>
-
-<p><img src="11.jpg"></p>
-
-<p><img src="12.jpg"></p>
-
-<p>新的linux内核可以使用了！</p>
-
-<p>========================阶段二：读写文件==========================</p>
-
-<p>为了验证新的linux内核确实具备了对Ext3文件系统的能力，我们可以往硬盘里面读写一些文件试试。由于CentOS所用的硬盘分区/dev/sda就是Ext3格式的，所以我们可以让新的linux挂载/dev/sda，然后编辑一个文件并保存。最后重启进入CentOS，看看是否有这个文件。</p>
-
-<p>先看一下虚拟机的当前的存储器结构：</p>
-
-<p><img src="13.jpg"></p>
-
-<p>一个主硬盘和一个当做U盘使用的小硬盘。由于我把centos.vdi设置为了第一IDE控制器主通道而udisk.vid是第二IDE控制器主通道，所以在linux中，centos.vdi这块硬盘应该是/dev/sda，而udisk.vdi这块硬盘应该是/dev/sdb。不过在真机上，这个方法可能不适用，因为你不可能查看机箱去看。其实通用的办法是通过fdisk等命令查看磁盘的大小、分区情况等信息，然后就能分辨出哪个设备文件对应哪个硬盘了。</p>
-
-<p>开机进入我们自己做的diylinux，依次执行如下命令：</p>
-
-<pre>
+---code
+然后重启，在bios画面过后，记得按任意键选择diylinux进入系统：
+9.jpg
+10.jpg
+到这个画面后，按Enter键即可进入系统。
+11.jpg
+12.jpg
+新的linux内核可以使用了！
+========================阶段二：读写文件==========================
+为了验证新的linux内核确实具备了对Ext3文件系统的能力，我们可以往硬盘里面读写一些文件试试。由于CentOS所用的硬盘分区/dev/sda就是Ext3格式的，所以我们可以让新的linux挂载/dev/sda，然后编辑一个文件并保存。最后重启进入CentOS，看看是否有这个文件。
+先看一下虚拟机的当前的存储器结构：
+13.jpg
+一个主硬盘和一个当做U盘使用的小硬盘。由于我把centos.vdi设置为了第一IDE控制器主通道而udisk.vid是第二IDE控制器主通道，所以在linux中，centos.vdi这块硬盘应该是/dev/sda，而udisk.vdi这块硬盘应该是/dev/sdb。不过在真机上，这个方法可能不适用，因为你不可能查看机箱去看。其实通用的办法是通过fdisk等命令查看磁盘的大小、分区情况等信息，然后就能分辨出哪个设备文件对应哪个硬盘了。
+开机进入我们自己做的diylinux，依次执行如下命令：
++++code
 mount -t proc none /proc
 mount -t sysfs none /sys
 mdev -s
-</pre>
-
-<p>这三行命令依次挂载proc文件系统到/proc、挂载sysfs文件系统到/sys，并且使用udev的简化版本mdev来探测当前系统拥有的设备，并在/dev目录下创建相应的节点。所以执行完这三条命令后，/dev目录下应该有/dev/sda和/dev/sdb了。可以执行如下命令检查一下：</p>
-
-<pre>
+---code
+这三行命令依次挂载proc文件系统到/proc、挂载sysfs文件系统到/sys，并且使用udev的简化版本mdev来探测当前系统拥有的设备，并在/dev目录下创建相应的节点。所以执行完这三条命令后，/dev目录下应该有/dev/sda和/dev/sdb了。可以执行如下命令检查一下：
++++code
 ls /dev | grep sd
-</pre>
-
-<p>输出结果中有sda、sda1、sda2和sdb字样就说明正确了。</p>
-
-<p>为了进一步确定sda1和sda2中，哪一个是ext3文件系统（相当于CentOS的/目录），哪一个是swap交换分区，我们需要使用fdisk命令：</p>
-
-<pre>
+---code
+输出结果中有sda、sda1、sda2和sdb字样就说明正确了。
+为了进一步确定sda1和sda2中，哪一个是ext3文件系统（相当于CentOS的/目录），哪一个是swap交换分区，我们需要使用fdisk命令：
++++code
 fdisk /dev/sda
-</pre>
-
-<p>然后输入p，回车。结果如图：</p>
-
-<p><img src="14.jpg"></p>
-
-<p>可以看到/dev/sda1的id是83，即Ext3文件系统，而/dev/sda2的system字段是“Linux swap”，可以完全肯定/dev/sda1就是CentOS挂载到/目录的分区。</p>
-
-<p>接下来我们来挂载/dev/sda1到/mnt目录，并进入目录：</p>
-
-<pre>
+---code
+然后输入p，回车。结果如图：
+14.jpg
+可以看到/dev/sda1的id是83，即Ext3文件系统，而/dev/sda2的system字段是“Linux swap”，可以完全肯定/dev/sda1就是CentOS挂载到/目录的分区。
+接下来我们来挂载/dev/sda1到/mnt目录，并进入目录：
++++code
 mount /dev/sda1 /mnt
 cd /mnt
-</pre>
-
-<p>然后用vi编辑一个hello.txt文件：</p>
-
-<pre>
+---code
+然后用vi编辑一个hello.txt文件：
++++code
 vi hello.txt
-</pre>
-
-<p>输入如下内容后保存：</p>
-
-<pre>
+---code
+输入如下内容后保存：
++++code
 hello,ext3 file system!
-</pre>
-
-<p>然后重启：</p>
-
-<pre>
+---code
+然后重启：
++++code
 reboot
-</pre>
-
-<p>重启后进入CentOS后，使用cat命令看看/目录下是否存在一个hello.txt文件，并且查看内容：</p>
-
-<pre>
+---code
+重启后进入CentOS后，使用cat命令看看/目录下是否存在一个hello.txt文件，并且查看内容：
++++code
 cat /hello.txt
-</pre>
-
-<p>怎么样？发现确实存在有这个文件，而且内容就是我们在自制linux中输入的&#8221;hello,ext3 file system!&#8221;哈哈~~</p>
-
-<p>说明我们新的linux内核已经支持了ext3文件系统啦！</p>
-
-<p>=======================阶段三：连接网络=========================</p>
-
-<p>为了验证新的linux内核可以连接网络，我们可以在新的linux中ping百度。首先来设置一下虚拟机的网络，把网卡设置为桥接网络模式（桥接网络模式下，虚拟机的网络就好像是与宿主机在同一局域网下的另一块独立的网卡，可以有自己的MAC地址，可以有自己的IP，地位完全和宿主机的网卡一样）：</p>
-
-<p>进入我们自己的diylinux，依次执行如下命令：</p>
-
-<pre>
+---code
+怎么样？发现确实存在有这个文件，而且内容就是我们在自制linux中输入的&#8221;hello,ext3 file system!&#8221;哈哈~~
+说明我们新的linux内核已经支持了ext3文件系统啦！
+=======================阶段三：连接网络=========================
+为了验证新的linux内核可以连接网络，我们可以在新的linux中ping百度。首先来设置一下虚拟机的网络，把网卡设置为桥接网络模式（桥接网络模式下，虚拟机的网络就好像是与宿主机在同一局域网下的另一块独立的网卡，可以有自己的MAC地址，可以有自己的IP，地位完全和宿主机的网卡一样）：
+进入我们自己的diylinux，依次执行如下命令：
++++code
 mount -t proc none /proc
 mount -t sysfs none /sys
 mdev -s
-</pre>
-
-<p>这三条命令在阶段二已经解释过了。</p>
-
-<p>先来查看linux是否检测到了以太网卡：</p>
-
-<pre>
+---code
+这三条命令在阶段二已经解释过了。
+先来查看linux是否检测到了以太网卡：
++++code
 ifconfig -a
-</pre>
-
-<p>执行结果如下：</p>
-
-<p><img src="15.jpg"></p>
-
-<p>eth0就是我们的以太网卡。可以看到linux检测到eth0的硬件地址（HWaddr），也就是我们常说的MAC地址，是08:00:27:D0:5B:ED。通过查看虚拟机的设置，发现确实如此！</p>
-
-<p>那么如何启动eth0呢？首先要搞清楚的问题是，我们要手动指定IP地址呢还是通过dhcp服务器来分配IP地址？</p>
-
-<p>如果是手动指定IP地址的话，可以直接使用如下命令：</p>
-
-<pre>
+---code
+执行结果如下：
+15.jpg
+eth0就是我们的以太网卡。可以看到linux检测到eth0的硬件地址（HWaddr），也就是我们常说的MAC地址，是08:00:27:D0:5B:ED。通过查看虚拟机的设置，发现确实如此！
+那么如何启动eth0呢？首先要搞清楚的问题是，我们要手动指定IP地址呢还是通过dhcp服务器来分配IP地址？
+如果是手动指定IP地址的话，可以直接使用如下命令：
++++code
 ifconfig eth0 192.168.1.123
-</pre>
-
-<p>这样就给eth0指定了192.168.1.123的IP。</p>
-
-<p>由于我在公司里面是使用路由器上网的（这也是现在大多数人上网的方式），路由器一般被设置为DHCP服务器分配IP地址的方式。如果192.168.1.123未被路由器分配出去，那么路由表中没有这条记录，或者形象地说就是路由器不承认这个地址存在的合法性，所有冒用这个地址的数据包都无法穿透路由器，所以是不可能ping通百度的；而如果192.168.1.123这个地址已被分配出去，那么你再手动指定给自己的linux，那么局域网上就同时存在两个192.168.1.123，这会造成IP冲突，后果不可预测（往往是两个人的网络都极其不稳定）。</p>
-
-<p>所以，我们还是要乖乖的使用DHCP协议去文明地申请一个IP地址。</p>
-
-<p>为了使用dhcp协议，可以使用dhclient命令。但是由于我们的linux中的命令都是来自busybox，而很遗憾的是busybox目前还没有支持这个命令，所以我们得换个法子。好在busybox提供了udhcpc和udhcpd两个命令，前者作为dhcp客户端来索取IP地址，后者用来搭建dhcp服务器里分配IP地址。</p>
-
-<pre>
+---code
+这样就给eth0指定了192.168.1.123的IP。
+由于我在公司里面是使用路由器上网的（这也是现在大多数人上网的方式），路由器一般被设置为DHCP服务器分配IP地址的方式。如果192.168.1.123未被路由器分配出去，那么路由表中没有这条记录，或者形象地说就是路由器不承认这个地址存在的合法性，所有冒用这个地址的数据包都无法穿透路由器，所以是不可能ping通百度的；而如果192.168.1.123这个地址已被分配出去，那么你再手动指定给自己的linux，那么局域网上就同时存在两个192.168.1.123，这会造成IP冲突，后果不可预测（往往是两个人的网络都极其不稳定）。
+所以，我们还是要乖乖的使用DHCP协议去文明地申请一个IP地址。
+为了使用dhcp协议，可以使用dhclient命令。但是由于我们的linux中的命令都是来自busybox，而很遗憾的是busybox目前还没有支持这个命令，所以我们得换个法子。好在busybox提供了udhcpc和udhcpd两个命令，前者作为dhcp客户端来索取IP地址，后者用来搭建dhcp服务器里分配IP地址。
++++code
 ifconfig eth0 up
 udhcpc -i eth0
-</pre>
-
-<p>首先使用ifconfig来激活网卡，然后使用udhcpc为eth0获取IP地址。如果机器上只有一张网卡，那么可以省略udhcpc的-i参数。运行结果：</p>
-
-<p><img src="16.jpg"></p>
-
-<p>看，&#8221;Lease of 192.168.111.58 obtained,lease time 86400&#8243;，意思是获取到了192.168.111.58的租约，租期为86400秒（也就是24小时）。</p>
-
-<p>但是奇怪的是，再次用ifconfig查看eth0，发现并没有设置IP地址。这可能是由于udhcpc只是获取IP地址，但是并不设置网卡的IP地址吧（只是猜测，还有待研究）。所以我们最后还是得手动设置一下：</p>
-
-<pre>
+---code
+首先使用ifconfig来激活网卡，然后使用udhcpc为eth0获取IP地址。如果机器上只有一张网卡，那么可以省略udhcpc的-i参数。运行结果：
+16.jpg
+看，&#8221;Lease of 192.168.111.58 obtained,lease time 86400&#8243;，意思是获取到了192.168.111.58的租约，租期为86400秒（也就是24小时）。
+但是奇怪的是，再次用ifconfig查看eth0，发现并没有设置IP地址。这可能是由于udhcpc只是获取IP地址，但是并不设置网卡的IP地址吧（只是猜测，还有待研究）。所以我们最后还是得手动设置一下：
++++code
 ifconcig eth0 192.168.111.58
-</pre>
-
-<p>这样之后，自己的网卡设置了192.168.111.58，而路由器也认同了这个地址（添加入了路由表），可以正常上网了。不信来试试ping：</p>
-
-<pre>
+---code
+这样之后，自己的网卡设置了192.168.111.58，而路由器也认同了这个地址（添加入了路由表），可以正常上网了。不信来试试ping：
++++code
 ping 192.168.111.1
+---code
+运行结果：
+17.jpg
 </pre>
-
-<p>运行结果：</p>
-
-<p><img src="17.jpg"></p>
-
-							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>
