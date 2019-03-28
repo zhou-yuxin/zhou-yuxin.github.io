@@ -350,6 +350,152 @@ void sampler_deinit(struct sampler* sampler)
     kvm_put_kvm(kvm);
 }
 ---code
+里面依赖的common.h虽然多次给出实现，但是这次又有所扩展：
++++code
+#ifndef COMMON_H
+#define COMMON_H
+
+#ifndef __KERNEL__
+
+#ifdef NO_ASSERT
+#define assert(x)
+#else
+#include &lt;assert.h&gt;
+#endif
+
+#include &lt;errno.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdint.h&gt;
+
+#define ERROR0(ret, msg)                                                    \
+({                                                                          \
+    fprintf(stderr, "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+    fprintf(stderr, msg "\n");                                              \
+    return (ret);                                                           \
+})
+
+#define ERROR1(ret, msg, arg1)                                              \
+({                                                                          \
+    fprintf(stderr, "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+    fprintf(stderr, msg "\n", arg1);                                        \
+    return (ret);                                                           \
+})
+
+#define ERROR2(ret, msg, arg1, arg2)                                        \
+({                                                                          \
+    fprintf(stderr, "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+    fprintf(stderr, msg "\n", arg1, arg2);                                  \
+    return (ret);                                                           \
+})
+
+#define ERROR3(ret, msg, arg1, arg2, arg3)                                  \
+({                                                                          \
+    fprintf(stderr, "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+    fprintf(stderr, msg "\n", arg1, arg2, arg3);                            \
+    return (ret);                                                           \
+})
+
+#define ERROR4(ret, msg, arg1, arg2, arg3, arg4)                            \
+({                                                                          \
+    fprintf(stderr, "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+    fprintf(stderr, msg "\n", arg1, arg2, arg3, arg4);                      \
+    return (ret);                                                           \
+})
+
+#define ERROR5(ret, msg, arg1, arg2, arg3, arg4, arg5)                      \
+({                                                                          \
+    fprintf(stderr, "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+    fprintf(stderr, msg "\n", arg1, arg2, arg3, arg4, arg5);                \
+    return (ret);                                                           \
+})
+
+#else
+
+#include &lt;linux/types.h&gt;
+#include &lt;linux/module.h&gt;
+
+#ifdef NO_ASSERT
+#define assert(x)
+#else
+#define assert(x)                                                           \
+({                                                                          \
+    if(!(x))                                                                \
+        panic("assert('%s')failed in %s: %d", #x, __FILE__, __LINE__);      \
+})
+#endif
+
+#define ERROR0(ret, msg)                                                    \
+({                                                                          \
+    printk(KERN_ERR "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+    printk(KERN_ERR msg "\n");                                              \
+    return (ret);                                                           \
+})
+
+#define ERROR1(ret, msg, arg1)                                              \
+({                                                                          \
+    printk(KERN_ERR "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+    printk(KERN_ERR msg "\n", arg1);                                        \
+    return (ret);                                                           \
+})
+
+#define ERROR2(ret, msg, arg1, arg2)                                        \
+({                                                                          \
+    printk(KERN_ERR "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+    printk(KERN_ERR msg "\n", arg1, arg2);                                  \
+    return (ret);                                                           \
+})
+
+#define ERROR3(ret, msg, arg1, arg2, arg3)                                  \
+({                                                                          \
+    printk(KERN_ERR "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+    printk(KERN_ERR msg "\n", arg1, arg2, arg3);                            \
+    return (ret);                                                           \
+})
+
+#define ERROR4(ret, msg, arg1, arg2, arg3, arg4)                            \
+({                                                                          \
+    printk(KERN_ERR "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+    printk(KERN_ERR msg "\n", arg1, arg2, arg3, arg4);                      \
+    return (ret);                                                           \
+})
+
+#define ERROR5(ret, msg, arg1, arg2, arg3, arg4, arg5)                      \
+({                                                                          \
+    printk(KERN_ERR "[&lt;%s&gt; @ %s: %d]: ", __FUNCTION__, __FILE__, __LINE__); \
+    printk(KERN_ERR msg "\n", arg1, arg2, arg3, arg4, arg5);                \
+    return (ret);                                                           \
+})
+
+#endif
+
+#ifndef likely
+#define likely(x)       __builtin_expect(!!(x), 1)
+#endif
+
+#ifndef unlikely
+#define unlikely(x)     __builtin_expect(!!(x), 0)
+#endif
+
+#ifndef MIN2
+#define MIN2(a, b)          \
+({                          \
+    typeof(a) x = (a);      \
+    typeof(b) y = (b);      \
+    x &lt; y ? x : y;          \
+})
+#endif
+
+#ifndef MAX2
+#define MAX2(a, b)          \
+({                          \
+    typeof(a) x = (a);      \
+    typeof(b) y = (b);      \
+    x &gt; y ? x : y;          \
+})
+#endif
+
+#endif
+---code
 这个sampler就是对这三篇博客的实现。不过，这个sampler需要对kernel做一个小小的修改。
 第一步，修改include/linux/kvm_host.h。找到struct kvm的定义，在其末尾增加如下字段：
 +++code

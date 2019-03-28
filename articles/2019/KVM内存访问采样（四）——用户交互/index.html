@@ -1,0 +1,356 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">KVM内存访问采样（四）——用户交互</pre>
+
+<pre id="content">
+就差与用户的交互了。首先需要定义各个命令。
+interact.h
++++code
+#ifndef INTERACT_H
+#define INTERACT_H
+
+#include "queue.h"
+#include "sampler.h"
+
+#include &lt;linux/fs.h&gt;
+
+#define INTERACT_CMD_INIT           1200
+#define INTERACT_CMD_SET_XWR        1201
+#define INTERACT_CMD_SET_FREQ       1202
+#define INTERACT_CMD_GET_MEMSLOTS   1203
+#define INTERACT_CMD_DEINIT         1204
+
+#define INTERACT_MAX_BUFFERED_SAMPLES   65536
+
+// the structure that a file-&gt;private_data points to
+struct interact
+{
+    struct semaphore file_lock; // make sure file operations are sequential
+    struct sampler sampler;     // core sampler
+    struct queue queue;         // queue to buffer samples
+    spinlock_t queue_lock;      // protect 'queue'
+};
+
+// the structure of a access sample
+struct interact_sample
+{
+    uint64_t gpa : 61;      // the Guest Physical Address
+    uint64_t xwr : 3;       // the 'or' bits of access type
+};
+
+// the argument of GET_MEMSLOTS command
+// Guest Physical Address (GPA) is mapped to Host Virtual Addess (HVA) by 'memory slots'
+// For example, a kvm instance has 3 memory slots:
+// |    GPA     |         HVA      |  pages  |
+// |         0  |  0x7f0000000000  |   1000  |
+// |  0x400000  |  0x7f0000800000  |  32768  |
+// |  0x900000  |  0x7f0001200000  |    160  |
+// so GPA = 0x412345 is in the second slot, and mapped to HVA = 0x7f0000812345
+struct interact_get_memslots
+{
+    struct interact_memslot
+    {
+        uint64_t gpa;       // the base GPA
+        uint64_t hva;       // the base HVA
+        size_t page_count;  // count of pages in the slot
+    }*
+    memslots;               // the array of slots (output)
+    size_t capacity;        // the max count of the array (input)
+    size_t count;           // the actual count of the array (output)
+};
+
+int interact_open(struct inode* inode, struct file* file);
+
+long interact_ioctl(struct file* file, unsigned int cmd, unsigned long arg);
+
+ssize_t interact_read(struct file* file, char* buffer, size_t capacity, loff_t* offset);
+
+int interact_release(struct inode* inode, struct file* file);
+
+#endif
+---code
+这次的命令少很多了。
+interact.c
++++code
+#include "common.h"
+#include "interact.h"
+
+static void* alloc_page_for_queue(void* privdata)
+{
+    return (void*)__get_free_page(GFP_ATOMIC);
+}
+
+static void free_page_for_queue(void* page, void* privdata)
+{
+    free_page((unsigned long)page);
+}
+
+int interact_open(struct inode* inode, struct file* file)
+{
+    int ret;
+    struct interact* interact;
+    assert(!file-&gt;private_data);
+    if(!(interact = kzalloc(sizeof(struct interact), GFP_KERNEL)))
+        ERROR0(-ENOMEM, "kzalloc(sizeof(struct interact), GFP_KERNEL) failed");
+    sema_init(&amp;(interact-&gt;file_lock), 1);
+    if((ret = queue_init(&amp;(interact-&gt;queue), sizeof(struct interact_sample), PAGE_SIZE,
+        alloc_page_for_queue, free_page_for_queue, NULL)))
+    {
+        kfree(interact);
+        ERROR0(ret, "queue_init(&amp;(interact-&gt;queue), ...) failed");
+    }
+    spin_lock_init(&amp;(interact-&gt;queue_lock));
+    assert(!interact-&gt;sampler.privdata);
+    assert(!file-&gt;private_data);
+    file-&gt;private_data = interact;
+    return 0;
+}
+
+static void on_ept_sample(unsigned long gpa, int xwr, void* privdata)
+{
+    struct interact* interact = privdata;
+    struct interact_sample* sample;
+    assert(interact);
+    if(!spin_trylock(&amp;(interact-&gt;queue_lock)))
+        return;
+    if(interact-&gt;queue.length &gt;= INTERACT_MAX_BUFFERED_SAMPLES ||
+        !(sample = queue_add(&amp;(interact-&gt;queue))))
+    {
+        spin_unlock(&amp;(interact-&gt;queue_lock));
+        return;
+    }
+    sample-&gt;gpa = gpa;
+    sample-&gt;xwr = xwr;
+    spin_unlock(&amp;(interact-&gt;queue_lock));
+}
+
+static int handle_cmd_init(struct interact* interact, pid_t pid)
+{
+    int ret;
+    if(interact-&gt;sampler.privdata)
+        ERROR0(-EINVAL, "this fd has been inited already");
+    if((ret = sampler_init(&amp;(interact-&gt;sampler), pid, on_ept_sample, interact)))
+    {
+        assert(!interact-&gt;sampler.privdata);
+        ERROR1(ret, "sampler_init(&amp;(interact-&gt;sampler), %d, ...) failed", pid);
+    }
+    assert(interact-&gt;sampler.privdata == interact);
+    return 0;
+}
+
+static int handle_cmd_set_xwr(struct interact* interact, int xwr)
+{
+    if(!interact-&gt;sampler.privdata)
+        ERROR0(-EINVAL, "this fd has not been inited yet");
+    sampler_set_xwr(&amp;(interact-&gt;sampler), xwr);
+    return 0;
+}
+
+static int handle_cmd_set_freq(struct interact* interact, unsigned long freq)
+{
+    if(!interact-&gt;sampler.privdata)
+        ERROR0(-EINVAL, "this fd has not been inited yet");
+    sampler_set_freq(&amp;(interact-&gt;sampler), freq);
+    return 0;
+}
+
+static int handle_cmd_get_memslots(struct interact* interact,
+    struct interact_get_memslots* __user param)
+{
+    struct kvm_memslots* kvm_memslots;
+    size_t slot_count;
+    struct interact_memslot* __user memslots;
+    if(!param)
+        ERROR0(-EINVAL, "param &lt;param = NULL&gt; is invalid");
+    if(!interact-&gt;sampler.privdata)
+        ERROR0(-EINVAL, "this fd has not been inited yet");
+    kvm_memslots = interact-&gt;sampler.kvm-&gt;memslots[0];
+    assert(kvm_memslots);
+    slot_count = kvm_memslots-&gt;used_slots;
+    if(copy_from_user(&amp;memslots, &amp;(param-&gt;memslots), sizeof(void*)))
+        ERROR1(-EIO, "copy_from_user(..., %p, sizeof(void*)) failed", &amp;(param-&gt;memslots));
+    if(memslots)
+    {
+        size_t i, capacity, count;
+        if(get_user(capacity, &amp;(param-&gt;capacity)))
+            ERROR1(-EIO, "get_user(..., %p) failed", &amp;(param-&gt;capacity));
+        count = MIN2(capacity, slot_count);
+        for(i = 0; i &lt; count; i++)
+        {
+            struct kvm_memory_slot* src = kvm_memslots-&gt;memslots + i;
+            struct interact_memslot* __user dst = memslots + i;
+            if(put_user(src-&gt;base_gfn &lt;&lt; PAGE_SHIFT, &amp;(dst-&gt;gpa)))
+                ERROR1(-EIO, "put_user(..., %p) failed", &amp;(dst-&gt;gpa));
+            if(put_user(src-&gt;userspace_addr, &amp;(dst-&gt;hva)))
+                ERROR1(-EIO, "put_user(..., %p) failed", &amp;(dst-&gt;hva));
+            if(put_user(src-&gt;npages, &amp;(dst-&gt;page_count)))
+                ERROR1(-EIO, "put_user(..., %p) failed", &amp;(dst-&gt;page_count));
+        }
+    }
+    if(put_user(slot_count, &amp;(param-&gt;count)))
+        ERROR1(-EIO, "put_user(..., %p) failed", &amp;(param-&gt;count));
+    return 0;
+}
+
+static int handle_cmd_deinit(struct interact* interact, int check)
+{
+    if(!interact-&gt;sampler.privdata)
+    {
+        if(check)
+            ERROR0(-EINVAL, "this fd has not been inited yet");
+        else
+            return 0;
+    }
+    sampler_deinit(&amp;(interact-&gt;sampler));
+    interact-&gt;sampler.privdata = NULL;
+    return 0;
+}
+
+long interact_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
+{
+    int ret;
+    struct interact* interact = file-&gt;private_data;
+    assert(interact);
+    down(&amp;(interact-&gt;file_lock));
+    if(cmd == INTERACT_CMD_INIT)
+        ret = handle_cmd_init(interact, (pid_t)arg);
+    else if(cmd == INTERACT_CMD_SET_XWR)
+        ret = handle_cmd_set_xwr(interact, (int)arg);
+    else if(cmd == INTERACT_CMD_SET_FREQ)
+        ret = handle_cmd_set_freq(interact, arg);
+    else if(cmd == INTERACT_CMD_GET_MEMSLOTS)
+        ret = handle_cmd_get_memslots(interact, (void*)arg);
+    else if(cmd == INTERACT_CMD_DEINIT)
+        ret = handle_cmd_deinit(interact, 1);
+    else
+    {
+        up(&amp;(interact-&gt;file_lock));
+        ERROR1(-EINVAL, "unknown command: %u\n", cmd);
+    }
+    up(&amp;(interact-&gt;file_lock));
+    return ret;
+}
+
+ssize_t interact_read(struct file* file, char* buffer, size_t capacity, loff_t* offset)
+{
+    struct interact* interact = file-&gt;private_data;
+    size_t size = 0;
+    if(!buffer)
+        return 0;
+    assert(interact);
+    down(&amp;(interact-&gt;file_lock));
+    while(size &lt; capacity)
+    {
+        struct interact_sample* sample;
+        spin_lock(&amp;(interact-&gt;queue_lock));
+        sample = queue_take(&amp;(interact-&gt;queue));
+        spin_unlock(&amp;(interact-&gt;queue_lock));
+        if(!sample)
+            break;
+        if(copy_to_user(buffer + size, sample, sizeof(struct interact_sample)))
+        {
+            up(&amp;(interact-&gt;file_lock));
+            ERROR1(-EIO, "copy_to_user(%p, sample, sizeof(struct interact_sample)) failed",
+                buffer + size);
+        }
+        size += sizeof(struct interact_sample);
+    }
+    up(&amp;(interact-&gt;file_lock));
+    return size;
+}
+
+int interact_release(struct inode* inode, struct file* file)
+{
+    struct interact* interact = file-&gt;private_data;
+    assert(interact);
+    handle_cmd_deinit(interact, 0);
+    queue_deinit(&amp;(interact-&gt;queue), NULL);
+    kfree(interact);
+    file-&gt;private_data = NULL;
+    return 0;
+}
+---code
+main.c
++++code
+#include "common.h"
+#include "interact.h"
+
+#include &lt;linux/fs.h&gt;
+#include &lt;linux/module.h&gt;
+#include &lt;linux/proc_fs.h&gt;
+
+#define MODULE_NAME     "kvm_ept_sampler"
+#define MODULE_PROT     0666
+
+static struct file_operations fops =
+{
+    .owner = THIS_MODULE,
+    .open = interact_open,
+    .unlocked_ioctl = interact_ioctl,
+    .read = interact_read,
+    .release = interact_release,
+};
+
+static int init(void)
+{
+    if(!proc_create(MODULE_NAME, MODULE_PROT, NULL, &amp;fops))
+        ERROR2(-EIO, "proc_create('%s', %x, NULL, &amp;fops) failed", MODULE_NAME, MODULE_PROT);
+    return 0;
+}
+
+static void cleanup(void)
+{
+    remove_proc_entry(MODULE_NAME, NULL);
+}
+
+module_init(init);
+module_exit(cleanup);
+
+MODULE_LICENSE("Dual BSD/GPL");
+---code
+Makefile
++++code
+
+obj-m := kvm_ept_sampler.o
+kvm_ept_sampler-objs := main.o interact.o sampler.o queue.o
+KERNEL_DIR := /lib/modules/$(shell uname -r)/build
+PWD := $(shell pwd)
+
+all:
+	make -C $(KERNEL_DIR) SUBDIRS=$(PWD) modules
+
+clean:
+	rm -rf *.o *.ko *.mod.c .*.cmd .cache.mk .tmp_versions Module.symvers modules.order
+
+.PHONY: clean
+---code
+另外，需要用到#HREF"../../2018/页热度监控工具pgheat（五）——基于页的队列queue/index.html"#-HREF1《页热度监控工具pgheat（五）——基于页的队列queue》#-HREF2中的qeueu.h和queue.c。
+把common.h、interact.h、interact.c、queue.h、queue.c、sampler.h、sampler.c、main.c和Makefile放在同一目录下，执行make，就能得到kvm_ept_sampler.ko。
++++code
+insmod kvm_ept_sampler.ko
+---code
+之后，会发现出现了/proc/kvm_ept_sampler这个设备文件。所有的操作都是基于这个文件的。典型的使用范例可以用以下代码演示（忽略了所有的错误检测）：
++++code
+int fd = open("/proc/kvm_etp_sampler", O_RDWR);  // open the module
+ioctl(fd, KVM_EPT_SAMPLER_CMD_INIT, pid);        // set the pid to sample
+ioctl(fd, KVM_EPT_SAMPLER_CMD_SET_XWR, xwr);     // set the access type to sample
+ioctl(fd, KVM_EPT_SAMPLER_CMD_SET_FREQ, freq);   // set the frequency to sample
+while(1)
+{
+    struct kvm_ept_sample samples[64];
+    ssize_t len = read(fd, samples, sizeof(samples));   // try to read the samples
+    if(len)
+    {
+        size_t count = len / sizeof(struct kvm_ept_sample);
+        for(int i = 0; i &lt; count; i++)          // print all the samples
+        {
+            struct kvm_ept_sample* sample = samples + i;
+            printf("gpa = %lx, wxr = %x\n", sample-&gt;gpa, sample-&gt;xwr);
+        }
+    }
+    else
+        sleep(1);   // wait for more samples
+}
+---code
+具体的API说明请看下一篇博客#HREF"../KVM内存访问采样（五）——使用示例/index.html"#-HREF1《KVM内存访问采样（五）——使用示例》#-HREF2。
+</pre>
