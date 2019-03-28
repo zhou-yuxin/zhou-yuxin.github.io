@@ -1,106 +1,64 @@
-﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>修改Teeworlds源码，实现自动瞄准（Aimbot）</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">修改Teeworlds源码，实现自动瞄准（Aimbot）</h1>
-							</header>
-							<div class="entry-content">
-							
-<p>Teeworlds是一个开源的网络射击游戏。既然开源，也就意味着他的代码可以修改，并重新编译。那么，实现各种外挂（其实修改源码的方式已经是内挂了）也就成为可能了。</p>
+﻿<script src="../../../style.js"></script>
 
-<p>这里先描述一下我的需求。我打游戏没有天赋，顾及移动的时候，就顾不了瞄准了。所以我希望电脑能够帮我自动瞄准。至于瞄准策略，那个是可以根据需求自己决定的。</p>
+<pre id="title">修改Teeworlds源码，实现自动瞄准（Aimbot）</pre>
 
-<p>在技术上，我需要知道哪些代码决定了游戏中我的枪口的方向，然后修改这些代码。当然，我的代码光光能控制枪口方向还是不够的，因为我需要一些基础数据来计算出枪口应该朝哪个方向。</p>
-
-<p>目前我采用最最基本的瞄准策略——始终瞄准距离我最近的敌人。在这个需求中，我就需要获取我自己的坐标和所有敌人的坐标，然后依次计算出距离，找出距离我最近的敌人。有了我自己的坐标和最近的敌人的坐标，那么枪口的方向就可以计算出来了。</p>
-
-<p>OK，开始吧。</p>
-
-<p>＝＝＝＝＝＝＝＝＝＝＝＝＝＝阶段一：熟悉编译过程＝＝＝＝＝＝＝＝＝＝＝＝＝</p>
-
-<p>我的编译环境是CentOS 5.5。</p>
-
-<p>首先，下载Teeworlds源码包并解压：<a href="http://downloads.teeworlds.com/teeworlds-0.6.2-source.tar.gz">teeworlds-0.6.2-source.tar.gz</a>：</p>
-
-<pre>
+<pre id="content">
+Teeworlds是一个开源的网络射击游戏。既然开源，也就意味着他的代码可以修改，并重新编译。那么，实现各种外挂（其实修改源码的方式已经是内挂了）也就成为可能了。
+这里先描述一下我的需求。我打游戏没有天赋，顾及移动的时候，就顾不了瞄准了。所以我希望电脑能够帮我自动瞄准。至于瞄准策略，那个是可以根据需求自己决定的。
+在技术上，我需要知道哪些代码决定了游戏中我的枪口的方向，然后修改这些代码。当然，我的代码光光能控制枪口方向还是不够的，因为我需要一些基础数据来计算出枪口应该朝哪个方向。
+目前我采用最最基本的瞄准策略——始终瞄准距离我最近的敌人。在这个需求中，我就需要获取我自己的坐标和所有敌人的坐标，然后依次计算出距离，找出距离我最近的敌人。有了我自己的坐标和最近的敌人的坐标，那么枪口的方向就可以计算出来了。
+OK，开始吧。
+＝＝＝＝＝＝＝＝＝＝＝＝＝＝阶段一：熟悉编译过程＝＝＝＝＝＝＝＝＝＝＝＝＝
+我的编译环境是CentOS 5.5。
+首先，下载Teeworlds源码包并解压：#HREF"http://downloads.teeworlds.com/teeworlds-0.6.2-source.tar.gz"#-HREF1teeworlds-0.6.2-source.tar.gz#-HREF2：
++++code
 cd ~
 wget http://downloads.teeworlds.com/teeworlds-0.6.2-source.tar.gz
 tar xvf teeworlds-0.6.2-source.tar.gz
-</pre>
-
-<p>由于Teeworlds的编译不同寻常，他是需要一个叫做bam的工具支持的。所以我们再去下载bam，然后源码编译bam：</p>
-
-<pre>
+---code
+由于Teeworlds的编译不同寻常，他是需要一个叫做bam的工具支持的。所以我们再去下载bam，然后源码编译bam：
++++code
 wget teeworlds.com/files/bam-0.4.0.zip
 unzip bam-0.4.0.zip
 cd bam-0.4.0
 sh make_unix.sh
-</pre>
-
-<p>片刻等待之后，bam就编译完了。</p>
-
-<p>为了方便接下来的操作，我把bam这个可执行文件复制到teeworlds-0.6.2-source这个目录下：</p>
-
-<pre>
+---code
+片刻等待之后，bam就编译完了。
+为了方便接下来的操作，我把bam这个可执行文件复制到teeworlds-0.6.2-source这个目录下：
++++code
 cp bam ../teeworlds-0.6.2-source/bam
-</pre>
-
-<p>现在就可以用bam来源码编译teeworlds了。在这个过程中，需要使用到python和SDL库，python在一般的linux上都有，但是必须要有hashlib这个库，在CentOS 5.5上默认是没有的，需要安装一下（较高版本的Ubuntu默认已经安装就不需了的要安装了）：</p>
-
-<pre>
+---code
+现在就可以用bam来源码编译teeworlds了。在这个过程中，需要使用到python和SDL库，python在一般的linux上都有，但是必须要有hashlib这个库，在CentOS 5.5上默认是没有的，需要安装一下（较高版本的Ubuntu默认已经安装就不需了的要安装了）：
++++code
 cd ~
 yum install python-devel
 wget https://pypi.python.org/packages/source/h/hashlib/hashlib-20081119.zip --no-check-certificate
 unzip hashlib-20081119.zip
 cd hashlib-20081119
 python setup.py install
-</pre>
-
-<p>现在来安装一下SDL库（较高版本的Ubuntu默认已经安装就不需了的要安装了）：</p>
-
-<pre>
+---code
+现在来安装一下SDL库（较高版本的Ubuntu默认已经安装就不需了的要安装了）：
++++code
 yum install SDL-devel
-</pre>
-
-<p>接下来就可以使用bam来编译了：</p>
-
-<pre>
+---code
+接下来就可以使用bam来编译了：
++++code
 cd ~/teeworlds-0.6.2-source
 ./bam client_release
-</pre>
-
-<p>片刻之后就编译完啦！此时有了一个teeworlds可执行文件，运行之试试：</p>
-
-<pre>
+---code
+片刻之后就编译完啦！此时有了一个teeworlds可执行文件，运行之试试：
++++code
 ./teeworlds
-</pre>
-
-<p>成功运行！是不是棒棒哒！</p>
-
-<p><img src="1.jpg"></p>
-
-<p>为了接下来调试方便，我们需要禁用teeworlds的全屏显示。在Settings ==&gt; Graphics 中取消 fullscreen，并且选择一个适当的分辨率，使得屏幕还有足够的空间可以查看调试信息。</p>
-
-<p><img src="2.jpg"></p>
-
-<p>好吧，我不得不承认这篇博客一会儿在CentOS 5.5上写的，一会儿是在Ubuntu 14.04上写的。不过所有命令肯定都能在CentOS 5.5上通过。至于Ubuntu，只是安装各种库的时候使用apt-get，库的名字不同，其他都是通用的。</p>
-
-<p>＝＝＝＝＝＝＝＝＝阶段二：得知子弹发射时机＝＝＝＝＝＝＝＝＝＝＝</p>
-
-<p>首先，在src/game目录下新建myhook.h和myhook.cpp两个文件，用来编写自己的代码。然后只要把自己的函数插入到原代码的某些位置就好了。</p>
-
-<p>通过研读源代码可以发现（研读的过程当然不容易啦），当有用户操作时，src/game/client/components/binds.cpp中的如下函数会被调用：</p>
-
-<pre>
+---code
+成功运行！是不是棒棒哒！
+1.jpg
+为了接下来调试方便，我们需要禁用teeworlds的全屏显示。在Settings ==&gt; Graphics 中取消 fullscreen，并且选择一个适当的分辨率，使得屏幕还有足够的空间可以查看调试信息。
+2.jpg
+好吧，我不得不承认这篇博客一会儿在CentOS 5.5上写的，一会儿是在Ubuntu 14.04上写的。不过所有命令肯定都能在CentOS 5.5上通过。至于Ubuntu，只是安装各种库的时候使用apt-get，库的名字不同，其他都是通用的。
+＝＝＝＝＝＝＝＝＝阶段二：得知子弹发射时机＝＝＝＝＝＝＝＝＝＝＝
+首先，在src/game目录下新建myhook.h和myhook.cpp两个文件，用来编写自己的代码。然后只要把自己的函数插入到原代码的某些位置就好了。
+通过研读源代码可以发现（研读的过程当然不容易啦），当有用户操作时，src/game/client/components/binds.cpp中的如下函数会被调用：
++++code
 bool CBinds::OnInput(IInput::CEvent e)
 {
     don't handle invalid events and keys that arn't set to anything
@@ -113,83 +71,63 @@ bool CBinds::OnInput(IInput::CEvent e)
     Console()-&gt;ExecuteLineStroked(Stroke, m_aaKeyBindings[e.m_Key]);
     return true;
 }
-</pre>
-
-<p>那么就把这个函数改为如下：</p>
-
-<pre>
+---code
+那么就把这个函数改为如下：
++++code
 bool CBinds::OnInput(IInput::CEvent e)
 {
     don't handle invalid events and keys that arn't set to anything
     if(e.m_Key &lt;= 0 || e.m_Key &gt;= KEY_LAST || m_aaKeyBindings[e.m_Key][0] == 0)
         return false;
-    <strong><span style="color: red;">myhook_on_input(m_aaKeyBindings[e.m_Key]);</span></strong>
+    #REDmyhook_on_input(m_aaKeyBindings[e.m_Key]);#-RED
     int Stroke = 0;
     if(e.m_Flags&amp;IInput::FLAG_PRESS)
         Stroke = 1;
     Console()-&gt;ExecuteLineStroked(Stroke, m_aaKeyBindings[e.m_Key]);
     return true;
 }
-</pre>
-
-<p>当然，需要在binds.cpp中引入头文件：</p>
-
-<pre>
+---code
+当然，需要在binds.cpp中引入头文件：
++++code
 #include &lt;game/myhook.h&gt;
-</pre>
-
-<p>然后在src/game/myhook.h中加入如下函数定义：</p>
-
-<pre>
+---code
+然后在src/game/myhook.h中加入如下函数定义：
++++code
 #ifndef MYHOOK_H
 #define MYHOOK_H
 
 void myhook_on_input(char* p_operation);
 
 #endif
-</pre>
-
-<p>并在src/game/myhook.cpp中加入如下函数实现：</p>
-
-<pre>
+---code
+并在src/game/myhook.cpp中加入如下函数实现：
++++code
 #include &lt;stdio.h&gt;
 
 void myhook_on_input(char* p_operation)
 {
     printf("myhook_on_input('%s')n",p_operation);
 }
-</pre>
-
-<p>好，重新编译！等等，忘记提醒一点了：teeworlds为了保持版本一致，每次编译时，都会对代码进行一次MD5运算，得出一个校验值，并且植入代码中。每次运行时，客户端都会发送校验码，与服务器上保存的值进行校对。只有匹配，才能进入游戏。而我们修改代码以后，校验码肯定不同了。所以我们需要伪造校验码～～校验码是由scrpits/cmd5.py这个python脚本生成的。</p>
-
-<p>打开scripts/cmd5.py这个文件，不管里面是啥代码，全部清空，写入这么两句就够了：</p>
-
-<pre>
+---code
+好，重新编译！等等，忘记提醒一点了：teeworlds为了保持版本一致，每次编译时，都会对代码进行一次MD5运算，得出一个校验值，并且植入代码中。每次运行时，客户端都会发送校验码，与服务器上保存的值进行校对。只有匹配，才能进入游戏。而我们修改代码以后，校验码肯定不同了。所以我们需要伪造校验码～～校验码是由scrpits/cmd5.py这个python脚本生成的。
+打开scripts/cmd5.py这个文件，不管里面是啥代码，全部清空，写入这么两句就够了：
++++code
 hash = "626fce9a778df4d4"
 print('#define GAME_NETVERSION_HASH "%s"' % hash)
-</pre>
-
-<p>现在可以编译并进入游戏：</p>
-
-<pre>
+---code
+现在可以编译并进入游戏：
++++code
 cd ~/teeworlds-0.6.2-source/
 ./bam client_release
 ./teeworlds
-</pre>
-
-<p>随便进一局游戏，左右移动、跳、放钩子、射击，看看控制台的输出：</p>
-
-<p><img src="3.jpg"></p>
-
-<p>现在我们已经能够得知所有用户操作的时机了！如果要得知子弹发射的时机，只需要判断传入的参数是不是字符串&#8221;+fire&#8221;即可～～</p>
-
-<p>===============阶段三：控制子弹发射方向================</p>
-
-<p>光光知道子弹什么时候发射了还不够，我们还得能够控制它！继续研读代码&#8230;&#8230;</p>
-
-<p>在src/game/client/components/controls.cpp中，找到如下函数：</p>
-
-<pre>
+---code
+随便进一局游戏，左右移动、跳、放钩子、射击，看看控制台的输出：
+3.jpg
+现在我们已经能够得知所有用户操作的时机了！如果要得知子弹发射的时机，只需要判断传入的参数是不是字符串&#8221;+fire&#8221;即可～～
+===============阶段三：控制子弹发射方向================
+光光知道子弹什么时候发射了还不够，我们还得能够控制它！继续研读代码&#8230;&#8230;
+在src/game/client/components/controls.cpp中，找到如下函数：
++++code
 int CControls::SnapInput(int *pData)
 {
     static int64 LastSendTime = 0;
@@ -279,11 +217,9 @@ int CControls::SnapInput(int *pData)
     mem_copy(pData, &amp;m_InputData, sizeof(m_InputData));
     return sizeof(m_InputData);
 }
-</pre>
-
-<p>把它改为：</p>
-
-<pre>
+---code
+把它改为：
++++code
 int CControls::SnapInput(int *pData)
 {
     static int64 LastSendTime = 0;
@@ -318,11 +254,11 @@ int CControls::SnapInput(int *pData)
     }
     else
     {
-        <strong><span style="color: red;">
+        #RED
         //m_InputData.m_TargetX = (int)m_MousePos.x;
         //m_InputData.m_TargetY = (int)m_MousePos.y;
         myhook_get_target(&amp;m_InputData.m_TargetX,&amp;m_InputData.m_TargetY,(int)m_MousePos.x,(int)m_MousePos.y);
-        </span></strong>
+        #-RED
         if(!m_InputData.m_TargetX &amp;&amp; !m_InputData.m_TargetY)
         {
             m_InputData.m_TargetX = 1;
@@ -375,47 +311,32 @@ int CControls::SnapInput(int *pData)
     mem_copy(pData, &amp;m_InputData, sizeof(m_InputData));
     return sizeof(m_InputData);
 }
-</pre>
-
-<p>当然，需要在controls.cpp中引入头文件：</p>
-
-<pre>
+---code
+当然，需要在controls.cpp中引入头文件：
++++code
 #include &lt;game/myhook.h&gt;
-</pre>
-
-<p>然后在src/game/myhook.h中加入如下函数定义：</p>
-
-<pre>
+---code
+然后在src/game/myhook.h中加入如下函数定义：
++++code
 void myhook_get_target(int* p_targetx,int* p_targety,int p_mousex,int p_mousey);
-</pre>
-
-<p>并在src/game/myhook.cpp中加入如下函数实现：</p>
-
-<pre>
+---code
+并在src/game/myhook.cpp中加入如下函数实现：
++++code
 void myhook_get_target(int* p_targetx,int* p_targety,int p_mousex,int p_mousey)
 {
     *p_targetx=1;
     *p_targety=-1;
 }
-</pre>
-
-<p>方向（也就是画面上枪口的位置），你发射的子弹和放出的钩子都是朝右上方45度角发射的，即代码中硬编码的(1,-1)向量。</p>
-
-<p><img src="4.jpg"></p>
-
-<p><img src="5.jpg"></p>
-
-<p>当然，你也可以写任何你希望的角度，方法就是myhook_get_target方法中设置*p_targetx和*p_targety的值。</p>
-
-<p>===================阶段三：获取所有玩家的信息=====================</p>
-
-<p>离我们的目标越来越近了。在实现我们的算法之前，还需要获得一样东西，那就是能够遍历所有玩家的信息，比如队伍、坐标等等。</p>
-
-<p>还是研读代码咯～</p>
-
-<p>首先在src/game/client/gameclient.cpp中找到函数：</p>
-
-<pre>
+---code
+方向（也就是画面上枪口的位置），你发射的子弹和放出的钩子都是朝右上方45度角发射的，即代码中硬编码的(1,-1)向量。
+4.jpg
+5.jpg
+当然，你也可以写任何你希望的角度，方法就是myhook_get_target方法中设置*p_targetx和*p_targety的值。
+===================阶段三：获取所有玩家的信息=====================
+离我们的目标越来越近了。在实现我们的算法之前，还需要获得一样东西，那就是能够遍历所有玩家的信息，比如队伍、坐标等等。
+还是研读代码咯～
+首先在src/game/client/gameclient.cpp中找到函数：
++++code
 void CGameClient::OnInit()
 {
     m_pGraphics = Kernel()-&gt;RequestInterface();
@@ -467,11 +388,9 @@ void CGameClient::OnInit()
 
     m_ServerMode = SERVERMODE_PURE;
 }
-</pre>
-
-<p>把它改为：</p>
-
-<pre>
+---code
+把它改为：
++++code
 void CGameClient::OnInit()
 {
     m_pGraphics = Kernel()-&gt;RequestInterface();
@@ -523,27 +442,19 @@ void CGameClient::OnInit()
 
     m_ServerMode = SERVERMODE_PURE;
 
-<strong><span style="color: red;">
-    myhook_on_init(m_aClients,&amp;(m_Snap.m_LocalClientID));</span></strong>
-
+    #REDmyhook_on_init(m_aClients,&amp;(m_Snap.m_LocalClientID));#-RED
 }
-</pre>
-
-<p>当然，需要在gameclient.cpp中引入头文件：</p>
-
-<pre>
+---code
+当然，需要在gameclient.cpp中引入头文件：
++++code
 #include &lt;game/myhook.h&gt;
-</pre>
-
-<p>然后在src/game/myhook.h中加入如下函数定义：</p>
-
-<pre>
+---code
+然后在src/game/myhook.h中加入如下函数定义：
++++code
 void myhook_on_init(CGameClient::CClientData* p_clients,int* p_myid);
-</pre>
-
-<p>并在src/game/myhook.cpp中加入如下函数实现：</p>
-
-<pre>
+---code
+并在src/game/myhook.cpp中加入如下函数实现：
++++code
 #include &lt;game/client/gameclient.h&gt;
 
 static CGameClient::CClientData* sg_clients=NULL;
@@ -554,19 +465,13 @@ void myhook_on_init(CGameClient::CClientData* p_clients,int* p_myid)
     sg_clients=p_clients;
     sg_myid=p_myid;
 }
-</pre>
-
-<p>其中sg_clients就是所有玩家数据的数组，而sg_myid就是我的数据在这个数组中的索引。</p>
-
-<p>====================阶段四：实现最终算法========================</p>
-
-<p>现在所有需要的数据都能得到手了，而且所有需要的时机都已经掌握了。myhook.h中的三个函数都插入了原代码中。接下来所有的代码只要在myhook.cpp中完成逻辑部分了。</p>
-
-<p>这个不废话了，直接上代码，代码写的很清晰，而且还有注释。</p>
-
-<p>首先是myhook.h：</p>
-
-<pre>
+---code
+其中sg_clients就是所有玩家数据的数组，而sg_myid就是我的数据在这个数组中的索引。
+====================阶段四：实现最终算法========================
+现在所有需要的数据都能得到手了，而且所有需要的时机都已经掌握了。myhook.h中的三个函数都插入了原代码中。接下来所有的代码只要在myhook.cpp中完成逻辑部分了。
+这个不废话了，直接上代码，代码写的很清晰，而且还有注释。
+首先是myhook.h：
++++code
 #ifndef MYHOOK_H
 #define MYHOOK_H
 
@@ -579,11 +484,9 @@ void myhook_on_input(char* p_operation);
 void myhook_get_target(int* p_targetx,int* p_targety,int p_mousex,int p_mousey);
 
 #endif
-</pre>
-
-<p>然后是myhook.cpp：</p>
-
-<pre>
+---code
+然后是myhook.cpp：
++++code
 #include &lt;stdio.h&gt;
 #include &lt;string.h&gt;
 #include &lt;float.h&gt;
@@ -701,31 +604,14 @@ void myhook_get_target(int* p_targetx,int* p_targety,int p_mousex,int p_mousey)
         *p_targety=p_mousey;
     }
 }
-</pre>
-
-<p>需要注意的一点是，其中判断了游戏的类型，是CTF模式还是DM模式，即，是分组对战还是大混战。</p>
-
-<p>OK，重新编译并进入游戏：</p>
-
-<pre>
+---code
+需要注意的一点是，其中判断了游戏的类型，是CTF模式还是DM模式，即，是分组对战还是大混战。
+OK，重新编译并进入游戏：
++++code
 cd ~/teeworlds-0.6.2-source/
 ./bam client_release
 ./teeworlds
-</pre>
-
-<p>你会得到惊喜的。发射子弹时，子弹的出射方向始终是最近的敌人，而其他的操作，如左、右、跳、放钩子，都一切正常。</p>
-
-<p>当然，罗嗦一句，子弹是有重力的，轨距会向下弯曲，所以如果要应用于实战中，还需要结合一些物理学知识，来修正一下目标。</p>
-							
-							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>
+---code
+你会得到惊喜的。发射子弹时，子弹的出射方向始终是最近的敌人，而其他的操作，如左、右、跳、放钩子，都一切正常。
+当然，罗嗦一句，子弹是有重力的，轨距会向下弯曲，所以如果要应用于实战中，还需要结合一些物理学知识，来修正一下目标。
+</pre>>

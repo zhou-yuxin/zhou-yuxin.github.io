@@ -10,12 +10,15 @@ function format_content(raw)
         [/#TBODY/g, "<tbody>"], [/#-TBODY/g, "</tbody>"],
         [/#TH/g, "<th>"], [/#-TH/g, "</th>"],
         [/#TR/g, "<tr>"], [/#-TR/g, "</tr>"],
-        [/#TD/g, "<td>"], [/#-TD/g, "</td>"]];
+        [/#TD/g, "<td>"], [/#-TD/g, "</td>"],
+        [/#UL/g, "<ul>"], [/#-UL/g, "</ul>"],
+        [/#OL/g, "<ol>"], [/#-OL/g, "</ol>"],
+        [/#LI/g, "<li>"], [/#-LI/g, "</li>"]];
     for(var i = 0; i < items.length; i++)
     {
         item = items[i];
         for(var j = 0; j < replace_map.length; j++)
-          item = item.replace(replace_map[j][0], replace_map[j][1]);
+            item = item.replace(replace_map[j][0], replace_map[j][1]);
         if(in_code)
         {
             if(item == "---code")
@@ -38,7 +41,12 @@ function format_content(raw)
                 in_code = true;
             }
             else
-                formated += "<p>" + item + "</p>";
+            {
+                if(item.startsWith("<"))
+                    formated += item;
+                else
+                    formated += "<p>" + item + "</p>";
+            }
         }
     }
     return formated;

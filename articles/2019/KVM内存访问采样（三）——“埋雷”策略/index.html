@@ -1,0 +1,410 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">KVM内存访问采样（三）——“埋雷”策略</pre>
+
+<pre id="content">
+现在就开始在EPT上“埋雷”和“踩雷”吧。过去在普通页表上埋雷（如#HREF"../../2018/页热度监控工具pgheat（一）——架构概述/index.html"#-HREF1《页热度监控工具pgheat（一）——架构概述》#-HREF2）的经历告诉我，在第四级页表上埋雷的开销太大了。这体现在两方面：
+#UL
+#LI我需要埋雷时，需要walk至第四级页表；#-LI
+#LI当CPU访问页表时，需要walk至第四级页表才会踩雷。#-LI
+#-UL
+其中第一条问题更加严重，因为之前我是使用了一个集合来存储所有已经爆雷的页号，第四级页表中，这个集合实在太大了。另外一个问题是，如果进程使用的是2M的巨页，那么我只能放弃埋雷。
+于是我想到，我能否只在第三级页表上埋雷。一个第三级页表控制2MB的空间，这个2MB空间里任何一个地址被访问，都会爆雷。这样有很多好处：
+#UL
+#LI只需要周期性地遍历第三级页表，由于第三级页表项少地多，所以埋雷开销很小；#-LI
+#LI当CPU查询页表时，只要walk至第三级，就能踩雷，所以踩雷开销为本来的75%；#-LI
+#LI天然地兼容4KB页和2MB巨页。#-LI
+#-UL
+那么是否真的是有利而无害呢？并不完全是。过去在第四级页表上埋雷时，CPU踩雷后，只是导致该4KB页不会再爆雷。而现在则会导致整个2MB范围都不会爆雷。那么，为了达到相同的爆雷频率，必须使得埋雷的间隔变得更短。当然，这也不是什么问题，因为在第三级上埋雷的开销本身就小很多。
+既然如此，那么在第二级页表，甚至第一级页表上埋雷，是否更有优势呢？假设我们在第一级页表上埋雷。第一级页表上，一个页表项控制512GB的空间。那么对于绝大多数程序而言，第一级页表上只有一个有效的页表项。当我们把该页表项的权限位清除之后，几乎立刻就会被爆雷（因为任何内存访问都会检测到第一级页表上有雷）。于是我们在爆雷后的很短的时延之后，就需要重新埋雷。那么这个时延要多短呢？假设我们预期的采样频率是10KHz，那么意味着在100us之后就需要重新埋雷。这样一个时间间隔，是不可能使用基于CPU tick的定时器实现的（定时器只能做到毫米级别的定时），只可能让CPU忙等。于是，就必须有一个CPU始终处于忙等状态，只为了每100us清除一个bit...何等的暴殄天物啊！
+因此，在第三级页表上埋雷就是一个恰到好处的折中——即可以使得埋雷、踩雷开销较低，又能让埋雷周期在毫米级别（可用定时器实现），而且兼容4KB页和2MB巨页。
+那么如何确定埋雷的时间间隔呢？这是通过PID算法实现的。假设用户预期的采样频率是10KHz，最初选定间隔是100ms，即每100ms遍历所有的第三级页表项，把权限位清空。如此操作一秒之后，统计得最近一秒内触发了6K次爆雷。既然低于预期，就必须缩短埋雷间隔。通过计算，发现预期值比实际值高了66.7%，那么就让间隔降低66.67% / 2 = 33.3%。当然，具体的系数可以微调。高于预期则反之。
+sampler.h
++++code
+#ifndef SAMPLER_H
+#define SAMPLER_H
+
+#include &lt;linux/timer.h&gt;
+#include &lt;linux/kvm_host.h&gt;
+
+// A sampler to sample memory access on EPT
+struct sampler
+{
+    struct kvm* kvm;            // the target KVM instance
+    uint64_t* ept_root;         // the pointer to EPT
+    uint64_t prot_mask;         // the mask to 'and' on EPT entry to set a landmine
+    unsigned long hz;           // the desired frequency to sample
+    struct timer_list timer;    // timmer to set landmines
+    struct                      // a PID algorithm to adjust the interval of 'timer'
+    {
+        unsigned long last_time;    // last timestamp
+        unsigned long triggers;     // count of triggered landmines from 'last_time' to now
+        unsigned long interval;     // the calculated interval for 'timer'
+    }
+    adapter;
+    void (*func_on_sample)(unsigned long gpa, int xwr, void* privdata); // called upon a sample
+    void* privdata;     // the private data passed to 'func_on_sample'
+};
+
+// init
+//  pid: the pid of the QEMU process using KVM
+//  function_on_sample: a function to be called back upon a sample
+//      gpa: the Guest Physical Address
+//      xwr: an 'or' bitmap of the access type. 'x' = execute, 'w' = write, 'r' = read
+//          e.g. xwr = 100b means this access is to fetch instructions
+//  privdata: the private data passed to 'func_on_sample'
+// return 0 when ok, or a negative error code
+int sampler_init(struct sampler* sampler, pid_t pid,
+    void (*func_on_sample)(unsigned long gpa, int xwr, void* privdata),
+    void* privdata);
+
+// set the type of accesses to be sampled
+//  xwr: an 'or' bitmap of the access type. 'x' = execute, 'w' = write, 'r' = read
+//      e.g. xwr = 110b means both fetchin instructions and writing should be sampled
+void sampler_set_xwr(struct sampler* sampler, int xwr);
+
+// set the frequency to sample
+//  hz: the frequency
+void sampler_set_freq(struct sampler* sampler, unsigned long hz);
+
+// deinit
+void sampler_deinit(struct sampler* sampler);
+
+#endif
+---code
+sampler.c
++++code
+#include "common.h"
+#include "sampler.h"
+
+#include &lt;linux/fdtable.h&gt;
+#include &lt;linux/version.h&gt;
+
+#define INTERVAL_DELTA(hz_delta)    ((hz_delta) / 1000)
+#define INIT_INTERVAL(hz)           (1000 * HZ / (hz))
+
+static int get_kvm_by_vpid(pid_t nr, struct kvm** kvmp)
+{
+    struct pid* pid;
+    struct task_struct* task;
+    struct files_struct* files;
+    int fd, max_fds;
+    struct kvm* kvm = NULL;
+    rcu_read_lock();
+    if(!(pid = find_vpid(nr)))
+    {
+        rcu_read_unlock();
+        ERROR1(-ESRCH, "no such process whose pid = %d", nr);
+    }
+    if(!(task = pid_task(pid, PIDTYPE_PID)))
+    {
+        rcu_read_unlock();
+        ERROR1(-ESRCH, "no such process whose pid = %d", nr);
+    }
+    files = task-&gt;files;
+    max_fds = files_fdtable(files)-&gt;max_fds;
+    for(fd = 0; fd &lt; max_fds; fd++)
+    {
+        struct file* file;
+        char buffer[32];
+        char* fname;
+        if(!(file = fcheck_files(files, fd)))
+            continue;
+        fname = d_path(&amp;(file-&gt;f_path), buffer, sizeof(buffer));
+        if(fname &lt; buffer || fname &gt;= buffer + sizeof(buffer))
+            continue;
+        if(strcmp(fname, "anon_inode:kvm-vm") == 0)
+        {
+            kvm = file-&gt;private_data;
+            assert(kvm);
+            kvm_get_kvm(kvm);
+            break;
+        }
+    }
+    rcu_read_unlock();
+    if(!kvm)
+        ERROR1(-EINVAL, "process (pid = %d) has no kvm", nr);
+    (*kvmp) = kvm;
+    return 0;
+}
+
+static int get_ept_root(struct kvm* kvm, uint64_t** rootp)
+{
+    uint64_t root = 0;
+    int i, vcpu_count = atomic_read(&amp;(kvm-&gt;online_vcpus));
+    for(i = 0; i &lt; vcpu_count; i++)
+    {
+        struct kvm_vcpu* vcpu = kvm_get_vcpu(kvm, i);
+        uint64_t root_of_vcpu;
+        if(!vcpu)
+            ERROR2(-ENXIO, "vcpu[%d] of process (pid = %d) is uncreated",
+                i, kvm-&gt;userspace_pid);
+#if LINUX_VERSION_CODE &gt;= KERNEL_VERSION(4, 20, 0)
+        root_of_vcpu = vcpu-&gt;arch.mmu-&gt;root_hpa;
+#else
+        root_of_vcpu = vcpu-&gt;arch.mmu.root_hpa;
+#endif
+        if(!root_of_vcpu)
+            ERROR1(-EINVAL, "vcpu[%d] is uninitialized", i);
+        if(!root)
+            root = root_of_vcpu;
+        else if(root != root_of_vcpu)
+            ERROR2(-EFAULT, "ept root of vcpu[%d] is %llx, different from other vcpus'",
+                i, root_of_vcpu);
+    }
+    (*rootp) = root ? (uint64_t*)__va(root) : NULL;
+    return 0;
+}
+
+static void update_interval(struct sampler* sampler)
+{
+    unsigned long current_time = jiffies, time_delta, hz, interval_delta;
+    assert(current_time &gt;= sampler-&gt;adapter.last_time);
+    time_delta = current_time - sampler-&gt;adapter.last_time;
+    if(time_delta &lt; HZ)
+        return;
+    hz = HZ * sampler-&gt;adapter.triggers / time_delta;
+    if(hz &lt; sampler-&gt;hz)
+    {
+        interval_delta = MAX2(INTERVAL_DELTA(sampler-&gt;hz - hz), 1);
+        if(sampler-&gt;adapter.interval &lt;= interval_delta)
+            sampler-&gt;adapter.interval = 1;
+        else
+            sampler-&gt;adapter.interval -= interval_delta;
+    }
+    else if(hz &gt; sampler-&gt;hz)
+    {
+        interval_delta = MAX2(INTERVAL_DELTA(hz - sampler-&gt;hz), 1);
+        sampler-&gt;adapter.interval += interval_delta;
+    }
+    sampler-&gt;adapter.last_time = current_time;
+    sampler-&gt;adapter.triggers = 0;
+}
+
+#define EPT_PUD_ROOT(pgd)                                       \
+({                                                              \
+    uint64_t pgd_val = (pgd);                                   \
+    uint64_t pud_root = pgd_val &amp; (uint64_t)0xfffffffff000;     \
+    pud_root ? (uint64_t*)__va(pud_root) : NULL;                \
+})
+
+#define EPT_PMD_ROOT(pud)                                       \
+({                                                              \
+    uint64_t pud_val = (pud);                                   \
+    uint64_t pmd_root = 0;                                      \
+    if(!(pud_val &amp; 0x80))                                       \
+        pmd_root = pud_val &amp; (uint64_t)0xfffffffff000;          \
+    pmd_root ? (uint64_t*)__va(pmd_root) : NULL;                \
+})
+
+#define EPT_WALK_TO_PMD(ept_root, action)                       \
+({                                                              \
+    uint64_t *pgds = (ept_root), *puds, *pmds, *pmdp;           \
+    int i, j, k;                                                \
+    for(i = 0; i &lt; 512; i++)                                    \
+    {                                                           \
+        if(!(puds = EPT_PUD_ROOT(pgds[i])))                     \
+            continue;                                           \
+        for(j = 0; j &lt; 512; j++)                                \
+        {                                                       \
+            if(!(pmds = EPT_PMD_ROOT(puds[j])))                 \
+                continue;                                       \
+            for(k = 0; k &lt; 512; k++)                            \
+            {                                                   \
+                pmdp = pmds + k;                                \
+                (action);                                       \
+            }                                                   \
+        }                                                       \
+    }                                                           \
+})
+
+static void set_landmine_on_ept(struct timer_list* timer)
+{
+    struct sampler* sampler = container_of(timer, struct sampler, timer);
+    uint64_t prot_mask = ~(sampler-&gt;prot_mask);
+    EPT_WALK_TO_PMD(sampler-&gt;ept_root,
+    ({
+        uint64_t pmd_val = (*pmdp);
+        if(pmd_val)
+            __sync_bool_compare_and_swap(pmdp, pmd_val, pmd_val &amp; prot_mask);
+    }));
+    update_interval(sampler);
+    sampler-&gt;timer.expires += sampler-&gt;adapter.interval;
+    add_timer(&amp;(sampler-&gt;timer));
+}
+
+#define EPT_PGD_INDEX(addr)     (((addr) &gt;&gt; 39) &amp; 0x1ff)
+#define EPT_PUD_INDEX(addr)     (((addr) &gt;&gt; 30) &amp; 0x1ff)
+#define EPT_PMD_INDEX(addr)     (((addr) &gt;&gt; 21) &amp; 0x1ff)
+
+#define EPT_VIOLATION_ACC_READ      (1 &lt;&lt; 0)
+#define EPT_VIOLATION_ACC_WRITE     (1 &lt;&lt; 1)
+#define EPT_VIOLATION_ACC_INSTR     (1 &lt;&lt; 2)
+#define EPT_VIOLATION_ACC_ALL       (EPT_VIOLATION_ACC_READ | EPT_VIOLATION_ACC_WRITE | \
+                                        EPT_VIOLATION_ACC_INSTR)
+
+#define EPT_PROT_READ   (1 &lt;&lt; 0)
+#define EPT_PROT_WRITE  (1 &lt;&lt; 1)
+#define EPT_PROT_EXEC   (1 &lt;&lt; 2)
+#define EPT_PROT_UEXEC  (1 &lt;&lt; 10)
+#define EPT_PROT_ALL    (EPT_PROT_READ | EPT_PROT_WRITE | EPT_PROT_EXEC | EPT_PROT_UEXEC)
+
+static int on_ept_sample(struct kvm* kvm, unsigned long gpa, unsigned long code)
+{
+    struct sampler* sampler = kvm-&gt;ept_sample_privdata;
+    uint64_t *pgds, *puds, *pmds, *pmdp, pmd_val;
+    if(!sampler)
+        return 0;
+    pgds = sampler-&gt;ept_root;
+    if(!(puds = EPT_PUD_ROOT(pgds[EPT_PGD_INDEX(gpa)])))
+        return 0;
+    if(!(pmds = EPT_PMD_ROOT(puds[EPT_PUD_INDEX(gpa)])))
+        return 0;
+    pmdp = pmds + EPT_PMD_INDEX(gpa);
+    pmd_val = (*pmdp);
+    if(!pmd_val)
+        return 0;
+    if((pmd_val &amp; EPT_PROT_ALL) == EPT_PROT_ALL)
+        return 0;
+    __sync_bool_compare_and_swap(pmdp, pmd_val, pmd_val | EPT_PROT_ALL);
+    __sync_fetch_and_add(&amp;(sampler-&gt;adapter.triggers), 1);
+    sampler-&gt;func_on_sample(gpa, code &amp; EPT_VIOLATION_ACC_ALL, sampler-&gt;privdata);
+    return 1;
+}
+
+int sampler_init(struct sampler* sampler, pid_t pid,
+    void (*func_on_sample)(unsigned long gpa, int xwr, void* privdata),
+    void* privdata)
+{
+    int ret;
+    struct kvm* kvm;
+    assert(sampler);
+    if(!(sampler-&gt;func_on_sample = func_on_sample))
+        ERROR0(-EINVAL, "param &lt;func_on_sample = NULL&gt; is invalid");
+    if((ret = get_kvm_by_vpid(pid, &amp;kvm)))
+        ERROR1(ret, "get_kvm_by_vpid(%d, &amp;kvm) failed", pid);
+    sampler-&gt;kvm = kvm;
+    if((ret = get_ept_root(kvm, &amp;(sampler-&gt;ept_root))))
+    {
+        kvm_put_kvm(kvm);
+        ERROR0(ret, "get_ept_root(kvm, &amp;(sampler-&gt;ept_root)) failed");
+    }
+    if(!__sync_bool_compare_and_swap(&amp;(kvm-&gt;on_ept_sample), NULL, on_ept_sample))
+    {
+        kvm_put_kvm(kvm);
+        ERROR1(-EIO, "kvm.on_ept_sample in process (pid = %d) has been occupied", pid);
+    }
+    wmb();
+    sampler-&gt;prot_mask = EPT_PROT_ALL;
+    sampler-&gt;hz = 0;
+    init_timer_key(&amp;(sampler-&gt;timer), set_landmine_on_ept, 0, NULL, NULL);
+    sampler-&gt;privdata = privdata;
+    wmb();
+    assert(!kvm-&gt;ept_sample_privdata);
+    kvm-&gt;ept_sample_privdata = sampler;
+    return 0;
+}
+
+void sampler_set_xwr(struct sampler* sampler, int xwr)
+{
+    assert(sampler);
+    if(xwr &amp; EPT_PROT_READ)
+        xwr = EPT_PROT_ALL;
+    sampler-&gt;prot_mask = xwr &amp; EPT_PROT_ALL;
+}
+
+void sampler_set_freq(struct sampler* sampler, unsigned long hz)
+{
+    assert(sampler);
+    if(sampler-&gt;hz == 0 &amp;&amp; hz != 0)
+    {
+        sampler-&gt;adapter.last_time = jiffies;
+        sampler-&gt;adapter.triggers = 0;
+        sampler-&gt;adapter.interval = INIT_INTERVAL(hz);
+        sampler-&gt;timer.expires = jiffies;
+        add_timer(&amp;(sampler-&gt;timer));
+    }
+    else if(sampler-&gt;hz != 0 &amp;&amp; hz == 0)
+        del_timer_sync(&amp;(sampler-&gt;timer));
+    sampler-&gt;hz = hz;
+}
+
+void sampler_deinit(struct sampler* sampler)
+{
+    struct kvm* kvm;
+    assert(sampler);
+    kvm = sampler-&gt;kvm;
+    assert(kvm);
+    assert(kvm-&gt;on_ept_sample == on_ept_sample);
+    assert(kvm-&gt;ept_sample_privdata == sampler);
+    kvm-&gt;ept_sample_privdata = NULL;
+    wmb();
+    kvm-&gt;on_ept_sample = NULL;
+    del_timer_sync(&amp;(sampler-&gt;timer));
+    EPT_WALK_TO_PMD(sampler-&gt;ept_root,
+    ({
+        uint64_t pmd_val = (*pmdp);
+        if(pmd_val)
+            __sync_bool_compare_and_swap(pmdp, pmd_val, pmd_val | EPT_PROT_ALL);
+    }));
+    kvm_put_kvm(kvm);
+}
+---code
+这个sampler就是对这三篇博客的实现。不过，这个sampler需要对kernel做一个小小的修改。
+第一步，修改include/linux/kvm_host.h。找到struct kvm的定义，在其末尾增加如下字段：
++++code
+#ifdef CONFIG_KVM_EPT_SAMPLE
+    int (*on_ept_sample)(struct kvm* kvm, unsigned long gpa, unsigned long code);
+    void* ept_sample_privdata;
+#endif
+---code
+第二步，修改arch/x86/kvm/vmx.c。找到如下函数，并增加红色的代码：
++++code
+static int handle_ept_violation(struct kvm_vcpu *vcpu)
+{
+    unsigned long exit_qualification;
+    gpa_t gpa;
+    u64 error_code;
+#RED#ifdef CONFIG_KVM_EPT_SAMPLE
+    struct kvm* kvm = vcpu-&gt;kvm;
+    typeof(kvm-&gt;on_ept_sample) on_ept_sample = kvm-&gt;on_ept_sample;
+    gpa = vmcs_read64(GUEST_PHYSICAL_ADDRESS);
+#endif#-RED
+
+    exit_qualification = vmcs_readl(EXIT_QUALIFICATION);
+
+#RED#ifdef CONFIG_KVM_EPT_SAMPLE
+    if(on_ept_sample &amp;&amp; on_ept_sample(kvm, (unsigned long)gpa, exit_qualification))
+        return 1;
+#endif#-RED
+    /*
+     * EPT violation happened while executing iret from NMI,
+     * "blocked by NMI" bit has to be set before next VM entry.
+     * There are errata that may cause this bit to not be set:
+     * AAK134, BY25.
+     */
+    if (!(to_vmx(vcpu)-&gt;idt_vectoring_info &amp; VECTORING_INFO_VALID_MASK) &amp;&amp;
+            enable_vnmi &amp;&amp;
+            (exit_qualification &amp; INTR_INFO_UNBLOCK_NMI))
+        vmcs_set_bits(GUEST_INTERRUPTIBILITY_INFO, GUEST_INTR_STATE_NMI);
+
+#RED#ifndef CONFIG_KVM_EPT_SAMPLE
+    gpa = vmcs_read64(GUEST_PHYSICAL_ADDRESS);
+#endif#-RED
+    trace_kvm_page_fault(gpa, exit_qualification);
+    //...
+---code
+第三步，修改arch/x86/kvm/Kconfig，在config KVM_INTEL段之后添加新的段：
++++code
+config KVM_EPT_SAMPLE
+     bool "KVM EPT memory access sample support"
+     depends on KVM_INTEL && X86_64
+     ---help---
+       Provides support for memory access sample of a KVM instance based on VT-x.
+---code
+在make menuconfig或者make config中
++++code
+CONFIG_KVM_EPT_SAMPLE=y
+---code
+即可。
+</pre>
