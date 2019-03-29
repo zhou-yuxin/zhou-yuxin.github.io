@@ -1,0 +1,158 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">KVM内存访问采样（五）——使用示例</pre>
+
+<pre id="content">
+有了这个/proc/kvm_ept_sampler之后，就可以写用户态进程对别的虚拟机采样了。首先，按照#HREF"../KVM内存访问采样（四）——用户交互/index.html"#-HREF1《KVM内存访问采样（四）——用户交互》#-HREF2中的interact.h，编写一个用户态的头文件kvm_ept_sampler.h：
++++code
+#ifndef KVM_EPT_SAMPLER_H
+#define KVM_EPT_SAMPLER_H
+
+#define KVM_EPT_SAMPLER_PATH                "/proc/kvm_ept_sampler"
+
+#define KVM_EPT_SAMPLER_CMD_INIT            1200
+#define KVM_EPT_SAMPLER_CMD_SET_XWR         1201
+#define KVM_EPT_SAMPLER_CMD_SET_FREQ        1202
+#define KVM_EPT_SAMPLER_CMD_GET_MEMSLOTS    1203
+#define KVM_EPT_SAMPLER_CMD_DEINIT          1204
+
+#include &lt;stdint.h&gt;
+
+// the structure of a sample
+struct kvm_ept_sampler_sample
+{
+    uint64_t gpa : 61;      // the Guest Physical Address
+    uint64_t xwr : 3;       // the 'or' bits of access type
+};
+
+// the structure of a memslot
+// Guest Physical Address (GPA) is mapped to Host Virtual Addess (HVA) by 'memory slots'
+// For example, a kvm instance has 3 memory slots:
+// |    GPA     |         HVA      |  pages  |
+// |         0  |  0x7f0000000000  |   1000  |
+// |  0x400000  |  0x7f0000800000  |  32768  |
+// |  0x900000  |  0x7f0001200000  |    160  |
+// so GPA = 0x412345 is in the second slot, and mapped to HVA = 0x7f0000812345
+struct kvm_ept_sampler_get_memslots
+{
+    struct kvm_ept_sampler_memslot
+    {
+        uint64_t gpa;       // the base GPA
+        uint64_t hva;       // the base HVA
+        size_t page_count;  // count of pages in the slot
+    }*
+    memslots;           // the array of slots
+    size_t capacity;    // the max count of the array
+    size_t count;       // the actual count of the array
+};
+
+#endif
+---code
+然后可以写一个很简单的小工具：
+main.c
++++code
+#include &lt;fcntl.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/ioctl.h&gt;
+
+#include "kvm_ept_sampler.h"
+
+int main(int argc, char* argv[])
+{
+    pid_t pid;
+    if(argc != 2 || sscanf(argv[1], "%d", &amp;pid) != 1)
+    {
+        printf("USAGE: %s &lt;pid&gt;\n", argv[0]);
+        return 1;
+    }
+    int fd = open(KVM_EPT_SAMPLER_PATH, O_RDWR);
+    if(fd &lt; 0)
+    {
+        perror("open() failed");
+        return 1;
+    }
+    // set pid
+    if(ioctl(fd, KVM_EPT_SAMPLER_CMD_INIT, pid) &lt; 0)
+    {
+        perror("ioctl(KVM_EPT_SAMPLER_CMD_INIT) failed");
+        return 1;
+    }
+    // set xwr, xwr = 6 means sampleing 'exec' and 'write'
+    if(ioctl(fd, KVM_EPT_SAMPLER_CMD_SET_XWR, 6) &lt; 0)
+    {
+        perror("ioctl(KVM_EPT_SAMPLER_CMD_SET_XWR) failed");
+        return 1;
+    }
+    // sample at 10000 Hz
+    if(ioctl(fd, KVM_EPT_SAMPLER_CMD_SET_FREQ, 10000) &lt; 0)
+    {
+        perror("ioctl(KVM_EPT_SAMPLER_CMD_SET_FREQ) failed");
+        return 1;
+    }
+    struct kvm_ept_sampler_memslot memslots[64];
+    struct kvm_ept_sampler_get_memslots get_memslots = 
+    {
+        .memslots = memslots,
+        .capacity = 64,
+        .count = 0,
+    };
+    // get all memory slots
+    if(ioctl(fd, KVM_EPT_SAMPLER_CMD_GET_MEMSLOTS, &amp;get_memslots) &lt; 0)
+    {
+        perror("ioctl(KVM_EPT_SAMPLER_CMD_GET_MEMSLOTS) failed");
+        return 1;
+    }
+    // print memory slots
+    for(size_t i = 0; i &lt; get_memslots.count; i++)
+        printf("memslot[%lu]: gpa: %lx, hva: %lx, count: %lu\n",
+            i, memslots[i].gpa, memslots[i].hva, memslots[i].page_count);
+    // read and print samples
+    while(1)
+    {
+        struct kvm_ept_sampler_sample samples[128];
+        ssize_t len = read(fd, samples, sizeof(samples));
+        if(len &lt; 0)
+        {
+            perror("read() failed");
+            return 1;
+        }
+        else if(len == 0)
+        {
+            usleep(10000);  // try again later
+            continue;
+        }
+        assert(len % sizeof(struct kvm_ept_sampler_sample) == 0);
+        size_t count = len / sizeof(struct kvm_ept_sampler_sample); // count of samples
+        for(size_t i = 0; i &lt; count; i++)
+        {
+            uint64_t gpa = samples[i].gpa;
+            uint64_t xwr = samples[i].xwr;
+            printf("%lx, %c%c%c\n",
+                gpa,
+                xwr &amp; 1 ? 'r' : '-',
+                xwr &amp; 2 ? 'w' : '-',
+                xwr &amp; 4 ? 'x' : '-');
+        }
+    }
+    return 0;
+}
+---code
+使用很简单的命令就能编译：
++++code
+gcc -std=gnu99 main.c -Wall -O2 -o print_samples
+---code
+这个工具接收一个参数pid，即目标QEMU进程的pid。然后以预期10KHz的频率对写和执行的内存访问进行采样，然后简单地打印出来。
+比如我启用一个QEMU-KVM，pid为9433，在虚拟机里跑redis-benchmark。然后启动我的小工具：
++++code
+./print_samples 9433
+---code
+1.png
+这里其实我一直有个困惑：我明明只采w和x，为什么有时r也会被采到？而且r会和w一起出现。按理说一条指令，要么读内存，要么写内存，难道还能既读又写？我后来想到了这么一条指令：
++++code
+XCHG
+---code
+对于某个内存变量还真的是既读又写。。。
+</pre>
