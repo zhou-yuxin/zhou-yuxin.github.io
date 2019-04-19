@@ -58,34 +58,34 @@ window.onload = function()
     var title = document.getElementById("title").innerText;
     var content = document.getElementById("content").innerText;
     var footer = "周语馨 from 南京大学 to 英特尔亚太研发有限公司<br>504849766@qq.com";
-    document.write('                                                                        \
-        <html>                                                                              \
-	        <head>                                                                            \
-		        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">             \
-            <title>' + title + '</title>                                                    \
-		        <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">   \
-	        </head>                                                                           \
-          <body class="post-template-default single single-post postid-14                   \
-            single-format-standard logged-in admin-bar single-author singular two-column    \
-            left-sidebar customize-support">                                                \
-		        <div id="page" class="hfeed">                                                   \
-  			      <div id="main">                                                               \
-		            <div id="primary">                                                          \
-			            <div id="content" role="main">	    	                                    \
-                    <article id="post-14" class="post-14 post type-post status-publish      \
-                      format-standard hentry category-18">                                  \
-					            <header class="entry-header">                                         \
-					              <h1 class="entry-title">' + title + '</h1>                          \
-					            </header>                                                             \
-                      <div class="entry-content">' + format_content(content) + '</div>      \
-                    </article>                                                              \
-                  </div>                                                                    \
-                </div>                                                                      \
-              </div>                                                                        \
-              <footer id="colophon" role="contentinfo">                                     \
-                <div id="site-generator">' + footer + '</div>                               \
-              </footer>                                                                     \
-            </div>                                                                          \
-          </body>                                                                           \
+    document.write('                                                                                \
+        <html>                                                                                      \
+            <head>                                                                                  \
+                <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">                 \
+                <title>' + title + '</title>                                                        \
+                <link rel="stylesheet" type="text/css" media="all" href="../../../style.css">       \
+            </head>                                                                                 \
+            <body class="post-template-default single single-post postid-14                         \
+                single-format-standard logged-in admin-bar single-author singular two-column        \
+                left-sidebar customize-support">                                                    \
+                <div id="page" class="hfeed">                                                       \
+                    <div id="main">                                                                 \
+                        <div id="primary">                                                          \
+                            <div id="content" role="main">                                          \
+                                <article id="post-14" class="post-14 post type-post status-publish  \
+                                    format-standard hentry category-18">                            \
+                                    <header class="entry-header">                                   \
+                                        <h1 class="entry-title">' + title + '</h1>                  \
+                                    </header>                                                       \
+                                    <div class="entry-content">' + format_content(content) + '</div>\
+                                </article>                                                          \
+                            </div>                                                                  \
+                        </div>                                                                      \
+                    </div>                                                                          \
+                    <footer id="colophon" role="contentinfo">                                       \
+                        <div id="site-generator">' + footer + '</div>                               \
+                    </footer>                                                                       \
+                </div>                                                                              \
+            </body>                                                                                 \
         </html>');
 }

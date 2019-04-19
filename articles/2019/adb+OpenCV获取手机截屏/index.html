@@ -1,0 +1,180 @@
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<script src="../../../style.js"></script>
+
+<pre id="title">adb+OpenCV获取手机截屏</pre>
+
+<pre id="content">
+最近需要开发一个麻将游戏的AI外挂。游戏运行在手机上。但是手机算力不够，因此AI需要运行在PC上。安卓手机与PC通信的基本方法就是使用adb工具，这样不需要手机端代码开发。使用adb shell的screencap子命令即可实现手机端的截屏。
+但是，网上绝大多数方案都是将截屏保存为手机端的图片，然后通过adb pull命令传输到PC上。我的程序获取截屏后会做一系列的图像处理。因此，如果截屏保存为文件，然后再读取文件，颇为“脱裤子放屁”。我需要的就是直接内存到内存的传输。
+我查看了adb shell screencap的说明：
+1.png
+发现如果不加文件名，那么就输出到stdout。那么我只要读取命令的stdout，就能够得到图片数据流。
+=================方案一：读取png格式的数据流===================
+如果加了-p参数，那么输出的数据流就是一个完整的png图片？为了验证，我在PC上执行了如下命令：
++++code
+adb shell screencap -p > test.png
+---code
+惊奇地发现，果然得到了一张屏幕截图（原图是1.3MB的很清晰的png图片，这里为了节约带宽，只用了处理后的jpg图片）：
+2.jpg
+于是，获取屏幕截图的方案就出来了：使用popen()执行“adb shell screencap -p”命令，命令的stdout的输出就是一个png格式的图片数据流了。这个图片数据流可以使用诸如libpng等库来解码。
+我获得的截图需要使用OpenCV做处理，所以我需要cv::Mat结构体。我这里就给出该函数：
+test.cpp
++++code
+#include &lt;errno.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;opencv2/opencv.hpp&gt;
+
+int captureScreen(cv::Mat* pmat)
+{
+    if(!pmat)
+    {
+        fprintf(stderr, &quot;param &lt;pmat = NULL&gt; is invalid\n&quot;);
+        return -EINVAL;
+    }
+    const char* cmd = &quot;adb shell screencap -p&quot;;
+    FILE* file = popen(cmd, &quot;r&quot;);
+    if(!file)
+    {
+        int err = errno;
+        fprintf(stderr, &quot;popen('%s', 'r') failed: %s\n&quot;, cmd, strerror(err));
+        return -err;
+    }
+    std::vector&lt;uint8_t&gt; bytes;
+    while(1)
+    {
+        uint8_t buffer[1024];
+        size_t read_len = fread(buffer, 1, sizeof(buffer), file);
+        if(read_len &gt; sizeof(buffer) || (read_len == 0 &amp;&amp; errno == EINVAL))
+        {
+            int err = errno;
+            pclose(file);
+            fprintf(stderr, &quot;fread(buffer, 1, %lu, file) failed: %s\n&quot;,
+                sizeof(buffer), strerror(err));
+            return -err;
+        }
+        if(read_len == 0)
+            break;
+        bytes.insert(bytes.end(), buffer, buffer + sizeof(buffer));
+    }
+    pclose(file);
+    if(bytes.size() == 0)
+    {
+        fprintf(stderr, &quot;0 bytes read, IO error\n&quot;);
+        return -EIO;
+    }
+    cv::imdecode(bytes, cv::IMREAD_UNCHANGED, pmat); // e.g. IMREAD_GRAYSCALE 
+    return 0;
+}
+
+int main()
+{
+    cv::Mat mat;
+    captureScreen(&amp;mat);
+    cv::imshow(&quot;show&quot;, mat);
+    cv::waitKey(0);
+    return 0;
+}
+---code
+编译命令如下：
++++code
+g++ test.cpp -o m `pkg-config opencv --libs --cflags opencv`
+---code
+对了，事先需要安装opencv：
++++code
+sudo apt install libopencv-dev
+---code
+=======================方案二：读取原始像素数据流=================
+那么如果不加-p参数呢？一开始我并不知道输出的会是什么格式。后来找到了screencap的源码：
+首先是读取数据：
+3.png
+然后是写出数据：
+4.png
+通过写出数据的那一部分，很明显可以看到，第一个4字节是图片宽度，第二个4字节是图片高度，第三个四字节是图片格式。我试着读取“adb shell screencap”的输出，发现果然，第一个4字节构成1080，第二个四字节构成2340，这正是我手机分辨率！后续的数据来自于/dev/graphics/fb0。通过查阅相关资料，得知其实是逐像素的ARGB数据（4字节）。那么在写出开头的12字节以后，应该继续写出1080*2340*4=10108800字节，也就是总共10108812字节。
+可是，事实上，我每次收到的都是10108816字节。后来我发现，不知为啥，我的开头其实有16字节。。。我为什么确信是“开头16字节”，而不是“开头12字节，结尾4字节”呢？因为如果开头当作12字节的化，所有像素都向后挪动了一格。。。
+另外，/dev/graphics/fb0里的数据都是小端格式，所以在PC机上不需要额外转换。
+源码如下：
+test.cpp
++++code
+#include &lt;errno.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;opencv2/opencv.hpp&gt;
+
+int captureScreen(cv::Mat* pmat)
+{
+    if(!pmat)
+    {
+        fprintf(stderr, &quot;param &lt;pmat = NULL&gt; is invalid\n&quot;);
+        return -EINVAL;
+    }
+    const char* cmd = &quot;adb shell screencap&quot;;
+    FILE* file = popen(cmd, &quot;r&quot;);
+    if(!file)
+    {
+        int err = errno;
+        fprintf(stderr, &quot;popen('%s', 'r') failed: %s\n&quot;, cmd, strerror(err));
+        return -err;
+    }
+    uint32_t width, height;
+    if(fread(&amp;width, 4, 1, file) != 1)
+    {
+        int err = errno;
+        pclose(file);
+        fprintf(stderr, &quot;fread(&amp;width, 4, 1, file) failed: %s\n&quot;, strerror(err));
+        return -err;
+    }
+    if(fread(&amp;height, 4, 1, file) != 1)
+    {
+        int err = errno;
+        pclose(file);
+        fprintf(stderr, &quot;fread(&amp;width, 4, 1, file) failed: %s\n&quot;, strerror(err));
+        return -err;
+    }
+    uint64_t info;
+    if(fread(&amp;info, 8, 1, file) != 1)
+    {
+        int err = errno;
+        pclose(file);
+        fprintf(stderr, &quot;fread(&amp;info, 8, 1, file) failed: %s\n&quot;, strerror(err));
+        return -err;
+    }
+    if(info != 1)
+    {
+        pclose(file);
+        fprintf(stderr, &quot;unsupported format: info = %lu\n&quot;, info);
+        return -EINVAL;
+    }
+    cv::Mat mat(height, width, CV_8UC4);
+    for(uint32_t y = 0; y &lt; height; y++)
+    {
+        uint32_t* row = mat.ptr&lt;uint32_t&gt;(y);
+        if(fread(row, 4, width, file) != width)
+        {
+            int err = errno;
+            pclose(file);
+            fprintf(stderr, &quot;fread(row, %u, 4, file) failed: %s\n&quot;,
+                width, strerror(err));
+            return -err;
+        }
+    }
+    assert(fgetc(file) &lt; 0);
+    pclose(file);
+    cv::cvtColor(mat, (*pmat), cv::COLOR_RGB2BGR);
+    return 0;
+}
+
+int main()
+{
+    cv::Mat mat;
+    captureScreen(&amp;mat);
+    cv::imshow(&quot;show&quot;, mat);
+    cv::waitKey(0);
+    return 0;
+}
+---code
+测试发现，明显是第一种方法快速！毕竟，第一种传输量只有1.3MB，第二种有10MB。传输量的巨大优势足以弥补png编解码带来的负担。而且，第二种方案需要依赖于/dev/graphics/fb0的编码方式，可扩展性不高。
+</pre>
