@@ -1,32 +1,15 @@
-﻿﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>STC12C520xAD系列单片机的ADC封装，像Arduino一样方便读引脚电压</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">STC12C520xAD系列单片机的ADC封装，像Arduino一样方便读引脚电压</h1>
-							</header>
-							<div class="entry-content">
+﻿﻿<script src="../../../style.js"></script>
 
+<pre id="title">STC12C520xAD系列单片机的ADC封装，像Arduino一样方便读引脚电压</pre>
 
-		<p>国产的STC单片机其实还是挺好用的，完全兼容51，价格低廉，而且因为是国产，所以有详细的中文文档！虽然我总是口头上再说要换STM32了，但是发现很多项目，51单片机绰绰有余，杀鸡焉用牛刀。虽然STM32性价比比51高很多，但是当性能都足以应付需求时，看的就不是性价比了，而是价格和开发难度。</p>
-
-<p>废话就不说了。我昨晚研究了一下STC12C5202AD的ADC功能，其实还是挺简单的，而且STC12C520xAD系列的单片机都是通用的，包括STC12C5201AD、STC12C5202AD、STC12C5203AD、STC12C5204AD、STC12C5205AD、STC12C5206AD和低电压版的STC12LE5201AD、STC12LE5202AD、STC12LE5203AD、STC12LE5204AD、STC12LE5205AD、STC12LE5206AD（写这么多其实只是为了以后搜索方便orz）。</p>
-
-<p>为了使用方便，还是借鉴了Arduino的那种方式，直接一个函数就行。</p>
-
-<p>====================阶段一：代码====================</p>
-
-<p>types.h</p>
-
-<pre>#ifndef TYPES_H
+<pre id="content">
+国产的STC单片机其实还是挺好用的，完全兼容51，价格低廉，而且因为是国产，所以有详细的中文文档！虽然我总是口头上再说要换STM32了，但是发现很多项目，51单片机绰绰有余，杀鸡焉用牛刀。虽然STM32性价比比51高很多，但是当性能都足以应付需求时，看的就不是性价比了，而是价格和开发难度。
+废话就不说了。我昨晚研究了一下STC12C5202AD的ADC功能，其实还是挺简单的，而且STC12C520xAD系列的单片机都是通用的，包括STC12C5201AD、STC12C5202AD、STC12C5203AD、STC12C5204AD、STC12C5205AD、STC12C5206AD和低电压版的STC12LE5201AD、STC12LE5202AD、STC12LE5203AD、STC12LE5204AD、STC12LE5205AD、STC12LE5206AD（写这么多其实只是为了以后搜索方便orz）。
+为了使用方便，还是借鉴了Arduino的那种方式，直接一个函数就行。
+====================阶段一：代码====================
+types.h
++++code
+#ifndef TYPES_H
 #define TYPES_H
 
 typedef char bool;
@@ -42,11 +25,10 @@ typedef unsigned long uint32;
 #define null 0
 
 #endif
-</pre>
-
-<p>ADC.h</p>
-
-<pre>/*
+---code
+ADC.h
++++code
+/*
 本文件定义了STC12C520xAD系列单片机ADC功能的库函数
 void analog_init()
 初始化ADC模块
@@ -64,11 +46,10 @@ void analog_init();
 uint8 analog_read(uint8 p_pin);
 
 #endif
-</pre>
-
-<p>ADC.c</p>
-
-<pre>/*
+---code
+ADC.c
++++code
+/*
 本文件实现了ADC.h中定义的函数
 如需修改ADC转换速率，请修改SPEED宏
 SPEED为1，则420个时钟周期转换一次
@@ -126,28 +107,6 @@ uint8 analog_read(uint8 p_pin)
     P1ASF=0;
     return ADC_RES;
 }
+---code
+在使用之前，需要调用analog_init()初始化ADC模块。如果使用最高速率&#8221;70个时钟周期转换一次&#8221;，那么在12Mhz晶振下采样频率可以高达170khz，比Arduino的10Khz快多了！
 </pre>
-
-<p>在使用之前，需要调用analog_init()初始化ADC模块。如果使用最高速率&#8221;70个时钟周期转换一次&#8221;，那么在12Mhz晶振下采样频率可以高达170khz，比Arduino的10Khz快多了！</p>
-
-<p>===================阶段二：硬件连接===================</p>
-
-<p>用作模拟输入的引脚，需要用一个RC电路来连接模拟电压源，如图：</p>
-
-<p><img src=""></p>
-
-<p>OK，就这些~</p>
-
-			
-﻿							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>

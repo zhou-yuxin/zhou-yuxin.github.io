@@ -1,41 +1,19 @@
-﻿﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>让51单片机也像Arduino那样方便灵活地读写引脚</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">让51单片机也像Arduino那样方便灵活地读写引脚</h1>
-							</header>
-							<div class="entry-content">
+﻿﻿<script src="../../../style.js"></script>
 
-<p>最新补充：使用<a href="../用C语言宏批量生成代码的思考与实现/index.html">《用C语言宏批量生成代码的思考与实现》</a>中发明的新方法，进一步精简了代码，大大提高了可维护性。新的代码附在最后，可以与老的代码对比。</p>
+<pre id="title">让51单片机也像Arduino那样方便灵活地读写引脚</pre>
 
-<p>===========================================================</p>
-
-<p>我相信很多Arduino初学者之所以被Arduino所吸引，很大一个原因就是被那对digitalWrite()和digitalRead()函数的方便灵活亮瞎眼的吧~</p>
-
-<p>不得不承认，这么两个小小的函数，真的非常好用！因为这样就可以动态地指定各个引脚的功能。换句话说，可以把引脚的确定推迟到运行阶段。</p>
-
-<p>而在传统的51单片机应用的开发过程中，往往在一个配置文件中通过sbit关键字事先确定好引脚，再进行开发，那么这些引脚在程序烧录进去以后就不能够再修改了。这种方式的灵活性很差，无法实现引脚的运行时的动态配置。其他的例子还有很多，不一一列举了。</p>
-
-<p>于是我想在51单片机上也实现这么一对函数，能够通过参数指定任意引脚的电平。</p>
-
-<p>一开始想到寄存器映射，因为如果能够把寄存器映射到某个内存地址上，那么就能通过指针来读写寄存器的值，而指针指向的位置又是可以动态修改的，不就能实现需求了吗？可惜的是，8051并没有寄存器映射这么高级的功能。</p>
-
-<p>后来在大神喵叔（一个超级厉害的大神，其实那个寄存器映射也是他想到的啦，我沾点光~PS：喵叔你要是看见的话不会生气的吧~）的点拨下茅塞顿开——<strong><span style="color: red;">既然不能用数据指针，那可以用函数指针啊！</span></strong>有多少个寄存器，就建多少对函数，特定的函数负责特定的寄存器的读或者写，然后通过参数来选择某个函数指针，不就能实现动态性了吗？</p>
-
-<p>废话不说了，直接上代码：</p>
-
-<p>这是dynamic_pin.h：</p>
-
-<pre>
+<pre id="content">
+最新补充：使用#HREF"../用C语言宏批量生成代码的思考与实现/index.html"#-HREF1《用C语言宏批量生成代码的思考与实现》#-HREF2中发明的新方法，进一步精简了代码，大大提高了可维护性。新的代码附在最后，可以与老的代码对比。
+===========================================================
+我相信很多Arduino初学者之所以被Arduino所吸引，很大一个原因就是被那对digitalWrite()和digitalRead()函数的方便灵活亮瞎眼的吧~
+不得不承认，这么两个小小的函数，真的非常好用！因为这样就可以动态地指定各个引脚的功能。换句话说，可以把引脚的确定推迟到运行阶段。
+而在传统的51单片机应用的开发过程中，往往在一个配置文件中通过sbit关键字事先确定好引脚，再进行开发，那么这些引脚在程序烧录进去以后就不能够再修改了。这种方式的灵活性很差，无法实现引脚的运行时的动态配置。其他的例子还有很多，不一一列举了。
+于是我想在51单片机上也实现这么一对函数，能够通过参数指定任意引脚的电平。
+一开始想到寄存器映射，因为如果能够把寄存器映射到某个内存地址上，那么就能通过指针来读写寄存器的值，而指针指向的位置又是可以动态修改的，不就能实现需求了吗？可惜的是，8051并没有寄存器映射这么高级的功能。
+后来在大神喵叔（一个超级厉害的大神，其实那个寄存器映射也是他想到的啦，我沾点光~PS：喵叔你要是看见的话不会生气的吧~）的点拨下茅塞顿开——#RED既然不能用数据指针，那可以用函数指针啊！#-RED有多少个寄存器，就建多少对函数，特定的函数负责特定的寄存器的读或者写，然后通过参数来选择某个函数指针，不就能实现动态性了吗？
+废话不说了，直接上代码：
+这是dynamic_pin.h：
++++code
 /*
 这个文件的作用是使得51单片机也能够动态的指定读写引脚
 类似于arduino中digitalWrite()和digitalRead()
@@ -56,11 +34,9 @@ void pin_write(uint8 p_port,uint8 p_pin,uint8 p_data);
 uint8 pin_read(uint8 p_port,uint8 p_pin);
 
 #endif
-</pre>
-
-<p>这是dynamic_pin.c</p>
-
-<pre>
+---code
+这是dynamic_pin.c
++++code
 /*
 dynamic_pin.h的实现
 void pin_write(uint8 p_port,uint8 p_pin,uint8 p_data)持有
@@ -141,11 +117,9 @@ uint8 pin_read(uint8 p_port,uint8 p_pin)
         return t_reader(p_pin);
     }
 }
-</pre>
-
-<p>用到的types.h：</p>
-
-<pre>
+---code
+用到的types.h：
++++code
 #ifndef TYPES_H
 #define TYPES_H
 
@@ -156,15 +130,13 @@ typedef int int16;
 typedef unsigned int uint16;
 
 #endif
-</pre>
-
-<p>这里使用了一个宏来定义某个port对应的读写函数，比如</p>
-
-<pre>DEFINE_PORT_FUNC(0)</pre>
-
-<p>展开后，就变成了</p>
-
-<pre>
+---code
+这里使用了一个宏来定义某个port对应的读写函数，比如
++++code
+DEFINE_PORT_FUNC(0)
+---code
+展开后，就变成了
++++code
 static void P0_write(uint8 p_pin,uint8 p_data)
 {
     if(p_data)
@@ -176,11 +148,9 @@ static uint8 P0_read(uint8 p_pin)
 {
     return (P0&gt;&gt;p_pin)&amp;1;
 }
-</pre>
-
-<p>之所以要这么写，是因为以后扩展或修改起来方便。如果是C++的话可以直接用函数模板，然而C没有，只能这样了，幸好能够实现~使用也很简单，比如我的一个小测试：</p>
-
-<pre>
+---code
+之所以要这么写，是因为以后扩展或修改起来方便。如果是C++的话可以直接用函数模板，然而C没有，只能这样了，幸好能够实现~使用也很简单，比如我的一个小测试：
++++code
 #include "dynamic_pin.h"
 
 void main()
@@ -191,23 +161,15 @@ void main()
         pin_write(1,7,t_data);
     }
 }
-</pre>
-
-<p>电路图如下：</p>
-
-<p><img src="1.jpg"></p>
-
-<p>运行之后，P1.7引脚上的电平会始终和P3.7上保持一致：</p>
-
-<p><img src="2.jpg"></p>
-
-<p>==========================最新补充============================</p>
-
-<p>dynamic_pin.c的实现使用了macro_loop.h头文件（详见<a href="../用C语言宏批量生成代码的思考与实现/index.html">《用C语言宏批量生成代码的思考与实现》</a>），</p>
-
-<p>新的实现如下：</p>
-
-<pre>
++++code
+电路图如下：
+1.jpg
+运行之后，P1.7引脚上的电平会始终和P3.7上保持一致：
+2.jpg
+==========================最新补充============================
+dynamic_pin.c的实现使用了macro_loop.h头文件（详见#HREF"../用C语言宏批量生成代码的思考与实现/index.html"#-HREF1《用C语言宏批量生成代码的思考与实现》#-HREF2），
+新的实现如下：
++++code
 /*
 dynamic_pin.h的实现
 void pin_write(uint8 p_port,uint8 p_pin,uint8 p_data)持有
@@ -278,11 +240,9 @@ uint8 pin_read(uint8 p_port,uint8 p_pin)
     if(p_port&lt;=PORT_END)
         return sg_readers[p_port](p_pin);
 }
-</pre>
-
-<p>不过，这种用函数指针的实现，编译后的代码体积过大。如果在乎这一点的话，可以用下面这个版本的代码：</p>
-
-<pre>
+---code
+不过，这种用函数指针的实现，编译后的代码体积过大。如果在乎这一点的话，可以用下面这个版本的代码：
++++code
 /*
 如需修改端口数，请只改PORT_END的宏定义
 PORT_END即最后一个port的编号，也就是port个数-1
@@ -326,17 +286,5 @@ uint8 pin_read(uint8 p_port,uint8 p_pin)
     #undef MACRO_LOOP_CMD
     return (t_value&gt;&gt;p_pin)&amp;1;
 }
+---code
 </pre>
-
-﻿							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>

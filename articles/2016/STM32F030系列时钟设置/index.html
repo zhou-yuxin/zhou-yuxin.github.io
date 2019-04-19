@@ -1,46 +1,22 @@
-﻿﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>STM32F030系列时钟设置</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">STM32F030系列时钟设置</h1>
-							</header>
-							<div class="entry-content">
+﻿﻿<script src="../../../style.js"></script>
 
+<pre id="title">STM32F030系列时钟设置</pre>
 
-<p>STM32为了低功耗做了很多很多的努力，其中很重要的一点就是，STM32的时钟能够非常灵活的控制，尽量让各个模块能够以满足需求的最低频率工作，以降低功耗。</p>
-
-<p>STM32可以有5个时钟源，分别是HSI（High Speed Internal Clock signal）、HSE（High Speed External Clock signal）、LSI（Low Speed Internal Clock signal）、LSE（Low Speed External Clock signal）和PLL（Phase-Locked Loop）。</p>
-
-<p>HSI与HSE可以互为替换，他们都是为系统提供时钟驱动信号，以维持系统运行。HSI是内部高速时钟信号，是一个内置的RC震荡电路，频率为8Mhz，但是由于是RC电路，受温度影响较大，不太准确。HSE是外部震荡电路，即外接的振荡源，通常是一个8Mhz的晶振，可以为系统提供准确的时钟。</p>
-
-<p>然而，通常HSI或HSE产生的时钟信号是不会直接驱动系统的，因为8Mhz的频率明显太低。于是，PLL出现了。PLL把HSI或者HSE产生的时钟信号的频率放大一定的倍数，然后再供给给系统核心使用，这样才能达到足够高的频率。</p>
-
-<p>所谓系统核心，包括CPU、总线、Flash、串口、I2C、ADC等把时钟信号当做驱动信号的组件。</p>
-
-<p>LSI和LSE也可以互为替换，他们的作用是提供计时功能。LSI是内部低速时钟信号，是一个内置的RC震荡电路，频率为40Khz，和HSI一样，它不一定准确。LSE是外部震荡电路，可以外接晶振源，通常是一个32.768KHz的晶振，为系统提供准确的时间。</p>
-
-<p>计时功能的使用者是看门狗、RTC时钟等用户时间。</p>
-
-<p>当然，他们之间也没有绝对的关系，他们复杂的关系如图：</p>
-
-<p><img src="1.jpg"></p>
-
-<p>我就直接举例说明了吧。</p>
-
-<p>假设我接了一个8Mhz的外部晶振，然后我想使用这个外部晶振作为PLL的输入源，然后PLL倍频5倍，输出40Mhz的时钟信号。AHB预分频器把这40Mhz（即HCLK）直接送到AHB总线上。而APB预分频器再把AHB输出的40Mhz进行4分频，输出10Mhz（即PCLK）到APB总线上。</p>
-
-<p>代码如下：</p>
-
-<pre>void rcc_init()
+<pre id="content">
+STM32为了低功耗做了很多很多的努力，其中很重要的一点就是，STM32的时钟能够非常灵活的控制，尽量让各个模块能够以满足需求的最低频率工作，以降低功耗。
+STM32可以有5个时钟源，分别是HSI（High Speed Internal Clock signal）、HSE（High Speed External Clock signal）、LSI（Low Speed Internal Clock signal）、LSE（Low Speed External Clock signal）和PLL（Phase-Locked Loop）。
+HSI与HSE可以互为替换，他们都是为系统提供时钟驱动信号，以维持系统运行。HSI是内部高速时钟信号，是一个内置的RC震荡电路，频率为8Mhz，但是由于是RC电路，受温度影响较大，不太准确。HSE是外部震荡电路，即外接的振荡源，通常是一个8Mhz的晶振，可以为系统提供准确的时钟。
+然而，通常HSI或HSE产生的时钟信号是不会直接驱动系统的，因为8Mhz的频率明显太低。于是，PLL出现了。PLL把HSI或者HSE产生的时钟信号的频率放大一定的倍数，然后再供给给系统核心使用，这样才能达到足够高的频率。
+所谓系统核心，包括CPU、总线、Flash、串口、I2C、ADC等把时钟信号当做驱动信号的组件。
+LSI和LSE也可以互为替换，他们的作用是提供计时功能。LSI是内部低速时钟信号，是一个内置的RC震荡电路，频率为40Khz，和HSI一样，它不一定准确。LSE是外部震荡电路，可以外接晶振源，通常是一个32.768KHz的晶振，为系统提供准确的时间。
+计时功能的使用者是看门狗、RTC时钟等用户时间。
+当然，他们之间也没有绝对的关系，他们复杂的关系如图：
+1.jpg
+我就直接举例说明了吧。
+假设我接了一个8Mhz的外部晶振，然后我想使用这个外部晶振作为PLL的输入源，然后PLL倍频5倍，输出40Mhz的时钟信号。AHB预分频器把这40Mhz（即HCLK）直接送到AHB总线上。而APB预分频器再把AHB输出的40Mhz进行4分频，输出10Mhz（即PCLK）到APB总线上。
+代码如下：
++++code
+void rcc_init()
 {
     //将RCC寄存器重新设置为默认值
     RCC_DeInit();
@@ -67,32 +43,15 @@
     RCC_SYSCLKConfig(RCC_SYSCLKSource_PLLCLK);
     //等待PLL被设置为系统时钟
     while(RCC_GetSYSCLKSource()!=0x08);
-}</pre>
-
-<p>此时CPU的时钟频率就是8Mhz*5=40Mhz，如果把</p>
-
-<pre>
+}
+---code
+此时CPU的时钟频率就是8Mhz*5=40Mhz，如果把
++++code
 RCC_PLLConfig(RCC_PLLSource_PREDIV1,RCC_PLLMul_5);
-</pre>
-
-<p>改为</p>
-
-<pre>
+---code
+改为
++++code
 RCC_PLLConfig(RCC_PLLSource_PREDIV1,RCC_PLLMul_4);
+---code
+那么CPU的时钟频率就是8Mhz*4=32Mhz了。
 </pre>
-
-<p>那么CPU的时钟频率就是8Mhz*4=32Mhz了。</p>
-
-			
-﻿							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>

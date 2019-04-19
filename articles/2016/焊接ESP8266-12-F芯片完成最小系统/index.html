@@ -1,64 +1,23 @@
-﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>焊接ESP8266-12-F芯片完成最小系统</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">焊接ESP8266-12-F芯片完成最小系统</h1>
-							</header>
-							<div class="entry-content">
+﻿<script src="../../../style.js"></script>
 
+<pre id="title">焊接ESP8266-12-F芯片完成最小系统</pre>
 
-		<p>ESP8266串口Wifi模块真心是个好东西，我之前都已经为他写了两篇博客<a href="../../2015/ESP8266串口Wifi模块固件烧写与激活/index.html">《ESP8266串口Wifi模块固件烧写与激活》</a>和<a href="../../2015/ESP8266串口Wifi模块的基本用法/index.html">《ESP8266串口Wifi模块的基本用法》</a>。</p>
-
-<p>但是这两篇，都是基于现成的“小黄板”，也就是学习用版，并不适合于做成产品。前几天花了200大洋从华强北商城买了一堆电子元件，准备好好折腾一番。其中就包括了ESP8266芯片，具体型号是ESP-12-F，长这个样子：</p>
-
-<p><img src="1.jpg"></p>
-
-<p>拿到手以后，面对这么多引脚还确实有些不知所措。幸好手头有一份官方资料<a href="http://pan.baidu.com/s/1mhj7HrE">ESP8266-12 WiFi模块用户手册V1.0.doc</a>（顺便把其他各个型号的资料都分享了<a href="http://pan.baidu.com/s/1jHqxtf4">ESP8266 WiFi模块用户手册V1.0.rar</a>）。</p>
-
-<p>由之前的两篇文章可以得知，如果只是用AT命令的话，只需要四个引脚就够了，分别是Vcc、GND、TXD和RXD。如果需要烧写固件，那么还需要一个模式选择引脚。</p>
-
-<p>在文档中可以找到ESP-12F的引脚图：</p>
-
-<p><img src="2.jpg"></p>
-
-<p>另有一张表介绍各个引脚的功能：</p>
-
-<p><img src="3.png"></p>
-
-<p>经过我一个下午的尝试，发现最简的接线方式如下：</p>
-
-<p><img src="4.jpg"></p>
-
-<p>红线接3.3V电源正极，黑线接地，蓝线接USB-TTL的RXD，黄线接USB-TTL的TXD。</p>
-
-<p>接好好的实物图如下（我焊接水平真的很烂）：</p>
-
-<p><img src="5.jpg"></p>
-
-<p>注意，使用时，模块的TXD要接USB-TTL的RXD，模块的RXD要接USB-TTL的TXD！</p>
-
-<p>OK，这样就能够使用AT命令啦！</p>
-
-<p>而如果需要烧写固件，那么把GPIO0拉低即可，烧写完悬空就能使用了。</p>
-			
-﻿							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>
+<pre id="content">
+ESP8266串口Wifi模块真心是个好东西，我之前都已经为他写了两篇博客#HREF"../../2015/ESP8266串口Wifi模块固件烧写与激活/index.html"#-HREF1《ESP8266串口Wifi模块固件烧写与激活》#-HREF2和#HREF"../../2015/ESP8266串口Wifi模块的基本用法/index.html"#-HREF1《ESP8266串口Wifi模块的基本用法》#-HREF2。
+但是这两篇，都是基于现成的“小黄板”，也就是学习用版，并不适合于做成产品。前几天花了200大洋从华强北商城买了一堆电子元件，准备好好折腾一番。其中就包括了ESP8266芯片，具体型号是ESP-12-F，长这个样子：
+1.jpg
+拿到手以后，面对这么多引脚还确实有些不知所措。幸好手头有一份官方资料#HREF"http://pan.baidu.com/s/1mhj7HrE"#-HREF1ESP8266-12 WiFi模块用户手册V1.0.doc#-HREF2（顺便把其他各个型号的资料都分享了#HREF"http://pan.baidu.com/s/1jHqxtf4"#-HREF1ESP8266 WiFi模块用户手册V1.0.rar#-HREF2）。
+由之前的两篇文章可以得知，如果只是用AT命令的话，只需要四个引脚就够了，分别是Vcc、GND、TXD和RXD。如果需要烧写固件，那么还需要一个模式选择引脚。
+在文档中可以找到ESP-12F的引脚图：
+2.jpg
+另有一张表介绍各个引脚的功能：
+3.png
+经过我一个下午的尝试，发现最简的接线方式如下：
+4.jpg
+红线接3.3V电源正极，黑线接地，蓝线接USB-TTL的RXD，黄线接USB-TTL的TXD。
+接好好的实物图如下（我焊接水平真的很烂）：
+5.jpg
+注意，使用时，模块的TXD要接USB-TTL的RXD，模块的RXD要接USB-TTL的TXD！
+OK，这样就能够使用AT命令啦！
+而如果需要烧写固件，那么把GPIO0拉低即可，烧写完悬空就能使用了。
+</pre>

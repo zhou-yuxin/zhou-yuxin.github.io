@@ -1,165 +1,82 @@
-﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>STM32初学之闪烁LED——以Cortex-M0核心的STM32F030F4P6为例</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">STM32初学之闪烁LED——以Cortex-M0核心的STM32F030F4P6为例</h1>
-							</header>
-							<div class="entry-content">
-
-<p>刚刚接触STM32，就被它超高的性价比所吸引了，真的如宣传的那样“花8位MCU的钱，买32位MCU的性能”。</p>
-
-<p>看看这个是我花10元买的STM32F030F4P6的板子：</p>
-
-<p><img src="1.jpg"></p>
-
-<p>比同价格的Arduino性能不知高多少倍，外设也好丰富！</p>
-
-<p>也正是因为STM32相对51单片机而言复杂的多，所以开发过程也复杂得多，包括开发环境搭建、建立工程、代码编写与下载调试，都变得复杂了。虽然现在事后想想其实也还好，但是一开始什么都不懂的时候，真的是不知所措，所以有必要记录一下。</p>
-
-<p>=====================阶段一：开发环境搭建=================</p>
-
-<p>还记得51单片机用的是什么开发环境吗？嗯，一般都是用的Keil uVision2，图标长这个样子：</p>
-
-<p><img src="2.jpg"></p>
-
-<p>界面长这个样子：</p>
-
-<p><img src="3.jpg"></p>
-
-<p>很亲切吧~好消息是，STM32的开发环境非常类似，用的是Keil uVision4或者Keil uVision5。我用的是Keil uVision5，图标长这样：</p>
-
-<p><img src="4.jpg"></p>
-
-<p>界面长这样：</p>
-
-<p><img src="5.jpg"></p>
-
-<p>菜单也基本一样。所以不会再感到陌生了吧~</p>
-
-<p>好了，那么就开始安装吧：</p>
-
-<p>（1）下载<a href="http://pan.baidu.com/s/1mgZwFNU">MDK511.exe</a>（MCU Development Kit 5.11，也叫做Keil MDK，MDK ARM等等），双击运行，一路按照提示安装：</p>
-
-<p><img src="6.jpg"></p>
-
-<p>（2）安装完MDK之后，会出现是否安装“KEIL &#8211; Tools By ARM”的对话框，如图：</p>
-
-<p><img src="7.jpg"></p>
-
-<p>果断选择安装；</p>
-
-<p>（3）安装完成~</p>
-
-<p>安装完成之后，会弹出”Pack Installer“窗口：</p>
-
-<p><img src="8.jpg"></p>
-
-<p>这个是用来配置各种器件库的。可以暂时不用理他，直接关闭，我们待会儿需要时会找出他来。</p>
-
-<p>=====================阶段二：配置器件库======================</p>
-
-<p>现在来说说刚刚弹出的器件库。在Keil uVision4及之前的版本中，软件自带了各种器件的资料、手册等。然而，随着五花八门的器件越来越多，MDK变得越来越大。另一方面，对于某个特定的开发者而言，大多数器件都是不会用到的。所以，自从Keil uVision5开始，器件改用在线下载的方式了。而管理器件的软件就是这个Pack Installer。</p>
-
-<p>打开Keil uVision5，点击下图中按钮来运行Pack Installer：</p>
-
-<p><img src="9.jpg"></p>
-
-<p>可以在右边的”Devices“标签页中找自己的型号。</p>
-
-<p>比如接下来我们会用到STM32F030F4P6，那么就在Devices标签中，找到STMicroelectronics =&gt; STM32F0 Series =&gt; STM32F030 =&gt; STM32F030F4，点击它：</p>
-
-<p><img src="10.jpg"></p>
-
-<p>选中之后，左边的Packs标签页下就出现了相关的资源，可以按需要点击”Install“：</p>
-
-<p><img src="11.jpg"></p>
-
-<p>由于Keil::STM32F0xx_DFP是必需的，所以我们安装之。IwIP可选可不选，无所谓，需要时再来装也不迟。</p>
-
-<p>至此，器件库也已经配置好了。</p>
-
-<p>========================阶段三：制作代码模板====================</p>
-
-<p>由于STM32比较复杂，有上百个寄存器，所以继续使用51单片机那样直接操作寄存器的编程方法显然力不从心了。于是，STM32官方就编写了一个庞大的函数库，这个函数库中的函数把对寄存器的操作封装了起来，让程序员可以从繁杂的寄存器操作中解放出来，提高了开发效率，也减少了出错的可能性。当然，这是以性能作为代价的。所以，初学者还是使用这个函数库来编程比较合适，而水平高了以后，可以逐渐接触直接操作寄存器的方式。</p>
-
-<p>这个函数库就叫做固件库。</p>
-
-<p>而代码模板呢，说白了就是一个最简工程，它由固件库、启动代码、中断函数组成。以后每当要新建一个工程，直接把代码模板复制一份，然后开始写用户自己的代码即可。</p>
-
-<p><strong>代码模板将在下文以压缩包的方式提供。</strong></p>
-
-<p>（1）在任意位置新建一个文件夹STM32F0_template，比如我的是D:STM32F0_template；</p>
-
-<p>（2）在STM32F0_template中新建如下文件夹：boot、interrupt、library、CMSIS和src；</p>
-
-<p>（3）将startup_stm32f0xx.s复制到boot目录下，这个是STM32F0系列的启动代码和中断向量表；</p>
-
-<p>（4）将stm32f0xx_it.h和stm32f0xx_it.c复制到interrupt目录，这个是中断函数相关代码；</p>
-
-<p>（5）把STM32F0xx_StdPeriph_Driver中的inc与src两个文件夹复制到library目录，这个是官方固件库；</p>
-
-<p>（6）把core_cm0.h、core_cm0plus.h、stm32f0xx.h、system_stm32f0xx.h和system_stm32f0xx.h复制到CMSIS目录；</p>
-
-<p>（7）把stm32f0xx_conf.h复制到src目录。</p>
-
-<p>至此，STM32F0xx系列的代码模板完成了。可以直接下载<a href="http://pan.baidu.com/s/1skeCnd7">STM32F0_template.zip</a>。</p>
-
-<p>=====================阶段四：创建工程=======================</p>
-
-<p>有了代码模板之后，就可以在此基础上创建工程的基本环境了。</p>
-
-<p>（1）新建一个文件夹D:STM32F030F4P6_blink，把代码模板中boot、interrupt、library、CMSIS和src五个文件夹复制进去；</p>
-
-<p>（2）打开Keil uVision5，菜单Project =&gt; New uVision Project，双击STM32F030F4P6_blink文件夹，工程名为blink，点击保存：</p>
-
-<p><img src="12.jpg"></p>
-
-<p>（3）之后会弹出窗口”Select Device for Target &#8216;Target 1&#8217;“，让你选择目标设备，我的板子是STM32F030F4P6，所以选择STMicroelectronice =&gt; STM32F0 Series =&gt; STM32F030 =&gt; STM32F030F4：</p>
-
-<p><img src="13.jpg"></p>
-
-<p>（4）接下来会弹出”Manage Run-Time Environment“窗口，不用管它，直接关闭：</p>
-
-<p><img src="14.jpg"></p>
-
-<p>（5）接下来生成了工程。在Target1上右击 =&gt; Manager Project Items，弹出窗口如下：</p>
-
-<p><img src="15.jpg"></p>
-
-<p>在Project Targets中重命名Target1为blink，在Groups中删除Source Group 1，并且新建boot、interrupt、library、CMSIS和src五个组，如图：</p>
-
-<p><img src="16.jpg"></p>
-
-<p>选中boot，点击Add Files，把D:STM32F030F4P6_blinkbootstartup_stm32f0xx.s添加入boot组中，同理，把interrupt目录下的stm32f0xx_it.c添加入interrupt组，把CMSIS目录下的system_stm32f0xx.c添加入CMSIS组，把library/src目录下的C文件添加入library组。最后结果如图：</p>
-
-<p><img src="17.jpg"></p>
-
-<p>注意，通常添加入组的文件都是C文件或者汇编文件，告诉工程管理器这些文件是需要编译的。头文件只是辅助编译的功能而已，所以通常不加入组（加入组也没有关系），但是必须要在项目中指定include path，否则编译可能找不到头文件。</p>
-
-<p>（6）指定include path。菜单Project =&gt; Options for Target &#8216;blink&#8217;：</p>
-
-<p><img src="18.jpg"></p>
-
-<p>在弹出的窗口中选中C/C++，并且在Include Paths中填写”.boot;.interrupt;.libraryinc;.CMSIS;.src“，也就是在那5个文件夹中搜索头文件：</p>
-
-<p><img src="19.jpg"></p>
-
-<p>至此，一个工程的基本框架就算搭建完了。</p>
-
-<p>======================阶段五：编写代码========================</p>
-
-<p>在src组新建main.c，然后贴入如下代码：</p>
-
-<pre>#include "stm32f0xx_conf.h"
+﻿<script src="../../../style.js"></script>
+
+<pre id="title">STM32初学之闪烁LED——以Cortex-M0核心的STM32F030F4P6为例</pre>
+
+<pre id="content">
+刚刚接触STM32，就被它超高的性价比所吸引了，真的如宣传的那样“花8位MCU的钱，买32位MCU的性能”。
+看看这个是我花10元买的STM32F030F4P6的板子：
+1.jpg
+比同价格的Arduino性能不知高多少倍，外设也好丰富！
+也正是因为STM32相对51单片机而言复杂的多，所以开发过程也复杂得多，包括开发环境搭建、建立工程、代码编写与下载调试，都变得复杂了。虽然现在事后想想其实也还好，但是一开始什么都不懂的时候，真的是不知所措，所以有必要记录一下。
+=====================阶段一：开发环境搭建=================
+还记得51单片机用的是什么开发环境吗？嗯，一般都是用的Keil uVision2，图标长这个样子：
+2.jpg
+界面长这个样子：
+3.jpg
+很亲切吧~好消息是，STM32的开发环境非常类似，用的是Keil uVision4或者Keil uVision5。我用的是Keil uVision5，图标长这样：
+4.jpg
+界面长这样：
+5.jpg
+菜单也基本一样。所以不会再感到陌生了吧~
+好了，那么就开始安装吧：
+（1）下载#HREF"http://pan.baidu.com/s/1mgZwFNU"#-HREF1MDK511.exe#-HREF2（MCU Development Kit 5.11，也叫做Keil MDK，MDK ARM等等），双击运行，一路按照提示安装：
+6.jpg
+（2）安装完MDK之后，会出现是否安装“KEIL &#8211; Tools By ARM”的对话框，如图：
+7.jpg
+果断选择安装；
+（3）安装完成~
+安装完成之后，会弹出”Pack Installer“窗口：
+8.jpg
+这个是用来配置各种器件库的。可以暂时不用理他，直接关闭，我们待会儿需要时会找出他来。
+=====================阶段二：配置器件库======================
+现在来说说刚刚弹出的器件库。在Keil uVision4及之前的版本中，软件自带了各种器件的资料、手册等。然而，随着五花八门的器件越来越多，MDK变得越来越大。另一方面，对于某个特定的开发者而言，大多数器件都是不会用到的。所以，自从Keil uVision5开始，器件改用在线下载的方式了。而管理器件的软件就是这个Pack Installer。
+打开Keil uVision5，点击下图中按钮来运行Pack Installer：
+9.jpg
+可以在右边的”Devices“标签页中找自己的型号。
+比如接下来我们会用到STM32F030F4P6，那么就在Devices标签中，找到STMicroelectronics =&gt; STM32F0 Series =&gt; STM32F030 =&gt; STM32F030F4，点击它：
+10.jpg
+选中之后，左边的Packs标签页下就出现了相关的资源，可以按需要点击”Install“：
+11.jpg
+由于Keil::STM32F0xx_DFP是必需的，所以我们安装之。IwIP可选可不选，无所谓，需要时再来装也不迟。
+至此，器件库也已经配置好了。
+========================阶段三：制作代码模板====================
+由于STM32比较复杂，有上百个寄存器，所以继续使用51单片机那样直接操作寄存器的编程方法显然力不从心了。于是，STM32官方就编写了一个庞大的函数库，这个函数库中的函数把对寄存器的操作封装了起来，让程序员可以从繁杂的寄存器操作中解放出来，提高了开发效率，也减少了出错的可能性。当然，这是以性能作为代价的。所以，初学者还是使用这个函数库来编程比较合适，而水平高了以后，可以逐渐接触直接操作寄存器的方式。
+这个函数库就叫做固件库。
+而代码模板呢，说白了就是一个最简工程，它由固件库、启动代码、中断函数组成。以后每当要新建一个工程，直接把代码模板复制一份，然后开始写用户自己的代码即可。
+代码模板将在下文以压缩包的方式提供。
+（1）在任意位置新建一个文件夹STM32F0_template，比如我的是D:STM32F0_template；
+（2）在STM32F0_template中新建如下文件夹：boot、interrupt、library、CMSIS和src；
+（3）将startup_stm32f0xx.s复制到boot目录下，这个是STM32F0系列的启动代码和中断向量表；
+（4）将stm32f0xx_it.h和stm32f0xx_it.c复制到interrupt目录，这个是中断函数相关代码；
+（5）把STM32F0xx_StdPeriph_Driver中的inc与src两个文件夹复制到library目录，这个是官方固件库；
+（6）把core_cm0.h、core_cm0plus.h、stm32f0xx.h、system_stm32f0xx.h和system_stm32f0xx.h复制到CMSIS目录；
+（7）把stm32f0xx_conf.h复制到src目录。
+至此，STM32F0xx系列的代码模板完成了。可以直接下载#HREF"http://pan.baidu.com/s/1skeCnd7"#-HREF1STM32F0_template.zip#-HREF2。
+=====================阶段四：创建工程=======================
+有了代码模板之后，就可以在此基础上创建工程的基本环境了。
+（1）新建一个文件夹D:STM32F030F4P6_blink，把代码模板中boot、interrupt、library、CMSIS和src五个文件夹复制进去；
+（2）打开Keil uVision5，菜单Project =&gt; New uVision Project，双击STM32F030F4P6_blink文件夹，工程名为blink，点击保存：
+12.jpg
+（3）之后会弹出窗口”Select Device for Target &#8216;Target 1&#8217;“，让你选择目标设备，我的板子是STM32F030F4P6，所以选择STMicroelectronice =&gt; STM32F0 Series =&gt; STM32F030 =&gt; STM32F030F4：
+13.jpg
+（4）接下来会弹出”Manage Run-Time Environment“窗口，不用管它，直接关闭：
+14.jpg
+（5）接下来生成了工程。在Target1上右击 =&gt; Manager Project Items，弹出窗口如下：
+15.jpg
+在Project Targets中重命名Target1为blink，在Groups中删除Source Group 1，并且新建boot、interrupt、library、CMSIS和src五个组，如图：
+16.jpg
+选中boot，点击Add Files，把D:STM32F030F4P6_blinkbootstartup_stm32f0xx.s添加入boot组中，同理，把interrupt目录下的stm32f0xx_it.c添加入interrupt组，把CMSIS目录下的system_stm32f0xx.c添加入CMSIS组，把library/src目录下的C文件添加入library组。最后结果如图：
+17.jpg
+注意，通常添加入组的文件都是C文件或者汇编文件，告诉工程管理器这些文件是需要编译的。头文件只是辅助编译的功能而已，所以通常不加入组（加入组也没有关系），但是必须要在项目中指定include path，否则编译可能找不到头文件。
+（6）指定include path。菜单Project =&gt; Options for Target &#8216;blink&#8217;：
+18.jpg
+在弹出的窗口中选中C/C++，并且在Include Paths中填写”.boot;.interrupt;.libraryinc;.CMSIS;.src“，也就是在那5个文件夹中搜索头文件：
+19.jpg
+至此，一个工程的基本框架就算搭建完了。
+======================阶段五：编写代码========================
+在src组新建main.c，然后贴入如下代码：
++++code
+#include "stm32f0xx_conf.h"
 
 #define LED_GPIO_CLK RCC_AHBPeriph_GPIOA
 #define LED_PORT GPIOA
@@ -203,101 +120,67 @@ int main()
         delay();
     }
 }
-</pre>
-
-<p>代码的讲解放到最后的附注中，现在先让代码跑起来，以快速获得成就感~</p>
-
-<p>菜单Project =&gt; Options for Target &#8216;blink&#8217;，</p>
-
-<p><img src="20.jpg"></p>
-
-<p>在弹出的对话框中选择”Output“标签页，勾选”Create HEX File“：</p>
-
-<p><img src="21.jpg"></p>
-
-<p>之后，点击Build按钮，编译项目：</p>
-
-<p><img src="22.jpg"></p>
-
-<p>成功结束后，会生成blink.hex文件：</p>
-
-<p><img src="23.jpg"></p>
-
-<p>这个hex文件就可以烧录到板子里去啦！</p>
-
-<p>=======================阶段六：烧录========================</p>
-
-<p>我喜欢用串口来下载程序，使用USB-TTL即可。连线如下：</p>
-
-<p><img src="24.jpg"></p>
-
-<p><strong>注意是3.3V，不要接到5V上去了！</strong></p>
-
-<p><img src="25.jpg"></p>
-
-<p>将USB-TTL插入电脑。</p>
-
-<p>板子的烧录可以使用官方提供的Flash Loader Demonstrator，不过个人不推荐，因为软件有很多bug，很容易卡死。可以使用国人自己开发的FlyMcu来烧录。</p>
-
-<p>双击运行<a href="http://pan.baidu.com/s/1kUzhxA3">FlyMcu.exe</a>，如果已经把USB-TTL插入了电脑的话，应该是能够直接搜索到串口的，比如我这里是COM3：</p>
-
-<p><img src="26.jpg"></p>
-
-<p>在“联机下载时的程序文件”中指定hex文件的路径，我的是“D:STM32F030F4P6_blinkblink.hex”，如图：</p>
-
-<p><img src="27.jpg"></p>
-
-<p>注意此时的STM32F030F4P6板子的BOOT0的跳线帽是拔掉的，也就是说BOOT0引脚悬空：</p>
-
-<p><img src="28.jpg"></p>
-
-<p>然后点击那个大大的按钮“开始编程”，眨眼间程序就烧录完了：</p>
-
-<p><img src="29.jpg"></p>
-
-<p>此时，断开STM32F030F4P6板子的电源，套上跳线帽，重新上电，会发现板子上的红色LED不停闪烁~~（好吧，不得不承认是由两张图合成的。。。）：</p>
-
-<p><img src="30.gif"></p>
-
-<p>在烧录阶段的最后要补充解释一下那个BOOT0引脚是怎么回事。</p>
-
-<p>STM32有三种启动方式：</p>
-
-<table>
-<tbody>
-<tr>
-<th>BOOT0</th>
-<th>BOOT1</th>
-<th>启动方式</th>
-</tr>
-<tr>
-<td>0</td>
-<td>x</td>
-<td>从FLASH启动，运行用户代码</td>
-</tr>
-<tr>
-<td>1</td>
-<td>0</td>
-<td>从ROM启动，运行厂商的启动程序（通常支持串口下载）</td>
-</tr>
-<tr>
-<td>1</td>
-<td>1</td>
-<td>从内置SRAM启动，通常用于调试</td>
-</tr>
-</tbody>
-</table>
-<p>由于SRAM中的数据或代码掉电丢失，而且现在电脑上有软件仿真，所以从内置SRAM启动的这种方式很少使用。于是，STM32F030F4P6这块板子设计的时候，就直接把CPU的BOOT1引脚接地（始终为0），板子上就没有BOOT1引脚了。而CPU的BOOT0引脚通过一个电阻上拉到电源。BOOT0和BOOT1的电路如图：</p>
-
-<p><img src="31.jpg"></p>
-
-<p>所以当把板子上的BOOT0悬空时，相当于BOOT0接高电平，于是可以串口下载程序，而当通过跳线帽接地时，就运行用户代码。</p>
-
-<p>=======================附注：代码讲解===================</p>
-
-<p>先从main函数讲起来：</p>
-
-<pre>int main()
+---code
+代码的讲解放到最后的附注中，现在先让代码跑起来，以快速获得成就感~
+菜单Project =&gt; Options for Target &#8216;blink&#8217;，
+20.jpg
+在弹出的对话框中选择”Output“标签页，勾选”Create HEX File“：
+21.jpg
+之后，点击Build按钮，编译项目：
+22.jpg
+成功结束后，会生成blink.hex文件：
+23.jpg
+这个hex文件就可以烧录到板子里去啦！
+=======================阶段六：烧录========================
+我喜欢用串口来下载程序，使用USB-TTL即可。连线如下：
+24.jpg
+注意是3.3V，不要接到5V上去了！
+25.jpg
+将USB-TTL插入电脑。
+板子的烧录可以使用官方提供的Flash Loader Demonstrator，不过个人不推荐，因为软件有很多bug，很容易卡死。可以使用国人自己开发的FlyMcu来烧录。
+双击运行#HREF"http://pan.baidu.com/s/1kUzhxA3"#-HREF1FlyMcu.exe#-HREF2，如果已经把USB-TTL插入了电脑的话，应该是能够直接搜索到串口的，比如我这里是COM3：
+26.jpg
+在“联机下载时的程序文件”中指定hex文件的路径，我的是“D:STM32F030F4P6_blinkblink.hex”，如图：
+27.jpg
+注意此时的STM32F030F4P6板子的BOOT0的跳线帽是拔掉的，也就是说BOOT0引脚悬空：
+28.jpg
+然后点击那个大大的按钮“开始编程”，眨眼间程序就烧录完了：
+29.jpg
+此时，断开STM32F030F4P6板子的电源，套上跳线帽，重新上电，会发现板子上的红色LED不停闪烁~~（好吧，不得不承认是由两张图合成的。。。）：
+30.gif
+在烧录阶段的最后要补充解释一下那个BOOT0引脚是怎么回事。
+STM32有三种启动方式：
+#TABLE
+#TBODY
+#TR
+#THBOOT0#-TH
+#THBOOT1#-TH
+#TH启动方式#-TH
+#-TR
+#TR
+#TD0#-TD
+#TDx#-TD
+#TD从FLASH启动，运行用户代码#-TD
+#TR
+#TR
+#TD1#-TD
+#TD0#-TD
+#TD从ROM启动，运行厂商的启动程序（通常支持串口下载）#-TD
+#TR
+#TR
+#TD1#-TD
+#TD1#-TD
+#TD从内置SRAM启动，通常用于调试#-TD
+#TR
+#-TBODY
+#-TABLE
+由于SRAM中的数据或代码掉电丢失，而且现在电脑上有软件仿真，所以从内置SRAM启动的这种方式很少使用。于是，STM32F030F4P6这块板子设计的时候，就直接把CPU的BOOT1引脚接地（始终为0），板子上就没有BOOT1引脚了。而CPU的BOOT0引脚通过一个电阻上拉到电源。BOOT0和BOOT1的电路如图：
+31.jpg
+所以当把板子上的BOOT0悬空时，相当于BOOT0接高电平，于是可以串口下载程序，而当通过跳线帽接地时，就运行用户代码。
+=======================附注：代码讲解===================
+先从main函数讲起来：
++++code
+int main()
 {
     //初始化LED
     led_init();
@@ -313,24 +196,20 @@ int main()
         delay();
     }
 }
-</pre>
-
-<p>这个很简单~</p>
-
-<p>接下来是delay函数：</p>
-
-<pre>void delay()
+---code
+这个很简单~
+接下来是delay函数：
++++code
+void delay()
 {
     unsigned int i=0xFFFFF;
     while(i--);
 }
-</pre>
-
-<p>这个就更加简单了，那个0xFFFFF也是随便写的一个数字。。。；</p>
-
-<p>然后是led_on和led_off两个函数：</p>
-
-<pre>void led_on()
+---code
+这个就更加简单了，那个0xFFFFF也是随便写的一个数字。。。；
+然后是led_on和led_off两个函数：
++++code
+void led_on()
 {
     GPIO_SetBits(LED_PORT,LED_PIN);
 }
@@ -339,26 +218,18 @@ void led_off()
 {
     GPIO_ResetBits(LED_PORT,LED_PIN);
 }
-</pre>
-
-<p>GPIO_SetBits(port,pin)是STM32固件库里面的函数，作用是把指定端口的指定引脚置为1。GPIO_ResetBits(port,pin)也是STM32固件库里面的函数，作用是把指定端口的指定引脚置为0。port的取值可以是GPIOA、GPIOB、GPIOC等等，取决于具体型号的MCU所拥有的端口。而pin的意思就是某个端口的第几个引脚，一个端口最多有16个引脚。pin的取值可以是GPIO_Pin_0、GPIO_Pin_1、GPIO_Pin_2&#8230;.GPIO_Pin_15，取决于具体的端口。</p>
-
-<p>代码中定义</p>
-
-<pre>
+---code
+GPIO_SetBits(port,pin)是STM32固件库里面的函数，作用是把指定端口的指定引脚置为1。GPIO_ResetBits(port,pin)也是STM32固件库里面的函数，作用是把指定端口的指定引脚置为0。port的取值可以是GPIOA、GPIOB、GPIOC等等，取决于具体型号的MCU所拥有的端口。而pin的意思就是某个端口的第几个引脚，一个端口最多有16个引脚。pin的取值可以是GPIO_Pin_0、GPIO_Pin_1、GPIO_Pin_2&#8230;.GPIO_Pin_15，取决于具体的端口。
+代码中定义
++++code
 #define LED_PORT GPIOA
 #define LED_PIN GPIO_Pin_4
-</pre>
-
-<p>也就是说，led_on就是把PA4这个引脚置为1，led_off就是把PA4这个引脚置为0。为什么是这样呢？看电路图：</p>
-
-<p><img src="32.jpg"></p>
-
-<p>明白了吧。</p>
-
-<p>最后是最复杂的函数led_init：</p>
-
-<pre>
+---code
+也就是说，led_on就是把PA4这个引脚置为1，led_off就是把PA4这个引脚置为0。为什么是这样呢？看电路图：
+32.jpg
+明白了吧。
+最后是最复杂的函数led_init：
++++code
 #define LED_GPIO_CLK RCC_AHBPeriph_GPIOA
 #define LED_PORT GPIOA
 #define LED_PIN GPIO_Pin_4
@@ -379,39 +250,17 @@ void led_init()
     //以上述配置GPIO
     GPIO_Init(LED_PORT,&amp;t_gpio);
 }
-</pre>
-
-<p>首先要明白一个道理就是，所有的寄存器在读写时都是需要时钟驱动的。GPIO的操作本质上就是读写GPIO对应的寄存器，所以也是需要有时钟驱动的。这就是为什么有</p>
-
-<pre>
+---code
+首先要明白一个道理就是，所有的寄存器在读写时都是需要时钟驱动的。GPIO的操作本质上就是读写GPIO对应的寄存器，所以也是需要有时钟驱动的。这就是为什么有
++++code
 RCC_AHBPeriphClockCmd(LED_GPIO_CLK,ENABLE);
+---code
+这么一行代码的原因，它的作用就是开启GPIOA对应的时钟驱动电路。你可能会奇怪，为什么51单片机就不需要在使用GPIO之前开启时钟呢？这是因为51单片机默认所有寄存器都使用同一个时钟信号，而且一上电就全部开启了。这样做的后果就是51单片机的很多寄存器即使不使用，也会耗电，所以功耗降不下来。而STM32为了让用户更好地掌握功耗，对每个外设的时钟都设置了开关，让用户可以精确地控制，关闭不需要的设备，达到节省供电的目的。
+为什么是RCC_AHBPeriphClockCmd这个函数，而不是RCC_APB1PeriphClockCmd或者RCC_APB2PeriphClockCmd呢，这个要看内部结构图（截取一部分）：
+33.jpg
+GPIO是由AHB总线控制的。
+开启时钟之后，就可以配置GPIO了。这里又有两个知识点：
+（1）IO翻转速度。当STM32的GPIO端口设置为输出模式时，有三种速度可以选择：2MHz、10MHz和50MHz，这个速度是指I/O口驱动电路的响应速度，是用来选择不同的输出驱动模块，达到最佳的噪声控制和降低功耗的目的。高频的驱动电路，噪声也高，当你不需要高的输出频率时，请选用低频驱动电路，这样非常有利于提高系统的EMI性能。当然如果你要输出较高频率的信号，但却选用了较低频率的驱动模块，你很可能会得到失真的输出信号。
+（2）输出方式。普通的输出方式有两种，即推挽输出（GPIO_Mode_Out_PP）和开漏输出（GPIO_Mode_Out_OD）。在推挽输出模式下，当把引脚置为1，那么引脚就如同直接与电源连接，输出高电平，当把引脚置为0，那么引脚就如同直接与地连接，输出低电平。在开漏输出模式下，当把引脚置为1，那么引脚就悬空，呈高阻态，当把引脚置为0，那么引脚就如同直接与地连接，输出低电平。
+现在应该能理解led_init的作用了吧。
 </pre>
-
-<p>这么一行代码的原因，它的作用就是开启GPIOA对应的时钟驱动电路。你可能会奇怪，为什么51单片机就不需要在使用GPIO之前开启时钟呢？这是因为51单片机默认所有寄存器都使用同一个时钟信号，而且一上电就全部开启了。这样做的后果就是51单片机的很多寄存器即使不使用，也会耗电，所以功耗降不下来。而STM32为了让用户更好地掌握功耗，对每个外设的时钟都设置了开关，让用户可以精确地控制，关闭不需要的设备，达到节省供电的目的。</p>
-
-<p>为什么是RCC_AHBPeriphClockCmd这个函数，而不是RCC_APB1PeriphClockCmd或者RCC_APB2PeriphClockCmd呢，这个要看内部结构图（截取一部分）：</p>
-
-<p><img src="33.jpg"></p>
-
-<p>GPIO是由AHB总线控制的。</p>
-
-<p>开启时钟之后，就可以配置GPIO了。这里又有两个知识点：</p>
-
-<p>（1）IO翻转速度。当STM32的GPIO端口设置为输出模式时，有三种速度可以选择：2MHz、10MHz和50MHz，这个速度是指I/O口驱动电路的响应速度，是用来选择不同的输出驱动模块，达到最佳的噪声控制和降低功耗的目的。高频的驱动电路，噪声也高，当你不需要高的输出频率时，请选用低频驱动电路，这样非常有利于提高系统的EMI性能。当然如果你要输出较高频率的信号，但却选用了较低频率的驱动模块，你很可能会得到失真的输出信号。</p>
-
-<p>（2）输出方式。普通的输出方式有两种，即推挽输出（<span style="color: #000000;">GPIO_Mode_Out_PP</span>）和开漏输出（<span style="color: #000000;">GPIO_Mode_Out_OD</span>）。在推挽输出模式下，当把引脚置为1，那么引脚就如同直接与电源连接，输出高电平，当把引脚置为0，那么引脚就如同直接与地连接，输出低电平。在开漏输出模式下，当把引脚置为1，那么引脚就悬空，呈高阻态，当把引脚置为0，那么引脚就如同直接与地连接，输出低电平。</p>
-
-<p>现在应该能理解led_init的作用了吧。</p>
-
-							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>

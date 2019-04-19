@@ -1,52 +1,28 @@
-﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>为51单片机打造带接收缓冲区的串口（Buffered Uart）</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">为51单片机打造带接收缓冲区的串口（Buffered Uart）</h1>
-							</header>
-							<div class="entry-content">
+﻿<script src="../../../style.js"></script>
 
+<pre id="title">为51单片机打造带接收缓冲区的串口（Buffered Uart）</pre>
 
-		<p>51单片机自带一个硬件串口模块，引脚位于P3.0（RXD）与P3.1（TXD），使用还算方便，但是依旧有些不足：</p>
-
-<p>（1）串口的初始化比较复杂，要设置定时器，而定时器的值要手动计算；</p>
-
-<p>（2）串口没有接收缓冲区，每次只能接收一个字节，如果不及时处理收到的数据，那么数据就会丢失；</p>
-
-<p>我希望做一个模块，能够让51单片机的串口带上接收缓冲区的功能。在一个初始化函数中，可以方便的设置波特率和接收缓冲区。另外可以查询接收缓冲区中是否有数据，有则可以顺序读出。也可以发送数据，函数阻塞直到所有数据都发出（本来考虑过异步发送，但是现在发现很多场合还是需要同步发送）。</p>
-
-<p>缓冲区最主要的功能就是为串口提供了异步能力，能够让程序更加专注于业务逻辑，而不是频繁地处理串口中断，把代码搞得一塌糊涂。</p>
-
-<p>为了兼容各种常见的晶振频率，目前只支持这几个波特率：300、600、1200、2400、4800。</p>
-
-<p>在编译之前，请根据目标机器的晶振频率修改buffered_uart.c中CLK_FREQ_100HZ宏的值。CLK_FREQ_100HZ的值是晶振频率（单位是Hz）的百分之一。</p>
-
-<p>比如用的是12Mhz的晶振，那么就应该：</p>
-
-<pre>#define CLK_FREQ_100HZ 120000
-</pre>
-
-<p>如果用的是11.0592Mhz的晶振，那么就应该：</p>
-
-<pre>#define CLK_FREQ_100HZ 110592
-</pre>
-
-<p>另外，串口是需要使用timer1定时器和interrupt 4中断的！注意避免冲突！</p>
-
-<p>OK，直接上代码：</p>
-
-<p>buffered_uart.h：</p>
-
-<pre>/*
+<pre id="content">
+51单片机自带一个硬件串口模块，引脚位于P3.0（RXD）与P3.1（TXD），使用还算方便，但是依旧有些不足：
+（1）串口的初始化比较复杂，要设置定时器，而定时器的值要手动计算；
+（2）串口没有接收缓冲区，每次只能接收一个字节，如果不及时处理收到的数据，那么数据就会丢失；
+我希望做一个模块，能够让51单片机的串口带上接收缓冲区的功能。在一个初始化函数中，可以方便的设置波特率和接收缓冲区。另外可以查询接收缓冲区中是否有数据，有则可以顺序读出。也可以发送数据，函数阻塞直到所有数据都发出（本来考虑过异步发送，但是现在发现很多场合还是需要同步发送）。
+缓冲区最主要的功能就是为串口提供了异步能力，能够让程序更加专注于业务逻辑，而不是频繁地处理串口中断，把代码搞得一塌糊涂。
+为了兼容各种常见的晶振频率，目前只支持这几个波特率：300、600、1200、2400、4800。
+在编译之前，请根据目标机器的晶振频率修改buffered_uart.c中CLK_FREQ_100HZ宏的值。CLK_FREQ_100HZ的值是晶振频率（单位是Hz）的百分之一。
+比如用的是12Mhz的晶振，那么就应该：
++++code
+#define CLK_FREQ_100HZ 120000
+---code
+如果用的是11.0592Mhz的晶振，那么就应该：
++++code
+#define CLK_FREQ_100HZ 110592
+---code
+另外，串口是需要使用timer1定时器和interrupt 4中断的！注意避免冲突！
+OK，直接上代码：
+buffered_uart.h：
++++code
+/*
 该文件用来实现一个带有缓冲机制的串口
 定义了方法
 
@@ -97,11 +73,10 @@ void uart_print(char* p_string);
 void uart_println(char* p_string);
 
 #endif
-</pre>
-
-<p>buffered_uart.c</p>
-
-<pre>/*
+---code
+buffered_uart.c
++++code
+/*
 buffered_uart.h的实现文件
 请务必明确单片机的时钟频率，并相应修改CLK_FREQ_100HZ
 CLK_FREQ_100HZ是晶振频率的百分之一
@@ -254,11 +229,10 @@ void uart_println(char* p_string)
     uart_print(p_string);
     uart_print("rn");
 }
-</pre>
-
-<p>里面用到的types.h：</p>
-
-<pre>#ifndef TYPES_H
+---code
+里面用到的types.h：
++++code
+#ifndef TYPES_H
 #define TYPES_H
 
 typedef bit bool;
@@ -268,18 +242,5 @@ typedef int int16;
 typedef unsigned int uint16;
 
 #endif
+---code
 </pre>
-
-			
-﻿							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>

@@ -1,112 +1,84 @@
-﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>用C语言宏批量生成代码的思考与实现</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">用C语言宏批量生成代码的思考与实现</h1>
-							</header>
-							<div class="entry-content">
+﻿<script src="../../../style.js"></script>
 
+<pre id="title">用C语言宏批量生成代码的思考与实现</pre>
 
-		<p>=================阶段一：怎么用宏生成代码？====================</p>
-
-<p>在<a href="../让51单片机也像Arduino那样方便灵活地读写引脚/index.html">《让51单片机也像Arduino那样方便灵活地读写引脚》</a>一文中，我使用了C语言的宏来“模拟”C++中的代码模板，然后通过重复书写宏来批量生成代码。用一个简单的例子可以这么来示意：</p>
-
-<pre>//用宏定义一个变量声明语句
+<pre id="content">
+=================阶段一：怎么用宏生成代码？====================
+在#HREF"../让51单片机也像Arduino那样方便灵活地读写引脚/index.html"#-HREF1《让51单片机也像Arduino那样方便灵活地读写引脚》#-HREF2一文中，我使用了C语言的宏来“模拟”C++中的代码模板，然后通过重复书写宏来批量生成代码。用一个简单的例子可以这么来示意：
++++code
+//用宏定义一个变量声明语句
 #define DECLARE(n) int sqr_##n=n*n;
 //在需要的地方，可以用以上宏简单的定义变量
 DECLARE(0)
 DECLARE(1)
 DECLARE(2)
 DECLARE(3)
-DECLARE(4)</pre>
-
-<p>上面的代码，预编译之后，等效于：</p>
-
-<pre>int sqr_0=0*0;
+DECLARE(4)
+---code
+上面的代码，预编译之后，等效于：
++++code
+int sqr_0=0*0;
 int sqr_1=1*1;
 int sqr_2=2*2;
 int sqr_3=3*3;
-int sqr_4=4*4;</pre>
-
-<p>================阶段二：用宏生成代码好处都有啥？==================</p>
-
-<p>这个例子已经能够看出用宏来批量生成代码的好处了：</p>
-
-<p>（1）缩短代码篇幅：如果DECLARE(n)定义的是一个有多行的函数等大篇幅的内容，那么缩短代码篇幅的作用将会很明显；</p>
-
-<p>（2）可修改、可维护性提高：如果我需要修改声明语句的内容，那么只需要修改一处。</p>
-
-<p>但是，这依旧不能让我满意，因为我觉得可扩展性还不够。我希望能够在某个地方指定“循环次数”来进一步精简代码与提高可维护性。大概的构想是，是否可以这么写：</p>
-
-<pre>//这只是一个构想
+int sqr_4=4*4;
+---code
+================阶段二：用宏生成代码好处都有啥？==================
+这个例子已经能够看出用宏来批量生成代码的好处了：
+（1）缩短代码篇幅：如果DECLARE(n)定义的是一个有多行的函数等大篇幅的内容，那么缩短代码篇幅的作用将会很明显；
+（2）可修改、可维护性提高：如果我需要修改声明语句的内容，那么只需要修改一处。
+但是，这依旧不能让我满意，因为我觉得可扩展性还不够。我希望能够在某个地方指定“循环次数”来进一步精简代码与提高可维护性。大概的构想是，是否可以这么写：
++++code
+//这只是一个构想
 DECLARE_LOOP(4)
-</pre>
-
-<p>于是就被自动扩充成</p>
-
-<pre>DECLARE(0)
+---code
+于是就被自动扩充成
++++code
+DECLARE(0)
 DECLARE(1)
 DECLARE(2)
 DECLARE(3)
-DECLARE(4)</pre>
-
-<p>甚至连那个常数4也可以通过宏定义修改，类似于：</p>
-
-<pre>//这只是一个构想，不一定能够实现
+DECLARE(4)
+---code
+甚至连那个常数4也可以通过宏定义修改，类似于：
++++code
+//这只是一个构想，不一定能够实现
 
 #define LOOP_COUNT 4
 
 //someting
 DECLARE_LOOP(LOOP_COUNT)
-</pre>
-
-<p>如果能够这样做，那么好处是显而易见的。如果哪天我需要把“循环次数”改为5，那么就不需要到处添加DECLARE(5)，只需要改一下LOOP_COUNT即可。这样就能在一个地方集中控制，减少修改遗漏，大大降低代码的维护成本。</p>
-
-<p>==================阶段三：怎么实现呢？==================</p>
-
-<p>可喜的是，我做到了！然而可惜的是，实现有点难看，而且目前只能在Keil于VC++编译通过，在gcc（包括MinGW）上会报错（gcc上报错的原因待会儿解释）。中间的辛酸就不提了，直接看尝试过程。</p>
-
-<p>如果我定义这么一连串的宏：</p>
-
-<pre>#define LOOP_0 CMD(0)
+---code
+如果能够这样做，那么好处是显而易见的。如果哪天我需要把“循环次数”改为5，那么就不需要到处添加DECLARE(5)，只需要改一下LOOP_COUNT即可。这样就能在一个地方集中控制，减少修改遗漏，大大降低代码的维护成本。
+==================阶段三：怎么实现呢？==================
+可喜的是，我做到了！然而可惜的是，实现有点难看，而且目前只能在Keil于VC++编译通过，在gcc（包括MinGW）上会报错（gcc上报错的原因待会儿解释）。中间的辛酸就不提了，直接看尝试过程。
+如果我定义这么一连串的宏：
++++code
+#define LOOP_0 CMD(0)
 #define LOOP_1 LOOP_0 CMD(1)
 #define LOOP_2 LOOP_1 CMD(2)
 #define LOOP_3 LOOP_2 CMD(3)
-</pre>
-
-<p>那么当我写道：</p>
-
-<pre>LOOP_2
-</pre>
-
-<p>就会被扩展成为：</p>
-
-<pre>CMD(0) CMD(1) CMD(2)
-</pre>
-
-<p>而当我写道：</p>
-
-<pre>LOOP_3
-</pre>
-
-<p>就会被扩展成为：</p>
-
-<pre>CMD(0) CMD(1) CMD(2) CMD(3)
-</pre>
-
-<p>嘿，有点样子啦！这里面借助了宏的迭代，类似于函数的递归吧。<br />
-那么，如果我在写LOOP_3之前，先定义一下CMD(n)，会怎样呢？试试：</p>
-
-<pre>#define LOOP_0 CMD(0)
+---code
+那么当我写道：
++++code
+LOOP_2
+---code
+就会被扩展成为：
++++code
+CMD(0) CMD(1) CMD(2)
+---code
+而当我写道：
++++code
+LOOP_3
+---code
+就会被扩展成为：
++++code
+CMD(0) CMD(1) CMD(2) CMD(3)
+---code
+嘿，有点样子啦！这里面借助了宏的迭代，类似于函数的递归吧。
+那么，如果我在写LOOP_3之前，先定义一下CMD(n)，会怎样呢？试试：
++++code
+#define LOOP_0 CMD(0)
 #define LOOP_1 LOOP_0 CMD(1)
 #define LOOP_2 LOOP_1 CMD(2)
 #define LOOP_3 LOOP_2 CMD(3)
@@ -116,20 +88,18 @@ DECLARE_LOOP(LOOP_COUNT)
 #define CMD(n) DECLARE(n)
 
 LOOP_3
-</pre>
-
-<p>结果被扩展成了：</p>
-
-<pre> int sqr_0=0*0; int sqr_1=1*1; int sqr_2=2*2; int sqr_3=3*3;</pre>
-
-<p>太棒了！看来实现了我的要求，虽然是LOOP_3而不是LOOP(3)。LOOP_3的写法如果要改为LOOP(3)应该很容易呀，再增加一个定义不就OK：</p>
-
-<pre>#define LOOP(n) LOOP_##n
-</pre>
-
-<p>继续来试试：</p>
-
-<pre>#define LOOP_0 CMD(0)
+---code
+结果被扩展成了：
++++code
+int sqr_0=0*0; int sqr_1=1*1; int sqr_2=2*2; int sqr_3=3*3;
+---code
+太棒了！看来实现了我的要求，虽然是LOOP_3而不是LOOP(3)。LOOP_3的写法如果要改为LOOP(3)应该很容易呀，再增加一个定义不就OK：
++++code
+#define LOOP(n) LOOP_##n
+---code
+继续来试试：
++++code
+#define LOOP_0 CMD(0)
 #define LOOP_1 LOOP_0 CMD(1)
 #define LOOP_2 LOOP_1 CMD(2)
 #define LOOP_3 LOOP_2 CMD(3)
@@ -141,15 +111,14 @@ LOOP_3
 #define CMD(n) DECLARE(n)
 
 LOOP(3)
-</pre>
-
-<p>展开后的结果是：</p>
-
-<pre> int sqr_0=0*0; int sqr_1=1*1; int sqr_2=2*2; int sqr_3=3*3;</pre>
-
-<p>棒棒哒！离目标只差一步之遥啦，那个常数3，只要用一个宏定义不就能替换了嘛？试试呗：</p>
-
-<pre>#define LOOP_0 CMD(0)
+---code
+展开后的结果是：
++++code
+int sqr_0=0*0; int sqr_1=1*1; int sqr_2=2*2; int sqr_3=3*3;
+---code
+棒棒哒！离目标只差一步之遥啦，那个常数3，只要用一个宏定义不就能替换了嘛？试试呗：
++++code
+#define LOOP_0 CMD(0)
 #define LOOP_1 LOOP_0 CMD(1)
 #define LOOP_2 LOOP_1 CMD(2)
 #define LOOP_3 LOOP_2 CMD(3)
@@ -163,20 +132,16 @@ LOOP(3)
 #define LOOP_END 3
 
 LOOP(LOOP_END)
-</pre>
-
-<p>卧槽！怎么结果是这样：</p>
-
-<pre>LOOP_LOOP_END
-</pre>
-
-<p>后来查阅了宏定义的处理细节才知道，<strong><span style="color: red;">对于宏参数的处理，预处理器是先代入后替换的，而不是我希望的先替换后代入！</span></strong></p>
-
-<p>根据规则LOOP(n) =&gt; LOOP_##n，LOOP(LOOP_END)中的字面量“LOOP_END”直接被代入，变成了LOOP_LOOP_END，此时由于没有宏参数了，所以也就谈不上参数替换的事情了。然后预处理器去检查LOOP_LOOP_END是否还能继续展开。嗯，不能继续展开了（因为没有关于LOOP_LOOP_END的宏定义了），那么结束。</p>
-
-<p>那如何才能实现先替换后代入呢？借鉴了他人的思想成果，其实很简单啦，只要这么写：</p>
-
-<pre>#define LOOP_0 CMD(0)
+---code
+卧槽！怎么结果是这样：
++++code
+LOOP_LOOP_END
+---code
+后来查阅了宏定义的处理细节才知道，#RED对于宏参数的处理，预处理器是先代入后替换的，而不是我希望的先替换后代入！#-RED
+根据规则LOOP(n) =&gt; LOOP_##n，LOOP(LOOP_END)中的字面量“LOOP_END”直接被代入，变成了LOOP_LOOP_END，此时由于没有宏参数了，所以也就谈不上参数替换的事情了。然后预处理器去检查LOOP_LOOP_END是否还能继续展开。嗯，不能继续展开了（因为没有关于LOOP_LOOP_END的宏定义了），那么结束。
+那如何才能实现先替换后代入呢？借鉴了他人的思想成果，其实很简单啦，只要这么写：
++++code
+#define LOOP_0 CMD(0)
 #define LOOP_1 LOOP_0 CMD(1)
 #define LOOP_2 LOOP_1 CMD(2)
 #define LOOP_3 LOOP_2 CMD(3)
@@ -191,27 +156,20 @@ LOOP(LOOP_END)
 #define LOOP_END 3
 
 LOOP(LOOP_END)
-</pre>
-
-<p>结果就正确了！</p>
-
-<p>这是为啥？让我们来仔细分析一下这两句代码：</p>
-
-<pre>#define LOOP_HELPER(n) LOOP_##n
-#define LOOP(n) LOOP_HELPER(n)</pre>
-
-<p>当写道LOOP(LOOP_END)时，预处理根据规则LOOP(n) =&gt; LOOP_HELPER(n)，把字面量“LOOP_END”代入，于是展开成了LOOP_HELPER(LOOP_END)，现在轮到“替换”动作了，那么就是把LOOP_END替换成3，于是成了LOOP_HELPER(3)。好，第一轮迭代完成，接着预处理器检查是否有关LOOP_HELPER(n)的定义，发现有，于是根据规则LOOP_HELPER(n) =&gt; LOOP_##n，就把LOOP_HELPER(3)替换成LOOP_3，此时又轮到“替换”动作了，可是已经没有参数了，所以不管。而LOOP_3就按照递归方式一层层展开啦。</p>
-
-<p><strong><span style="color: red;"> 这里面一个最核心的思想就是，把{ [代入,替换] , [代入,替换] , [代入,替换] &#8230;., [代入,替换] }这样一个流程，看成是{ 代入 , [替换,代入] ,  [替换 , 代入] , [替换,代入] &#8230;&#8230;, [替换,代入] , 替换 }这个一个流程。所以，只要想办法跳过第一个“代入”，那么接下来就是我们想要的“先替换后代入”啦！<br />
-</span></strong></p>
-
-<p>==============阶段四：整理成一个头文件，方便使用==============</p>
-
-<p>OK，我们只需要封装成一个头文件，那么以后就能方便的使用宏来批量生成相似的代码啦！</p>
-
-<p>macro_loop.h</p>
-
-<pre>/*
+---code
+结果就正确了！
+这是为啥？让我们来仔细分析一下这两句代码：
++++code
+#define LOOP_HELPER(n) LOOP_##n
+#define LOOP(n) LOOP_HELPER(n)
+---code
+当写道LOOP(LOOP_END)时，预处理根据规则LOOP(n) =&gt; LOOP_HELPER(n)，把字面量“LOOP_END”代入，于是展开成了LOOP_HELPER(LOOP_END)，现在轮到“替换”动作了，那么就是把LOOP_END替换成3，于是成了LOOP_HELPER(3)。好，第一轮迭代完成，接着预处理器检查是否有关LOOP_HELPER(n)的定义，发现有，于是根据规则LOOP_HELPER(n) =&gt; LOOP_##n，就把LOOP_HELPER(3)替换成LOOP_3，此时又轮到“替换”动作了，可是已经没有参数了，所以不管。而LOOP_3就按照递归方式一层层展开啦。
+#RED这里面一个最核心的思想就是，把{ [代入,替换] , [代入,替换] , [代入,替换] &#8230;., [代入,替换] }这样一个流程，看成是{ 代入 , [替换,代入] ,  [替换 , 代入] , [替换,代入] &#8230;&#8230;, [替换,代入] , 替换 }这个一个流程。所以，只要想办法跳过第一个“代入”，那么接下来就是我们想要的“先替换后代入”啦！#-RED
+==============阶段四：整理成一个头文件，方便使用==============
+OK，我们只需要封装成一个头文件，那么以后就能方便的使用宏来批量生成相似的代码啦！
+macro_loop.h
++++code
+/*
 该文件能够实现用宏来批量生成代码
 使用方法举例：
 
@@ -499,11 +457,10 @@ MACRO_LOOP(MARCO_LOOP_X)
 #define MACRO_LOOP(n) MACRO_LOOP_HELPER(n)
 
 #endif
-</pre>
-
-<p>正如头文件里的说明一样，使用还是很简单的：</p>
-
-<pre>#include "macro_loop.h"
+---code
+正如头文件里的说明一样，使用还是很简单的：
++++code
+#include "macro_loop.h"
 
 //用宏指定循环截止，方便修改
 //也可在下文给MACRO_LOOP传常数，但不利于维护
@@ -518,23 +475,17 @@ MACRO_LOOP(MARCO_LOOP_X)
 
 //将最后一次选中的代码模板循环MARCO_LOOP_X+1次
 //相当于写作DECLARE(0) DECLARE(1) ... DECLARE(5）
-MACRO_LOOP(MARCO_LOOP_X)</pre>
-
-<p>当然，限制就是，n最大是255。如果想扩大，就自己增加呗~</p>
-
-<p>===============阶段五：探索macro_loop.h的高级用法=============</p>
-
-<p>现实的编程环境往往是复杂的。可能会遇到这么两种情况：</p>
-
-<p>（1）我在一个文件中多次用到宏生成代码的功能。比如我有DECLARE1(n)和DECLARE2(n)，我想把DECLARE1(n)循环4次，而把DECLARE2(n)循环9次；</p>
-
-<p>（2）我不希望从0开始循环，我希望能够从13开始循环，循环到20，即DECLARE(13) DECLARE(14) &#8230; DECLARE(20)。</p>
-
-<p>这两个事情都是能够办到的。</p>
-
-<p>针对第一种情况，解决办法就是重新定义MACRO_LOOP_CMD(n)即可解决：</p>
-
-<pre>#include "macro_loop.h"
+MACRO_LOOP(MARCO_LOOP_X)
+---code
+当然，限制就是，n最大是255。如果想扩大，就自己增加呗~
+===============阶段五：探索macro_loop.h的高级用法=============
+现实的编程环境往往是复杂的。可能会遇到这么两种情况：
+（1）我在一个文件中多次用到宏生成代码的功能。比如我有DECLARE1(n)和DECLARE2(n)，我想把DECLARE1(n)循环4次，而把DECLARE2(n)循环9次；
+（2）我不希望从0开始循环，我希望能够从13开始循环，循环到20，即DECLARE(13) DECLARE(14) &#8230; DECLARE(20)。
+这两个事情都是能够办到的。
+针对第一种情况，解决办法就是重新定义MACRO_LOOP_CMD(n)即可解决：
++++code
+#include "macro_loop.h"
 
 #define DECLARE1(n) int sqr_##n=n*n;
 #define DECLARE2(n) 2*n,
@@ -548,27 +499,23 @@ MACRO_LOOP(LOOP_1)
 #undef MACRO_LOOP_CMD
 #define MACRO_LOOP_CMD(n) DECLARE2(n)
 int a[]={MACRO_LOOP(LOOP_2)};
-</pre>
-
-<p>那么生成的代码就是：</p>
-
-<pre>int sqr_0=0*0; int sqr_1=1*1; int sqr_2=2*2; int sqr_3=3*3; int sqr_4=4*4;
+---code
+那么生成的代码就是：
++++code
+int sqr_0=0*0; int sqr_1=1*1; int sqr_2=2*2; int sqr_3=3*3; int sqr_4=4*4;
 
 int a[]={2*0, 2*1, 2*2, 2*3, 2*4, 2*5, 2*6, 2*7, 2*8, 2*9,};
-</pre>
-
-<p>注意数组定义最后一个逗号，这个是允许的。</p>
-
-<p>关键在于先通过</p>
-
-<pre>#undef MACRO_LOOP_CMD
-#define MACRO_LOOP_CMD(n) DECLARE2(n)</pre>
-
-<p>重新定义MACRO_LOOP_CMD(n)即可。</p>
-
-<p>针对第二种情况，解决办法就是“破坏”递归链，代码如下：</p>
-
-<pre>#include "macro_loop.h"
+---code
+注意数组定义最后一个逗号，这个是允许的。
+关键在于先通过
++++code
+#undef MACRO_LOOP_CMD
+#define MACRO_LOOP_CMD(n) DECLARE2(n)
+---code
+重新定义MACRO_LOOP_CMD(n)即可。
+针对第二种情况，解决办法就是“破坏”递归链，代码如下：
++++code
+#include "macro_loop.h"
 
 #define DECLARE(n) int sqr_##n=n*n;
 #undef MACRO_LOOP_12
@@ -578,28 +525,13 @@ int a[]={2*0, 2*1, 2*2, 2*3, 2*4, 2*5, 2*6, 2*7, 2*8, 2*9,};
 #define MACRO_LOOP_CMD(n) DECLARE(n)
 
 MACRO_LOOP(LOOP_END)
+---code
+原理就是把MACRO_LOOP_12这一个环节定义成空白即可。只可惜语句无法实现参数化，这个目前无法解决。
+破坏之后，如果想要修复，那么就：
++++code
+#undef MACRO_LOOP_12
+#define MACRO_LOOP_12 MACRO_LOOP_11 MACRO_LOOP_CMD(12)
+---code
+================附注：为啥gcc编译不通过？=================
+如果查阅gcc宏定义的处理细节的话会知道，一般的宏展开后，预处理器会再次检查展开的结果是否还能够继续展开。但是，如果展开的结果是通过#或者##产生的，那么不再递归展开。于是，当LOOP(3)只会被展开为LOOP_3，但是不会继续把LOOP_3展开了。。。
 </pre>
-
-<p>原理就是把MACRO_LOOP_12这一个环节定义成空白即可。只可惜语句无法实现参数化，这个目前无法解决。</p>
-
-<p>破坏之后，如果想要修复，那么就：</p>
-
-<pre>#undef MACRO_LOOP_12
-#define MACRO_LOOP_12 MACRO_LOOP_11 MACRO_LOOP_CMD(12)</pre>
-
-<p>================附注：为啥gcc编译不通过？=================</p>
-
-<p>如果查阅gcc宏定义的处理细节的话会知道，一般的宏展开后，预处理器会再次检查展开的结果是否还能够继续展开。但是，如果展开的结果是通过#或者##产生的，那么不再递归展开。于是，当LOOP(3)只会被展开为LOOP_3，但是不会继续把LOOP_3展开了。。。</p>
-			
-﻿							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>

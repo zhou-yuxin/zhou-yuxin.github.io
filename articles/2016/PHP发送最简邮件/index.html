@@ -1,29 +1,13 @@
-<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>PHP发送最简邮件</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">PHP发送最简邮件</h1>
-							</header>
-							<div class="entry-content">
+<script src="../../../style.js"></script>
 
-<p>有时网站需要发送邮件，而php自带的mail函数不好用。幸好有phpmailer这个开源项目，可以方便地发送各种邮件。</p>
+<pre id="title">PHP发送最简邮件</pre>
 
-<p>phpmailer可以发送几乎任意邮件，不过我只记录最简单的邮件的发送方式，以备不时之需。</p>
-
-<p>首先，下载<a href="http://pan.baidu.com/s/1jHotaQi">class.phpmailer.php</a>和<a href="http://pan.baidu.com/s/1hqPuA4c">class.smtp.php</a>两个文件。</p>
-
-<p>编写函数：</p>
-
-<pre>
+<pre id="content">
+有时网站需要发送邮件，而php自带的mail函数不好用。幸好有phpmailer这个开源项目，可以方便地发送各种邮件。
+phpmailer可以发送几乎任意邮件，不过我只记录最简单的邮件的发送方式，以备不时之需。
+首先，下载#HREF"http://pan.baidu.com/s/1jHotaQi"#-HREF1class.phpmailer.php#-HREF2和#HREF"http://pan.baidu.com/s/1hqPuA4c"#-HREF1class.smtp.php#-HREF2两个文件。
+编写函数：
++++code
 define("MAIL_HOST","smtp.qq.com");
 define("MAIL_PORT",465);
 define("MAIL_USERNAME","515431508");
@@ -49,19 +33,7 @@ function sendEmail($p_email,$p_title,$p_msg)
     if(!$t_mail-&gt;Send())
         return false;
     return true;
-}</pre>
-
-<p>注意开头的那些define()，需要根据具体的环境来设置。</p>
-
-							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>
+}
+---code
+注意开头的那些define()，需要根据具体的环境来设置。
+</pre>

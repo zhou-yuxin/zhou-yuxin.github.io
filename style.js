@@ -13,7 +13,8 @@ function format_content(raw)
         [/#TD/g, "<td>"], [/#-TD/g, "</td>"],
         [/#UL/g, "<ul>"], [/#-UL/g, "</ul>"],
         [/#OL/g, "<ol>"], [/#-OL/g, "</ol>"],
-        [/#LI/g, "<li>"], [/#-LI/g, "</li>"]];
+        [/#LI/g, "<li>"], [/#-LI/g, "</li>"],
+        [/#EM/g, "<em>"], [/#-EM/g, "</em>"],];
     for(var i = 0; i < items.length; i++)
     {
         item = items[i];
