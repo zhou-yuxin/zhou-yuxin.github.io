@@ -1,33 +1,16 @@
-﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>双向联想存储器BAM（二）——实现与实验</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">双向联想存储器BAM（二）——实现与实验</h1>
-							</header>
-							<div class="entry-content">
+﻿<script src="../../../style.js"></script>
 
-<p>基于<a href="../双向联想存储器BAM（一）——概述/index.html">《双向联想存储器BAM（一）——概述》</a>中描述的原理，我用Java实现了BAM。本文先给出BAM的代码，然后通过一个案例来展示BAM在处理带有杂音的数据中的超强潜力。</p>
+<pre id="title">双向联想存储器BAM（二）——实现与实验</pre>
 
-<p>===================阶段一：代码实现=================</p>
-
-<p>整个Java工程的目录结构如下图：</p>
-
-<p><img src="1.png"></p>
-
-<p>Matrix.java是矩阵的实现类，定义了最基本的矩阵运算。Divector.java是在Matrix.java上再封装了一下，表示双极向量，本质是1行n列的矩阵，而且元素的取值要么是-1要么是1。最后是BAM.java，实现了一个双向联系存储器，通过remeber方法记住一对矩阵，并且能够通过thinkAFromB、thinkBFromA等方法取出记忆的矩阵。</p>
-
-<p>Matrix.java：</p>
-
-<pre>package util;
+<pre id="content">
+基于#HREF"../双向联想存储器BAM（一）——概述/index.html"#-HREF1《双向联想存储器BAM（一）——概述》#-HREF2中描述的原理，我用Java实现了BAM。本文先给出BAM的代码，然后通过一个案例来展示BAM在处理带有杂音的数据中的超强潜力。
+===================阶段一：代码实现=================
+整个Java工程的目录结构如下图：
+1.png
+Matrix.java是矩阵的实现类，定义了最基本的矩阵运算。Divector.java是在Matrix.java上再封装了一下，表示双极向量，本质是1行n列的矩阵，而且元素的取值要么是-1要么是1。最后是BAM.java，实现了一个双向联系存储器，通过remeber方法记住一对矩阵，并且能够通过thinkAFromB、thinkBFromA等方法取出记忆的矩阵。
+Matrix.java：
++++code
+package util;
 
 import java.io.PrintStream;
 
@@ -148,11 +131,10 @@ public class Matrix
     }
 
 }
-</pre>
-
-<p>Divector.java：</p>
-
-<pre>package util;
+---code
+Divector.java：
++++code
+package util;
 
 import java.io.PrintStream;
 
@@ -251,11 +233,10 @@ public class Divector
     }
 
 }
-</pre>
-
-<p>最后是BAM.java：</p>
-
-<pre>package util;
+---code
+最后是BAM.java：
++++code
+package util;
 
 import java.io.PrintStream;
 
@@ -361,15 +342,14 @@ public class BAM
     }
 
 }
-</pre>
+---code
+我们可以先实现#HREF"../双向联想存储器BAM（一）——概述/index.html"#-HREF1《双向联想存储器BAM（一）——概述》#-HREF2中说的那个案例，即
+A1=(101010)，B1=(1100)
+A2=(111000)，B2=(1010)
 
-<p>我们可以先实现<a href="../双向联想存储器BAM（一）——概述/index.html">《双向联想存储器BAM（一）——概述》</a>中说的那个案例，即<br />
-A1=(101010)，B1=(1100)<br />
-A2=(111000)，B2=(1010)</p>
-
-<p>代码可以写作如下：</p>
-
-<pre>import util.BAM;
+代码可以写作如下：
++++code
+import util.BAM;
 import util.Divector;
 
 public class Main
@@ -396,21 +376,17 @@ public class Main
     }
 
 }
-</pre>
-
-<p>于是会输出：</p>
-
-<pre>101010</pre>
-
-<p>与预期的一致！</p>
-
-<p>======================阶段二：精彩实验=================</p>
-
-<p>我现在要演示一下，当网络维度较大且杂音较多时，BAM回忆出原始数据的能力。</p>
-
-<p>直接修改Main.java的代码如下：</p>
-
-<pre>import util.BAM;
+---code
+于是会输出：
++++code
+101010
+---code
+与预期的一致！
+======================阶段二：精彩实验=================
+我现在要演示一下，当网络维度较大且杂音较多时，BAM回忆出原始数据的能力。
+直接修改Main.java的代码如下：
++++code
+import util.BAM;
 import util.Divector;
 
 public class Main
@@ -458,95 +434,66 @@ public class Main
     }
 
 }
-</pre>
-
-<p>在这个例子中，我先定义了两个函数，一个是ascii2bin，作用是将一段ascii的字符串变成二进制字符串，比如</p>
-
-<pre>System.out.println(ascii2bin("abc"));
-</pre>
-
-<p>的输出就是</p>
-
-<pre>011000010110001001100011
-</pre>
-
-<p>这是因为a的ascii码是0x61，也就是二进制的01100001，同理，b是二进制的01100010，c是二进制的01100011，因此结果就是24位的011000010110001001100011。</p>
-
-<p>另一个函数是bin2ascii，作用是将一段二进制字符串转换成ascii字符串，比如</p>
-
-<pre>System.out.println(bin2ascii("01101100011011110111011001100101"));
-</pre>
-
-<p>的输出是</p>
-
-<pre>love
-</pre>
-
-<p>原理不再赘述。</p>
-
-<p>有了这两个辅助函数之后，就可以进行正式的实验了。</p>
-
-<p>Main函数中，先出现这么一端代码：</p>
-
-<pre>Divector t_v1=new Divector(512);
+---code
+在这个例子中，我先定义了两个函数，一个是ascii2bin，作用是将一段ascii的字符串变成二进制字符串，比如
++++code
+System.out.println(ascii2bin("abc"));
+---code
+的输出就是
++++code
+011000010110001001100011
+---code
+这是因为a的ascii码是0x61，也就是二进制的01100001，同理，b是二进制的01100010，c是二进制的01100011，因此结果就是24位的011000010110001001100011。
+另一个函数是bin2ascii，作用是将一段二进制字符串转换成ascii字符串，比如
++++code
+System.out.println(bin2ascii("01101100011011110111011001100101"));
+---code
+的输出是
++++code
+love
+---code
+原理不再赘述。
+有了这两个辅助函数之后，就可以进行正式的实验了。
+Main函数中，先出现这么一段代码：
++++code
+Divector t_v1=new Divector(512);
 t_v1.setValues(ascii2bin("I have a tiny rabbit. It's so lovely that everyone like it.  ^_^"));
 Divector t_v2=new Divector(512);
 t_v2.setValues(ascii2bin("What a fine day! Today I want to go climbing. Let us go! go! go!"));
 Divector t_v3=new Divector(512);
 t_v3.setValues(ascii2bin("Ah,this carrot is so fresh $_$. It must be tasty.How mush is it?"));
-</pre>
-
-<p>我定义了三个512维的二极向量，每个二极向量使用一端64个字符的字符串去初始化。因为64个字符的字符串，通过ascii2bin函数处理，就会输出512位的二进制。于是，经过初始化后，t_v1、t_v2和t_v3三个二极向量分布存储了句子：</p>
-
-<pre>I have a tiny rabbit. It's so lovely that everyone like it.  ^_^
+---code
+我定义了三个512维的二极向量，每个二极向量使用一端64个字符的字符串去初始化。因为64个字符的字符串，通过ascii2bin函数处理，就会输出512位的二进制。于是，经过初始化后，t_v1、t_v2和t_v3三个二极向量分布存储了句子：
++++code
+I have a tiny rabbit. It's so lovely that everyone like it.  ^_^
 What a fine day! Today I want to go climbing. Let us go! go! go!
 Ah,this carrot is so fresh $_$. It must be tasty.How mush is it?
-</pre>
-
-<p>之后，定义一个512&#215;512维的BAM，这个BAM就是一个自联想存储器。然后依次让t_bam把t_v1、t_v2和t_v3记住。如代码所示：</p>
-
-<pre>BAM t_bam=new BAM(512,512);
+---code
+之后，定义一个512&#215;512维的BAM，这个BAM就是一个自联想存储器。然后依次让t_bam把t_v1、t_v2和t_v3记住。如代码所示：
++++code
+BAM t_bam=new BAM(512,512);
 t_bam.remember(t_v1,t_v1);
 t_bam.remember(t_v2,t_v2);
 t_bam.remember(t_v3,t_v3);
-</pre>
-
-<p>接着，使用如下代码：</p>
-
-<pre>Divector t_in1=new Divector(512);
+---code
+接着，使用如下代码：
++++code
+Divector t_in1=new Divector(512);
 t_in1.setValues(ascii2bin("i hase a tany cabbit. It's zo lovety that everyono luke it.  TAT"));
 Divector t_out1=t_bam.thinkBFromA(t_in1);
 System.out.println(bin2ascii(t_out1.toString()));
+---code
+这段代码定义一个512维的二极向量，里面存储了一段有不少拼写错误的句子，然后将这个句子输入到t_bam中，将得到的结果打印出来。
+输出结果是：
++++code
+I have a tiny rabbit. It's so lovely that everyone like it.  ^_^
+---code
+结果完全正确！这说明，输入一个含有错误的数据，BAM可以回忆出正确的数据！这个功能，类似于人脑的容错能力——人在看到有错别字的句子时，照样能够理解正确的意思！
+当然，BAM的容错联系能力还是有很多的局限的。比如，如果输入的是
++++code
+ii hase a tany cabbit. It's zo lovety that everyono luke it.  TA
+---code
+那么输出就是乱码：
+2.png
+由此可见，BAM无法识别“平移错位“以后的数据。也就是说，将数据中的某些位修改掉，BAM能够忍受，而如果是整个数据向左或向右平移后，BAM就无法识别了。
 </pre>
-
-<p>这段代码定义一个512维的二极向量，里面存储了一段有不少拼写错误的句子，然后将这个句子输入到t_bam中，将得到的结果打印出来。<br />
-输出结果是：</p>
-
-<pre>I have a tiny rabbit. It's so lovely that everyone like it.  ^_^
-</pre>
-
-<p>结果完全正确！这说明，输入一个含有错误的数据，BAM可以回忆出正确的数据！这个功能，类似于人脑的容错能力——人在看到有错别字的句子时，照样能够理解正确的意思！</p>
-
-<p>当然，BAM的容错联系能力还是有很多的局限的。比如，如果输入的是</p>
-
-<pre>ii hase a tany cabbit. It's zo lovety that everyono luke it.  TA
-</pre>
-
-<p>那么输出就是乱码：</p>
-
-<p><img src="2.png"></p>
-
-<p>由此可见，BAM无法识别“平移错位“以后的数据。也就是说，将数据中的某些位修改掉，BAM能够忍受，而如果是整个数据向左或向右平移后，BAM就无法识别了。</p>
-
-			﻿							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>

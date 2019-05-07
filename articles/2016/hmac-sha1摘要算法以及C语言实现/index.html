@@ -1,55 +1,27 @@
-﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>hmac-sha1摘要算法以及C语言实现</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">hmac-sha1摘要算法以及C语言实现</h1>
-							</header>
-							<div class="entry-content">
+﻿<script src="../../../style.js"></script>
 
-		<p>最近在研究WPA2破解算法，里面涉及到了hmac-sha1摘要算法。</p>
+<pre id="title">hmac-sha1摘要算法以及C语言实现</pre>
 
-<p>hmac算法是一种信息摘要算法，常常用于密码验证过程中。而hmac-sha1则是使用sha1作为具体摘要算法的。除了sha1外，还可以使用md5等。</p>
-
-<p>各种信息摘要算法用于密码验证的基本流程如下：</p>
-
-<p>1、客户端向服务器发出登录或其他操作请求；</p>
-
-<p>2、服务器生成一个随机数，发送给客户端；</p>
-
-<p>3、客户端把用户输入的密码和这个随机数通过某种算法，计算得到一个摘要值A，发送给服务器；</p>
-
-<p>4、服务器端把存于数据库中的正确的密码和这个随机数通过该算法，计算得到一个摘要值B，如果A==B，那么服务器断定客户端有正确的密码。</p>
-
-<p>上述过程就是一种密码质询（challenge）过程，其中提到的“某种算法”，可以有很多很多实现。一种比较简单的方法是，把密码与随机数串联后带入MD5算法，得到摘要值。</p>
-
-<p>那么为什么需要hmac-sha1算法呢？个人的理解是这样的：</p>
-
-<p>1、规范化质询算法；</p>
-
-<p>2、提供更高强度的保护。</p>
-
-<p>第一条很好理解。每个人都有自己的质询实现，比如我的质询方法是MD5(密码+随机数)，而他的质询方法是MD5(随机数+密码)，甚至MD5(密码+随机数*2)等等。规范化质询算法，有助于大家交流嘛～</p>
-
-<p>第二条，是因为传统的MD5等算法的强度正在逐渐衰减，所以需要更加复杂的算法来保护数据。</p>
-
-<p>OK，讲了这么多，就来讲讲C语言的实现吧。</p>
-
-<p>其实我不是自己实现的，而是在github上找到了现成的开源代码，在此感谢<a href="https://github.com/Akagi201/hmac-sha1">Akagi201/hmac-sha1</a>项目。不过，该项目可以通过宏来选择是使用openssl里面的sha1算法还是使用该项目自己实现的sha1算法。为了减少文件数量，我还是用了openssl，并且稍微简化了以下代码。</p>
-
-<p>先给出一个使用的例子：</p>
-
-<p>main.c</p>
-
-<pre>#include &lt;stdio.h&gt;
+<pre id="content">
+最近在研究WPA2破解算法，里面涉及到了hmac-sha1摘要算法。
+hmac算法是一种信息摘要算法，常常用于密码验证过程中。而hmac-sha1则是使用sha1作为具体摘要算法的。除了sha1外，还可以使用md5等。
+各种信息摘要算法用于密码验证的基本流程如下：
+1、客户端向服务器发出登录或其他操作请求；
+2、服务器生成一个随机数，发送给客户端；
+3、客户端把用户输入的密码和这个随机数通过某种算法，计算得到一个摘要值A，发送给服务器；
+4、服务器端把存于数据库中的正确的密码和这个随机数通过该算法，计算得到一个摘要值B，如果A==B，那么服务器断定客户端有正确的密码。
+上述过程就是一种密码质询（challenge）过程，其中提到的“某种算法”，可以有很多很多实现。一种比较简单的方法是，把密码与随机数串联后带入MD5算法，得到摘要值。
+那么为什么需要hmac-sha1算法呢？个人的理解是这样的：
+1、规范化质询算法；
+2、提供更高强度的保护。
+第一条很好理解。每个人都有自己的质询实现，比如我的质询方法是MD5(密码+随机数)，而他的质询方法是MD5(随机数+密码)，甚至MD5(密码+随机数*2)等等。规范化质询算法，有助于大家交流嘛～
+第二条，是因为传统的MD5等算法的强度正在逐渐衰减，所以需要更加复杂的算法来保护数据。
+OK，讲了这么多，就来讲讲C语言的实现吧。
+其实我不是自己实现的，而是在github上找到了现成的开源代码，在此感谢#HREF"https://github.com/Akagi201/hmac-sha1"#-HREF1Akagi201/hmac-sha1#-HREF2项目。不过，该项目可以通过宏来选择是使用openssl里面的sha1算法还是使用该项目自己实现的sha1算法。为了减少文件数量，我还是用了openssl，并且稍微简化了以下代码。
+先给出一个使用的例子：
+main.c
++++code
+#include &lt;stdio.h&gt;
 #include "hmac.h"
 
 int main()
@@ -64,11 +36,10 @@ int main()
         printf("%x ",t_result[t_i]);
     return 0;
 }
-</pre>
-
-<p>编译的makefile很简单：</p>
-
-<pre>main: main.o hmac_sha1.o
+---code
+编译的makefile很简单：
++++code
+main: main.o hmac_sha1.o
 	gcc main.o hmac_sha1.o -lcrypto -o main
 
 main.o: main.c
@@ -76,18 +47,15 @@ main.o: main.c
 
 hmac_sha1.o: hmac_sha1.c
 	gcc -c hmac_sha1.c -o hmac_sha1.o
-</pre>
-
-<p>运行结果是：</p>
-
-<pre>b3 4c ea c4 51 6f f2 3a 14 3e 61 d7 9d f a7 a4 fb e5 f2 66
-</pre>
-
-<p>以下就是该项目的源码，共hmac.h、hmac_sha1.c两个文件。</p>
-
-<p>hmac.h</p>
-
-<pre>/**
+---code
+运行结果是：
++++code
+b3 4c ea c4 51 6f f2 3a 14 3e 61 d7 9d f a7 a4 fb e5 f2 66
+---code
+以下就是该项目的源码，共hmac.h、hmac_sha1.c两个文件。
+hmac.h
++++code
+/**
 * @file re_hmac.h  Interface to HMAC functions
 *
 * Copyright (C) 2010 Creytiv.com
@@ -106,11 +74,10 @@ void hmac_sha1(const uint8_t *k,   /* secret key */
         size_t *t);
 
 #endif // HMAC_H_
-</pre>
-
-<p>hmac_sha1.c</p>
-
-<pre>/**
+---code
+hmac_sha1.c
++++code
+/**
 * @file hmac_sha1.c  Implements HMAC-SHA1 as of RFC 2202
 *
 * Copyright (C) 2010 Creytiv.com
@@ -210,17 +177,5 @@ void hmac_sha1(const uint8_t *k,  /* secret key */
     memcpy(out, osha, *t);
 #endif
 }
+---code
 </pre>
-
-			﻿							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>

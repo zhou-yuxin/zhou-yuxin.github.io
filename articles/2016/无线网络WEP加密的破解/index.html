@@ -1,119 +1,64 @@
-﻿﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>无线网络WEP加密的破解</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">无线网络WEP加密的破解</h1>
-							</header>
-							<div class="entry-content">
+﻿﻿<script src="../../../style.js"></script>
 
-<p>曾经WEP可是无线网的标准的加密算法，如今已经被WPA/WPA2取代了。究其原因，就是因为WEP太容易破解了。至于WEP为什么这么容易被破解，一个很重要的原因就是密码太短。</p>
+<pre id="title">无线网络WEP加密的破解</pre>
 
-<p>之所以在这个WEP几乎都被完全淘汰的时代重提WEP，是因为我想研究一下WiFi密码破解过程，练练手，壮壮胆，为接下来破解WPA/WPA2做准备。</p>
-
-<p>======================阶段一：破解思路==================</p>
-
-<p>要知道怎么破解，首先要知道WEP是怎么加密一个数据帧的。</p>
-
-<p>WEP加密中的加密算法是RC4，如果需要对RC4有一个了解，请阅读<a href="../RC4加密算法/index.html">《RC4加密算法》</a>。</p>
-
-<p>附上《802.11无线网络权威指南 第二版》中的“WEP的数据处理”一节的图：</p>
-
-<p><img src="1.jpeg"></p>
-
-<p>当一个未加密的802.11帧需要加密时，步骤如下：</p>
-
-<p>（1）计算未加密帧（包括帧头和负载）的CRC，即循环冗余校验码，把这个校验码称为ICV；</p>
-
-<p>（2）将负载和ICV连在一起，作为RC4算法的要加密数据RC4_Data；</p>
-
-<p>（3）选定一把WEP密钥，密钥编号为Key number，密钥为Key（WEP最多支持4把密钥）；</p>
-
-<p>（4）通过某种算法生成一个初始化向量IV（生成IV的算法可以任意），将IV与密钥Key连在一起，作为RC4算法的密钥RC4_Key；</p>
-
-<p>（5）将RC4_Data与RC4_Key代入RC4算法中，生成密文RC4_Result；</p>
-
-<p>（6）将未加密帧的帧头、IV、Key number、RC4_Result连在一起，就是加密后的帧。</p>
-
-<p>再来看一下802.11数据帧的封装形式：</p>
-
-<p><img src="2.jpeg"></p>
-
-<p>来自IP层的数据，会被封装成802.3 LLC的形式，作为802.11帧的负载。有的实现会使用RFC 1042标准的，而有些则使用802.1h标准的（即图中最后两行的封装格式）。但是不论是哪一种，<strong><span style="color: red;">一个802.11数据帧的负载部分的明文，前5字节必然是0xaa,0xaa,0x03,0x00,0x00。</span></strong></p>
-
-<p>于是暴力破解的思路就出来了：</p>
-
-<p>（1）截获一个加密的802.11的数据帧，记下该帧的IV与负载的前5字节，将这5字节记为First5；</p>
-
-<p>（2）猜测密码是Key，将IV与Key相连，记为RC4_Key，然后把Data={0xaa,0xaa,0x03,0x00,0x00}这5个字节和RC4_Key代入RC4算法中，得到结果Result=RC4(Data,RC4_Key)，Result也是5个字节。如果Result与First5相等，那么Key就极有可能是正确的密钥！</p>
-
-<p>（3）穷举所有可能的Key，代入步骤（2）。</p>
-
-<p>=====================阶段二：实践===================</p>
-
-<p>OK，现在就来实践证明一下思路是否正确。首先把路由器设置为WEP加密模式，密码为“abcde”，SSID为“zjs313”。用手机连接上该网络，然后无限循环ping百度。之所以选择ping，是因为可以产生持续的流量，方便抓包。</p>
-
-<p>在攻击者的电脑上，选择一张无线网卡开启Monitor模式（我插了一张USB无线网卡，被命名为wlan2）：</p>
-
-<pre>
+<pre id="content">
+曾经WEP可是无线网的标准的加密算法，如今已经被WPA/WPA2取代了。究其原因，就是因为WEP太容易破解了。至于WEP为什么这么容易被破解，一个很重要的原因就是密码太短。
+之所以在这个WEP几乎都被完全淘汰的时代重提WEP，是因为我想研究一下WiFi密码破解过程，练练手，壮壮胆，为接下来破解WPA/WPA2做准备。
+======================阶段一：破解思路==================
+要知道怎么破解，首先要知道WEP是怎么加密一个数据帧的。
+WEP加密中的加密算法是RC4，如果需要对RC4有一个了解，请阅读#HREF"../RC4加密算法/index.html"#-HREF1《RC4加密算法》#-HREF2。
+附上《802.11无线网络权威指南 第二版》中的“WEP的数据处理”一节的图：
+1.jpg
+当一个未加密的802.11帧需要加密时，步骤如下：
+（1）计算未加密帧（包括帧头和负载）的CRC，即循环冗余校验码，把这个校验码称为ICV；
+（2）将负载和ICV连在一起，作为RC4算法的要加密数据RC4_Data；
+（3）选定一把WEP密钥，密钥编号为Key number，密钥为Key（WEP最多支持4把密钥）；
+（4）通过某种算法生成一个初始化向量IV（生成IV的算法可以任意），将IV与密钥Key连在一起，作为RC4算法的密钥RC4_Key；
+（5）将RC4_Data与RC4_Key代入RC4算法中，生成密文RC4_Result；
+（6）将未加密帧的帧头、IV、Key number、RC4_Result连在一起，就是加密后的帧。
+再来看一下802.11数据帧的封装形式：
+2.jpg
+来自IP层的数据，会被封装成802.3 LLC的形式，作为802.11帧的负载。有的实现会使用RFC 1042标准的，而有些则使用802.1h标准的（即图中最后两行的封装格式）。但是不论是哪一种，#RED一个802.11数据帧的负载部分的明文，前5字节必然是0xaa,0xaa,0x03,0x00,0x00#-RED。
+于是暴力破解的思路就出来了：
+（1）截获一个加密的802.11的数据帧，记下该帧的IV与负载的前5字节，将这5字节记为First5；
+（2）猜测密码是Key，将IV与Key相连，记为RC4_Key，然后把Data={0xaa,0xaa,0x03,0x00,0x00}这5个字节和RC4_Key代入RC4算法中，得到结果Result=RC4(Data,RC4_Key)，Result也是5个字节。如果Result与First5相等，那么Key就极有可能是正确的密钥！
+（3）穷举所有可能的Key，代入步骤（2）。
+=====================阶段二：实践===================
+OK，现在就来实践证明一下思路是否正确。首先把路由器设置为WEP加密模式，密码为“abcde”，SSID为“zjs313”。用手机连接上该网络，然后无限循环ping百度。之所以选择ping，是因为可以产生持续的流量，方便抓包。
+在攻击者的电脑上，选择一张无线网卡开启Monitor模式（我插了一张USB无线网卡，被命名为wlan2）：
++++code
 sudo ifconfig wlan2 down
 sudo iwconfig wlan2 mode monitor
 sudo ifconfig wlan2 up
-</pre>
-
-<p>然后扫描接入点：</p>
-
-<pre>
+---code
+然后扫描接入点：
++++code
 sudo airodump-ng wlan2
-</pre>
-
-<p>可以扫描到很多接入点，包括“zjs313”：</p>
-
-<p><img src="3.jpg"></p>
-
-<p>在CH一列的数字6表明&#8221;zjs313&#8243;的信道是6。于是将wlan2的监听信道设置为6：</p>
-
-<pre>
+---code
+可以扫描到很多接入点，包括“zjs313”：
+3.jpg
+在CH一列的数字6表明&#8221;zjs313&#8243;的信道是6。于是将wlan2的监听信道设置为6：
++++code
 sudo iwconfig wlan2 channel 6
-</pre>
-
-<p>此时，可以开启wireshark：</p>
-
-<pre>
+---code
+此时，可以开启wireshark：
++++code
 sudo wireshark
-</pre>
-
-<p>选中wlan2，然后点击Start开始抓包：</p>
-
-<p><img src="4.jpg"></p>
-
-<p>可以在Filter中输入：</p>
-
-<pre>
+---code
+选中wlan2，然后点击Start开始抓包：
+4.jpg
+可以在Filter中输入：
++++code
 wlan.fc.type==2
-</pre>
-
-<p>以排除所有的控制帧与管理帧，就只看数据帧，如图：</p>
-
-<p><img src="5.jpg"></p>
-
-<p>此时，随便选择一个数据帧（必须有数据，所以不能是Null function帧），然后查看其IV与Data部分：</p>
-
-<p><img src="6.jpg"></p>
-
-<p>可见，IV是0x00,0x88,0x1f，Data的前5字节是0x42,0x1b,0xc5,0xda,0x6b。</p>
-
-<p>按照阶段一介绍的思路，把IV与Key连接，RC4_Key={0x00,0x88,0x1f,&#8217;a&#8217;,&#8217;b&#8217;,&#8217;c&#8217;,&#8217;d&#8217;,&#8217;e&#8217;}，而RC4_Data={<span style="color: #373737;">0xaa,0xaa,0×03,0×00,0×00</span>}，带入RC4运算。代码如下：</p>
-
-<pre>
+---code
+以排除所有的控制帧与管理帧，就只看数据帧，如图：
+5.jpg
+此时，随便选择一个数据帧（必须有数据，所以不能是Null function帧），然后查看其IV与Data部分：
+6.jpg
+可见，IV是0x00,0x88,0x1f，Data的前5字节是0x42,0x1b,0xc5,0xda,0x6b。
+按照阶段一介绍的思路，把IV与Key连接，RC4_Key={0x00,0x88,0x1f,&#8217;a&#8217;,&#8217;b&#8217;,&#8217;c&#8217;,&#8217;d&#8217;,&#8217;e&#8217;}，而RC4_Data={0xaa,0xaa,0×03,0×00,0×00}，带入RC4运算。代码如下：
++++code
 #include &lt;string.h&gt;
 #include &lt;stdio.h&gt;
 
@@ -167,17 +112,12 @@ int main()
     printf("n");
     return 0;
 }
-</pre>
-
-<p>其中RC4的算法来自<a href="../RC4加密算法/index.html">《RC4加密算法》</a>。运行结果：</p>
-
-<p><img src="7.jpg"></p>
-
-<p>运行结果与Data字段的前5字节{0x42,0x1b,0xc5,0xda,0x6b}一致，所以密钥就是“abcde”。于是证明了暴力破解算法的正确性。</p>
-
-<p>下面是一个演示用的程序，该程序可以在小写字母集上寻找密钥：</p>
-
-<pre>
+---code
+其中RC4的算法来自#HREF"../RC4加密算法/index.html"#-HREF1《RC4加密算法》#-HREF2。运行结果：
+7.jpg
+运行结果与Data字段的前5字节{0x42,0x1b,0xc5,0xda,0x6b}一致，所以密钥就是“abcde”。于是证明了暴力破解算法的正确性。
+下面是一个演示用的程序，该程序可以在小写字母集上寻找密钥：
++++code
 #include &lt;string.h&gt;
 #include &lt;stdio.h&gt;
 #include &lt;stdlib.h&gt;
@@ -263,17 +203,12 @@ int main()
     printf("key not foundn");
     return 0;
 }
-</pre>
-
-<p>这个程序写的很丑陋，仅仅是为了演示暴力破解的思路而已。运行结果：</p>
-
-<p><img src="8.jpg"></p>
-
-<p>===================阶段三：测试破解速度==================</p>
-
-<p>首先来测试一下破解速度。以上面那个在小写字母集上搜索密钥的程序为例，把main函数中的exit(0)去掉，即让它穷举所有的5为小写字母密码：</p>
-
-<pre>
+---code
+这个程序写的很丑陋，仅仅是为了演示暴力破解的思路而已。运行结果：
+8.jpg
+===================阶段三：测试破解速度==================
+首先来测试一下破解速度。以上面那个在小写字母集上搜索密钥的程序为例，把main函数中的exit(0)去掉，即让它穷举所有的5为小写字母密码：
++++code
 int main()
 {
     unsigned char t_data_model[]={0xaa,0xaa,0x03,0x00,0x00};
@@ -314,23 +249,15 @@ int main()
     printf("key not foundn");
     return 0;
 }
-</pre>
-
-<p>编译，运行，测试执行时间：</p>
-
-<p><img src="9.jpg"></p>
-
-<p>用时40秒。也就是说，穷举26^5=11881376个密钥需要用40秒。按这个速度，穷举大小写字母+数字集，需要用时（26*2+10）^5/26^5*40=3084秒，不超过1小时。如果加上各种常用符号，最多也就80^5/26^5*40=11031秒，大约3小时。而且我还是在Intel i5处理器上、使用单线程跑。如果在服务器上多线程跑，呵呵，几分钟的事情。</p>
-
-<p>======================阶段四：提升破解速度======================</p>
-
-<p>但是，如果你依旧不满足这个速度，可以进一步优化算法。</p>
-
-<p>通过研究RC4可以想到这么一个思路：RC4是一个密钥流算法，明文的第一个字节XOR密钥流的第一个字节=密文的第一个字节，可以推导出明文的第一个字节XOR密文的第一个字节=密钥流的第一个字节。于是，可以事先计算好密钥流的第一个字节A，然后每穷举一个密码Key，就计算该I密码对应的密钥流的第一个字节B，然后进行比较A与B是否相等。如果不等，那么Key一定不是正确的密码，如果相等，那么进一步用上面阶段三里的方法验证。由于RC4的非线性，所以绝大部分的穷举Key，都会因为第一字节就不相等而Pass。这样可以大大运算效率。</p>
-
-<p>接下来就是研究一下密钥流第一字节生成的过程。通过rc4_crypt函数的运算过程可以得知，密钥流的第一个字节=t_s[ ( t_s[1] + t_s[ t_s[1] ] ) % 256 ]。所以改造代码如下：</p>
-
-<pre>
+---code
+编译，运行，测试执行时间：
+9.jpg
+用时40秒。也就是说，穷举26^5=11881376个密钥需要用40秒。按这个速度，穷举大小写字母+数字集，需要用时（26*2+10）^5/26^5*40=3084秒，不超过1小时。如果加上各种常用符号，最多也就80^5/26^5*40=11031秒，大约3小时。而且我还是在Intel i5处理器上、使用单线程跑。如果在服务器上多线程跑，呵呵，几分钟的事情。
+======================阶段四：提升破解速度======================
+但是，如果你依旧不满足这个速度，可以进一步优化算法。
+通过研究RC4可以想到这么一个思路：RC4是一个密钥流算法，明文的第一个字节XOR密钥流的第一个字节=密文的第一个字节，可以推导出明文的第一个字节XOR密文的第一个字节=密钥流的第一个字节。于是，可以事先计算好密钥流的第一个字节A，然后每穷举一个密码Key，就计算该I密码对应的密钥流的第一个字节B，然后进行比较A与B是否相等。如果不等，那么Key一定不是正确的密码，如果相等，那么进一步用上面阶段三里的方法验证。由于RC4的非线性，所以绝大部分的穷举Key，都会因为第一字节就不相等而Pass。这样可以大大运算效率。
+接下来就是研究一下密钥流第一字节生成的过程。通过rc4_crypt函数的运算过程可以得知，密钥流的第一个字节=t_s[ ( t_s[1] + t_s[ t_s[1] ] ) % 256 ]。所以改造代码如下：
++++code
 #include &lt;string.h&gt;
 #include &lt;stdio.h&gt;
 #include &lt;stdlib.h&gt;
@@ -422,23 +349,8 @@ int main()
     }
     return 0;
 }
+---code
+实测性能：
+10.jpg
+时间从40秒降为32秒，时间降为到原来的80%，也就是性能提升了25%！
 </pre>
-
-<p>实测性能：</p>
-
-<p><img src="10.jpg"></p>
-
-<p>时间从40秒降为32秒，时间降为到原来的80%，也就是性能提升了25%！</p>
-			
-﻿							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>

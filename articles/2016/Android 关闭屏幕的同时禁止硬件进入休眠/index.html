@@ -1,103 +1,71 @@
-﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>Android 关闭屏幕的同时禁止硬件进入休眠</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">Android 关闭屏幕的同时禁止硬件进入休眠</h1>
-							</header>
-							<div class="entry-content">
+﻿<script src="../../../style.js"></script>
 
-<p>=============2016年3月3日有重要更新，见下================</p>
+<pre id="title">Android 关闭屏幕的同时禁止硬件进入休眠</pre>
 
-<p>=====================原文始======================</p>
-
-<p>最近要用安卓手机的加速度传感器采集睡眠数据，即将安卓手机固定在肢体上，然后手机每隔一定时间将三轴加速度数据通过UDP传送到电脑上。这样就可以在第二天对数据进行处理，分析出睡眠质量等有用信息。</p>
-
-<p>但是试验发现一个很坑爹的问题：手机屏幕暗掉之后，程序停止工作，电脑就收不到数据了。多次试验最终确定问题所在——安卓在屏幕暗掉之后，就会进入硬件休眠，CPU和各种外设（包括WiFi、蓝牙、加速度传感器等等）都停止工作。</p>
-
-<p>因此，我需要一种方式，能够禁止Android硬件进入休眠。这种机制就是Wake Lock。进程可以创建各种类型的Wake Lock，只要系统中还存在Wake Lock，那么系统就不会休眠。</p>
-
-<p>以下是创建并使能Wake Lock的一般性代码：</p>
-
-<pre>
+<pre id="content">
+=============2016年3月3日有重要更新，见下================
+=====================原文始======================
+最近要用安卓手机的加速度传感器采集睡眠数据，即将安卓手机固定在肢体上，然后手机每隔一定时间将三轴加速度数据通过UDP传送到电脑上。这样就可以在第二天对数据进行处理，分析出睡眠质量等有用信息。
+但是试验发现一个很坑爹的问题：手机屏幕暗掉之后，程序停止工作，电脑就收不到数据了。多次试验最终确定问题所在——安卓在屏幕暗掉之后，就会进入硬件休眠，CPU和各种外设（包括WiFi、蓝牙、加速度传感器等等）都停止工作。
+因此，我需要一种方式，能够禁止Android硬件进入休眠。这种机制就是Wake Lock。进程可以创建各种类型的Wake Lock，只要系统中还存在Wake Lock，那么系统就不会休眠。
+以下是创建并使能Wake Lock的一般性代码：
++++code
 PowerManager t_power=(PowerManager)getSystemService(POWER_SERVICE);
 WakeLock t_wake=t_power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"tag");
 t_wake.acquire();
-</pre>
-
-<p>释放Wake Lock的代码为：</p>
-
-<pre>
+---code
+释放Wake Lock的代码为：
++++code
 t_wake.release();
-</pre>
-
-<p>而创建Wake Lock的代码：</p>
-
-<pre>
+---code
+而创建Wake Lock的代码：
++++code
 WakeLock t_wake=t_power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"tag");
-</pre>
-
-<p>中，PARTIAL_WAKE_LOCK可以替换成其他的参数，以决定Wake Lock的类型。所有可用的类型如下：</p>
-
-<table>
-<tbody>
-<tr>
-<th>值</th>
-<th>意义</th>
-</tr>
-<tr>
-<td>PARTIAL_WAKE_LOCK</td>
-<td>保持CPU运转，屏幕和键盘灯有可能是关闭的。</td>
-</tr>
-<tr>
-<td>SCREEN_DIM_WAKE_LOCK</td>
-<td>保持CPU运转，允许保持屏幕显示但有可能是灰的，允许关闭键盘灯。</td>
-</tr>
-<tr>
-<td>SCREEN_BRIGHT_WAKE_LOCK</td>
-<td>保持CPU运转，保持屏幕高亮显示，允许关闭键盘灯。</td>
-</tr>
-<tr>
-<td>FULL_WAKE_LOCK</td>
-<td>保持CPU运转，保持屏幕高亮显示，键盘灯也保持亮度。</td>
-</tr>
-<tr>
-<td>ACQUIRE_CAUSES_WAKEUP</td>
-<td>不会唤醒设备，强制屏幕马上高亮显示，键盘灯开启。有一个例外，如果有notification弹出的话，会唤醒设备。</td>
-</tr>
-<tr>
-<td>ON_AFTER_RELEASE</td>
-<td>Wake Lock被释放后，维持屏幕亮度一小段时间，减少Wake Lock循环时的闪烁情况。</td>
-</tr>
-</tbody>
-</table>
-<p>如果申请了PARTIAL_WAKE_LOCK,那么即使按Power键,系统也不会进Sleep。如Music播放时，如果申请了其它的Wake Lock,按Power键,系统还是会进Sleep。但如果不领会Android设计者的意图而滥用Wake Lock API，为了自身程序在后台的正常工作而长时间阻止AP进入休眠状态，就会成为待机电池杀手。</p>
-
-<p>当然，要在AndroidManifest.xml加权限：</p>
-
-<pre>
+---code
+中，PARTIAL_WAKE_LOCK可以替换成其他的参数，以决定Wake Lock的类型。所有可用的类型如下：
+#TABLE
+#TBODY
+#TR
+#TH值#-TH
+#TH意义#-TH
+#-TR
+#TR
+#TDPARTIAL_WAKE_LOCK#-TD
+#TD保持CPU运转，屏幕和键盘灯有可能是关闭的。#-TD
+#-TR
+#TR
+#TDSCREEN_DIM_WAKE_LOCK#-TD
+#TD保持CPU运转，允许保持屏幕显示但有可能是灰的，允许关闭键盘灯。#-TD
+#-TR
+#TR
+#TDSCREEN_BRIGHT_WAKE_LOCK#-TD
+#TD保持CPU运转，保持屏幕高亮显示，允许关闭键盘灯。#-TD
+#-TR
+#TR
+#TDFULL_WAKE_LOCK#-TD
+#TD保持CPU运转，保持屏幕高亮显示，键盘灯也保持亮度。#-TD
+#-TR
+#TR
+#TDACQUIRE_CAUSES_WAKEUP#-TD
+#TD不会唤醒设备，强制屏幕马上高亮显示，键盘灯开启。有一个例外，如果有notification弹出的话，会唤醒设备。#-TD
+#-TR
+#TR
+#TDON_AFTER_RELEASE#-TD
+#TDWake Lock被释放后，维持屏幕亮度一小段时间，减少Wake Lock循环时的闪烁情况。#-TD
+#-TR
+#-TBODY
+#-TABLE
+如果申请了PARTIAL_WAKE_LOCK,那么即使按Power键,系统也不会进Sleep。如Music播放时，如果申请了其它的Wake Lock,按Power键,系统还是会进Sleep。但如果不领会Android设计者的意图而滥用Wake Lock API，为了自身程序在后台的正常工作而长时间阻止AP进入休眠状态，就会成为待机电池杀手。
+当然，要在AndroidManifest.xml加权限：
++++code
 &lt;uses-permission android:name="android.permission.WAKE_LOCK"/&gt;
-</pre>
-
-<p>=======================原文终====================</p>
-
-<p>=====================更新=========================</p>
-
-<p>原本以为禁止硬件休眠就这么简单搞定了，后来发现事情远远比我想象的复杂。我发现在某些手机上，当屏幕关闭时，手机虽然还是在通过UDP发送数据，但是数据固定不变了，这说明传感器已经停止更新数据。后来查明原因：由于安卓的开放性，任何手机生产商都可以对系统裁剪、自定义。尤其是安卓的驱动程序，谷歌只定义了头文件，规定必须实现的函数，而具体实现完全由厂商决定。有些手机被设计成这样：当电源键被按下时，驱动程序关闭传感器电源。因此，即使加了WakeLock也没有卵用。毕竟，谷歌规定WakeLock只是“保持CPU运转”，并没有规定WakeLock需要保持传感器等外设运转。那么如果保持屏幕关闭之后传感器继续工作呢？</p>
-
-<p>我搜索到两篇英文文章，一篇是博客<a href="http://blog.kozaxinan.com/2012/08/using-accelerometer-when-screen-off_16.html">《Using Accelerometer when Screen Off》</a>，一篇是万能的栈爆网（stackoverflow）上的问答<a href="http://stackoverflow.com/questions/9982433/android-accelerometer-not-working-when-screen-is-turned-off">《Android accelerometer not working when screen is turned off》</a>。由于国内访问国外极慢的缘故，我已将两个网页保存到了本地，并在这里给出这两个网页的<a href="http://pan.baidu.com/s/1boj5A4R">下载地址</a>。</p>
-
-<p>在<a href="http://blog.kozaxinan.com/2012/08/using-accelerometer-when-screen-off_16.html">《Using Accelerometer when Screen Off》</a>中提到了一种对部分手机有效的办法，即注册一个Intent.ACTION_SCREEN_OFF消息的事件监听器，并在Intent.ACTION_SCREEN_OFF监听器中重新注册传感器事件监听器。于是，当屏幕关闭时，程序就会再次注册传感器事件监听器。示例代码如下：</p>
-
-<pre>
+---code
+=======================原文终====================
+=====================更新=========================
+原本以为禁止硬件休眠就这么简单搞定了，后来发现事情远远比我想象的复杂。我发现在某些手机上，当屏幕关闭时，手机虽然还是在通过UDP发送数据，但是数据固定不变了，这说明传感器已经停止更新数据。后来查明原因：由于安卓的开放性，任何手机生产商都可以对系统裁剪、自定义。尤其是安卓的驱动程序，谷歌只定义了头文件，规定必须实现的函数，而具体实现完全由厂商决定。有些手机被设计成这样：当电源键被按下时，驱动程序关闭传感器电源。因此，即使加了WakeLock也没有卵用。毕竟，谷歌规定WakeLock只是“保持CPU运转”，并没有规定WakeLock需要保持传感器等外设运转。那么如果保持屏幕关闭之后传感器继续工作呢？
+我搜索到两篇英文文章，一篇是博客#HREF"http://blog.kozaxinan.com/2012/08/using-accelerometer-when-screen-off_16.html"#-HREF1《Using Accelerometer when Screen Off》#-HREF2，一篇是万能的栈爆网（stackoverflow）上的问答#HREF"http://stackoverflow.com/questions/9982433/android-accelerometer-not-working-when-screen-is-turned-off"#-HREF1《Android accelerometer not working when screen is turned off》#-HREF2。由于国内访问国外极慢的缘故，我已将两个网页保存到了本地，并在这里给出这两个网页的#HREF"http://pan.baidu.com/s/1boj5A4R"#-HREF1下载地址#-HREF2。
+在#HREF"http://blog.kozaxinan.com/2012/08/using-accelerometer-when-screen-off_16.html"#-HREF1《Using Accelerometer when Screen Off》#-HREF2中提到了一种对部分手机有效的办法，即注册一个Intent.ACTION_SCREEN_OFF消息的事件监听器，并在Intent.ACTION_SCREEN_OFF监听器中重新注册传感器事件监听器。于是，当屏幕关闭时，程序就会再次注册传感器事件监听器。示例代码如下：
++++code
 public class YonService extends Service implements SensorEventListener
 {
     private static SensorManager mySensorManager;
@@ -173,65 +141,36 @@ public class YonService extends Service implements SensorEventListener
         mySensorManager.registerListener(this, mySensors.get(0), SensorManager.SENSOR_DELAY_NORMAL);
     }
 }
-</pre>
-
-<p>该方法的原理让我觉得有些奇怪，我自己的理解的流程是这样的：<br />
-（1）当屏幕关闭之时，安卓停掉所有传感器的电源；<br />
-（2）然后执行Intent.ACTION_SCREEN_OFF的回调函数；<br />
-（3）在回调函数中，重新注册传感器监听器。<span style="color: red;">而传感器监听器的注册导致传感器电源又重新开启。</span></p>
-
-<p>红字部分“<span style="color: #ff0000;">而传感器监听器的注册导致传感器电源又重新开启</span>”就应该是整个原理的关键，这个假设其实挺合理的，因为如果让我写传感器监听器的注册/注销函数，我肯定会在注册函数中去检查传感器电源是否已开启（未开启则开启），并且在注销函数中去检查是否所有传感器都已经注销（如果全部注销了，那么关闭传感器电源）。</p>
-
-<p>文末提到该作者的测试，发现在Samsung Galaxy S2上该方法是有效，而在Samsung Galaxy mini上则不起作用。我猜测原因有很多，比如在Samsung Galaxy mini，上述流程变成了（2）（3）（1）的顺序，即是先执行Intent.ACTION_SCREEN_OFF的回调函数再关闭传感器电源；也可能在传感器回调函数的注册函数中，加入了对当前屏幕状态的判断。</p>
-
-<p>在问答<a href="http://stackoverflow.com/questions/9982433/android-accelerometer-not-working-when-screen-is-turned-off">《Android accelerometer not working when screen is turned off》</a>中，描述了一个这样的需求：</p>
-
-<p><img src="1.jpg"></p>
-
-<p>也就是说，提主希望传感器和CPU等硬件都继续正常工作，但是让屏幕变暗。之所以选定这篇问答，是因为其中一个回答让我眼前一亮：</p>
-
-<p><img src="2.jpeg"></p>
-
-<p>之前所有的回答（包括提主自己的无效的方案），都是关注于“关闭屏幕后保持传感器工作”，而这个回答的思路则是“传感器工作时‘偷偷’关闭屏幕”。这就是我最向往的“博观而约取”，真的是开拓了一种新的思路。</p>
-
-<p>不过，这种直接往驱动程序对外接口文件里写入参数的方式，变数太大，因为各种型号的手机，其路径就可能不一样。比如我的<span style="font-weight: normal; color: #444444;">Samsung Galaxy S2就没有上述的/sys/devices/platform/msm_fb.196699文件。在Samsung Galaxy S2上我找到的方式是：</span></p>
-
-<pre>
+---code
+该方法的原理让我觉得有些奇怪，我自己的理解的流程是这样的：
+（1）当屏幕关闭之时，安卓停掉所有传感器的电源；
+（2）然后执行Intent.ACTION_SCREEN_OFF的回调函数；
+（3）在回调函数中，重新注册传感器监听器。#RED而传感器监听器的注册导致传感器电源又重新开启。#-RED
+红字部分“而传感器监听器的注册导致传感器电源又重新开启”就应该是整个原理的关键，这个假设其实挺合理的，因为如果让我写传感器监听器的注册/注销函数，我肯定会在注册函数中去检查传感器电源是否已开启（未开启则开启），并且在注销函数中去检查是否所有传感器都已经注销（如果全部注销了，那么关闭传感器电源）。
+文末提到该作者的测试，发现在Samsung Galaxy S2上该方法是有效，而在Samsung Galaxy mini上则不起作用。我猜测原因有很多，比如在Samsung Galaxy mini，上述流程变成了（2）（3）（1）的顺序，即是先执行Intent.ACTION_SCREEN_OFF的回调函数再关闭传感器电源；也可能在传感器回调函数的注册函数中，加入了对当前屏幕状态的判断。
+在问答#HREF"http://stackoverflow.com/questions/9982433/android-accelerometer-not-working-when-screen-is-turned-off"#-HREF1《Android accelerometer not working when screen is turned off》#-HREF2中，描述了一个这样的需求：
+1.jpg
+也就是说，提主希望传感器和CPU等硬件都继续正常工作，但是让屏幕变暗。之所以选定这篇问答，是因为其中一个回答让我眼前一亮：
+2.jpg
+之前所有的回答（包括提主自己的无效的方案），都是关注于“关闭屏幕后保持传感器工作”，而这个回答的思路则是“传感器工作时‘偷偷’关闭屏幕”。这就是我最向往的“博观而约取”，真的是开拓了一种新的思路。
+不过，这种直接往驱动程序对外接口文件里写入参数的方式，变数太大，因为各种型号的手机，其路径就可能不一样。比如我的Samsung Galaxy S2就没有上述的/sys/devices/platform/msm_fb.196699文件。在Samsung Galaxy S2上我找到的方式是：
++++code
 echo 0 &gt; /sys/devices/virtual/lcd/panel/lcd_power
-</pre>
-
-<p>即可关闭屏幕。而如果要开启屏幕，则可以</p>
-
-<pre>echo 1 &gt; /sys/devices/virtual/lcd/panel/lcd_power
-</pre>
-
-<p>实验发现，通过直接往驱动程序来写参数的方式，可以绕过安卓的逻辑。即通过这种方法让屏幕关掉，而其他部分保持不变。</p>
-
-<p>所以综合起来方案就是，先通过WakeLock锁定屏幕，不让它自动锁屏：</p>
-
-<pre>
+---code
+即可关闭屏幕。而如果要开启屏幕，则可以
++++code
+echo 1 &gt; /sys/devices/virtual/lcd/panel/lcd_power
+---code
+实验发现，通过直接往驱动程序来写参数的方式，可以绕过安卓的逻辑。即通过这种方法让屏幕关掉，而其他部分保持不变。
+所以综合起来方案就是，先通过WakeLock锁定屏幕，不让它自动锁屏：
++++code
 PowerManager t_power=(PowerManager)getSystemService(POWER_SERVICE);
 WakeLock t_wakelock=t_power.newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK,"SleepMonitor");
 t_wakelock.acquire();
-</pre>
-
-<p>然后再</p>
-
-<pre>
+---code
+然后再
++++code
 echo 0 &gt; /sys/devices/virtual/lcd/panel/lcd_power
+---code
+来从底层关闭显示屏电源。不过shell的路径要根据不同手机来调整，所以适合科研，不适合产品。好在很少有产品有这么奇葩的需求~~
 </pre>
-
-<p>来从底层关闭显示屏电源。不过shell的路径要根据不同手机来调整，所以适合科研，不适合产品。好在很少有产品有这么奇葩的需求~~</p>
-
-			﻿							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>

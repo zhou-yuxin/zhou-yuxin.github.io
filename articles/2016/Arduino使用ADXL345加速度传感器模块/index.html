@@ -1,25 +1,12 @@
-﻿<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-		<title>Arduino使用ADXL345加速度传感器模块</title>
-		<link rel="stylesheet" type="text/css" media="all" href="../../../style.css">
-	</head>
-	<body class="post-template-default single single-post postid-14 single-format-standard logged-in admin-bar single-author singular two-column left-sidebar customize-support">
-		<div id="page" class="hfeed">
-			<div id="main">
-				<div id="primary">
-					<div id="content" role="main">		
-						<article id="post-14" class="post-14 post type-post status-publish format-standard hentry category-18">
-							<header class="entry-header">
-								<h1 class="entry-title">Arduino使用ADXL345加速度传感器模块</h1>
-							</header>
-							<div class="entry-content">
+﻿<script src="../../../style.js"></script>
 
-<p>Arduino使用ADXL345需要使用I2C协议与其交互。可以自己用Wire库实现寄存器的读写。不过，本文要介绍的是直接使用封装好的现成的库——Adafruit_ADXL345库。</p>
+<pre id="title">Arduino使用ADXL345加速度传感器模块</pre>
 
-<p>先给一个最简单的使用Adafruit_ADXL345的例子：</p>
-
-<pre>#include "Adafruit_ADXL345_U.h"
+<pre id="content">
+Arduino使用ADXL345需要使用I2C协议与其交互。可以自己用Wire库实现寄存器的读写。不过，本文要介绍的是直接使用封装好的现成的库——Adafruit_ADXL345库。
+先给一个最简单的使用Adafruit_ADXL345的例子：
++++code
+#include "Adafruit_ADXL345_U.h"
 
 Adafruit_ADXL345_Unified g_accel=Adafruit_ADXL345_Unified(0);
 
@@ -44,34 +31,26 @@ void loop(void)
   Serial.println();
   delay(20);
 }
-</pre>
-
-<p>硬件上，只需要将ADXL345的电源（5V引脚或3.3V引脚）和GND引脚接到合适的电源，然后ADXL345的SDA引脚接到Arduino的A4引脚，ADXL345的SCL引脚接到Arduino的A5引脚即可。</p>
-
-<p>在这个例子中，首选通过如下代码：</p>
-
-<pre>g_accel.begin();
+---code
+硬件上，只需要将ADXL345的电源（5V引脚或3.3V引脚）和GND引脚接到合适的电源，然后ADXL345的SDA引脚接到Arduino的A4引脚，ADXL345的SCL引脚接到Arduino的A5引脚即可。
+在这个例子中，首选通过如下代码：
++++code
+g_accel.begin();
 g_accel.setRange(ADXL345_RANGE_2_G);
-</pre>
-
-<p>初始化AXDL345，并且设置加速度传感器的量程是±2g，如果需要±4g那么就是ADXL345_RANGE_4_G，±8g和±16g以此类推。</p>
-
-<p>接下来就是通过</p>
-
-<pre>int16_t t_x=g_accel.getX();
+---code
+初始化AXDL345，并且设置加速度传感器的量程是±2g，如果需要±4g那么就是ADXL345_RANGE_4_G，±8g和±16g以此类推。
+接下来就是通过
++++code
+int16_t t_x=g_accel.getX();
 int16_t t_y=g_accel.getY();
 int16_t t_z=g_accel.getZ();
-</pre>
-
-<p>来读取三个方向上的加速度值。注意，这里获取的值是寄存器中的整数，如果需要转换成单位为m/s<sup>2</sup>的加速度值，只需要把获得的整数乘以0.004*9.8。比如当ADXL345水平径直与桌面时，得到t_x=0,t_y=0,t_z=249，那么x,y,z三个分量上的加速度值分别是0,0,249*0.004*9.8=9.76 m/s<sup>2</sup>。这是因为，在硬件手册上说明，不论量程是多大，整数值的每一个1就代表一个4mg，也就是重力加速度g的千分之四。</p>
-
-<p>当然，AXDL345还有很多选项，比如设置数据的采样频率、设置寄存器偏移量等等。具体可以参考Adafruit_ADXL345的实现和硬件手册。</p>
-
-<p>最后贴上Adafruit_ADXL345的源代码~共三个文件：Adafruit_Sensor.h、Adafruit_ADXL345_U.h和Adafruit_ADXL345_U.cpp。</p>
-
-<p>Adafruit_Sensor.h</p>
-
-<pre>/*
+---code
+来读取三个方向上的加速度值。注意，这里获取的值是寄存器中的整数，如果需要转换成单位为m/s#SUP2#-SUP的加速度值，只需要把获得的整数乘以0.004*9.8。比如当ADXL345水平径直与桌面时，得到t_x=0,t_y=0,t_z=249，那么x,y,z三个分量上的加速度值分别是0,0,249*0.004*9.8=9.76 m/s#SUP2#-SUP。这是因为，在硬件手册上说明，不论量程是多大，整数值的每一个1就代表一个4mg，也就是重力加速度g的千分之四。
+当然，AXDL345还有很多选项，比如设置数据的采样频率、设置寄存器偏移量等等。具体可以参考Adafruit_ADXL345的实现和硬件手册。
+最后贴上Adafruit_ADXL345的源代码~共三个文件：Adafruit_Sensor.h、Adafruit_ADXL345_U.h和Adafruit_ADXL345_U.cpp。
+Adafruit_Sensor.h
++++code
+/*
 * Copyright (C) 2008 The Android Open Source Project
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
@@ -224,11 +203,11 @@ class Adafruit_Sensor {
   bool _autoRange;
 };
 
-#endif</pre>
-
-<p>Adafruit_ADXL345_U.h</p>
-
-<pre>/**************************************************************************/
+#endif
+---code
+Adafruit_ADXL345_U.h
++++code
+/**************************************************************************/
 /*!
     @file     Adafruit_ADS1015.h
     @author   K. Townsend (Adafruit Industries)
@@ -358,11 +337,10 @@ class Adafruit_ADXL345_Unified : public Adafruit_Sensor {
   uint8_t _clk, _do, _di, _cs;
   bool    _i2c;
 };
-</pre>
-
-<p>Adafruit_ADXL345_U.cpp</p>
-
-<pre>/**************************************************************************/
+---code
+Adafruit_ADXL345_U.cpp
++++code
+/**************************************************************************/
 /*!
     @file     Adafruit_ADXL345.cpp
     @author   K.Townsend (Adafruit Industries)
@@ -690,17 +668,5 @@ void Adafruit_ADXL345_Unified::getSensor(sensor_t *sensor) {
   sensor-&gt;min_value   = 156.9064F;  /*  16g = 156.9064 m/s^2  */
   sensor-&gt;resolution  = 0.03923F;   /*  4mg = 0.0392266 m/s^2 */
 }
+---code
 </pre>
-
-			﻿							</div>
-						</article>
-					</div>
-				</div>
-			</div>
-			<footer id="colophon" role="contentinfo">
-				<div id="site-generator"></div>
-				<script src="../../../footer.js"></script>
-			</footer>
-		</div>
-	</body>
-</html>
