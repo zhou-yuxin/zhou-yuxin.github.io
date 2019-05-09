@@ -269,7 +269,7 @@ int Channel::setPeriod(unsigned long period)
         if(ret &lt; 0)
         {
             ret = -errno;
-            ERROR({}, ret, true, "ioctl(%d, PERF_EVENT_IOC_DISABLE, 0) failed", m_fd);
+            ERROR({}, ret, true, "ioctl(%d, PERF_EVENT_IOC_DISABLE, 0) failed: ", m_fd);
         }
         m_period = 0;
         return 0;
@@ -279,7 +279,7 @@ int Channel::setPeriod(unsigned long period)
     if(ret &lt; 0)
     {
         ret = -errno;
-        ERROR({}, ret, true, "ioctl(%d, PERF_EVENT_IOC_PERIOD, &amp;(%lu)) failed",
+        ERROR({}, ret, true, "ioctl(%d, PERF_EVENT_IOC_PERIOD, &amp;(%lu)) failed: ",
             m_fd, period);
     }
     // if channel was disabled, enable it
@@ -289,7 +289,7 @@ int Channel::setPeriod(unsigned long period)
         if(ret &lt; 0)
         {
             ret = -errno;
-            ERROR({}, ret, true, "ioctl(%d, PERF_EVENT_IOC_ENABLE, 0) failed", m_fd);
+            ERROR({}, ret, true, "ioctl(%d, PERF_EVENT_IOC_ENABLE, 0) failed: ", m_fd);
         }
     }
     m_period = period;
@@ -471,12 +471,14 @@ public:
      *          -1 causes to block indefinitely until any sample is available,
      *          while 0 causes to return immediately, even if no samples are available.
      *      privdata: the user-defined argument passed to &lt;func&gt;, see below
-     *      func: the callback function to handle with each sample
+     *      on_sample: the callback function to handle with each sample
+     *      on_exit: the callback function to handle with exited process
      * RETURN: the count of samples handled, or a negative error code
      * NOTE: Designing in callback style is to reduce the overhead of data copy.
      */
     ssize_t pollSamples(int timeout, void* privdata,
-        void (*func)(void* privdata, Channel::Sample* sample));
+        void (*on_sample)(void* privdata, Channel::Sample* sample),
+        void (*on_exit)(void* privdata, pid_t pid));
 
 private:
 
@@ -485,7 +487,7 @@ private:
         pid_t pid;              // pid of this process
         Channel* channels;      // Channels for this process
 
-        bool operator &lt;(const Entry &amp;entry) const
+        bool operator &lt;(const Entry&amp; entry) const
         {
             return pid &lt; entry.pid;
         }
@@ -533,7 +535,7 @@ int ChannelSet::init(std::set&lt;Channel::Type&gt; types)
     if(fd &lt; 0)
     {
         int ret = -errno;
-        ERROR({}, ret, true, "epoll_create(1) failed");
+        ERROR({}, ret, true, "epoll_create(1) failed: ");
     }
     m_types.insert(m_types.begin(), types.begin(), types.end());
     m_period = 0;
@@ -546,7 +548,7 @@ void ChannelSet::deinit()
     if(m_epollfd &lt; 0)
         return;
     m_types.clear();
-    for(auto it = m_entries.begin(); it != m_entries.end(); it++)
+    for(auto it = m_entries.begin(); it != m_entries.end(); ++it)
         destroyChannels(it-&gt;channels);
     m_entries.clear();
     close(m_epollfd);
@@ -579,7 +581,7 @@ int ChannelSet::createChannels(Channel** pchannels, pid_t pid)
         ret = epoll_ctl(m_epollfd, EPOLL_CTL_ADD, fd, &amp;event);
         if(ret)
             ERROR(destroyChannels(channels, i), ret, true,
-                "epoll_ctl(%d, EPOLL_CTL_ADD, %d, &amp;evt) failed", m_epollfd, fd);
+                "epoll_ctl(%d, EPOLL_CTL_ADD, %d, &amp;evt) failed: ", m_epollfd, fd);
     }
     (*pchannels) = channels;
     return 0;
@@ -644,24 +646,24 @@ int ChannelSet::update(std::set&lt;pid_t&gt; pids)
         if((*pid_it) &lt; entry_it-&gt;pid)
         {
             to_adds.push_back(*pid_it);
-            pid_it++;
+            ++pid_it;
         }
         else if((*pid_it) &gt; entry_it-&gt;pid)
         {
             to_removes.push_back(entry_it-&gt;pid);
-            entry_it++;
+            ++entry_it;
         }
         else
         {
-            pid_it++;
-            entry_it++;
+            ++pid_it;
+            ++entry_it;
         }
     }
     to_adds.insert(to_adds.end(), pid_it, pid_end);
-    for(; entry_it != entry_end; entry_it++)
+    for(; entry_it != entry_end; ++entry_it)
         to_removes.push_back(entry_it-&gt;pid);
     // remove pids that not in &lt;pids&gt;
-    for(auto it = to_removes.begin(); it != to_removes.end(); it++)
+    for(auto it = to_removes.begin(); it != to_removes.end(); ++it)
     {
         Entry fake;
         fake.pid = (*it);
@@ -671,7 +673,7 @@ int ChannelSet::update(std::set&lt;pid_t&gt; pids)
         m_entries.erase(found);
     }
     // add new pids in &lt;pids&gt;
-    for(auto it = to_adds.begin(); it != to_adds.end(); it++)
+    for(auto it = to_adds.begin(); it != to_adds.end(); ++it)
     {
         Entry entry;
         entry.pid = (*it);
@@ -688,7 +690,7 @@ int ChannelSet::setPeriod(unsigned long period)
     if(m_epollfd &lt; 0)
         ERROR({}, -EINVAL, false, "this ChannelSet has not been initialized yet");
     size_t count = m_types.size();
-    for(auto it = m_entries.begin(); it != m_entries.end(); it++)
+    for(auto it = m_entries.begin(); it != m_entries.end(); ++it)
     {
         Channel* channels = it-&gt;channels;
         for(size_t i = 0; i &lt; count; i++)
@@ -703,19 +705,18 @@ int ChannelSet::setPeriod(unsigned long period)
 }
 
 ssize_t ChannelSet::pollSamples(int timeout, void* privdata,
-    void (*func)(void* privdata, Channel::Sample* sample))
+    void (*on_sample)(void* privdata, Channel::Sample* sample),
+    void (*on_exit)(void* privdata, pid_t pid))
 {
     if(m_epollfd &lt; 0)
         ERROR({}, -EINVAL, false, "this ChannelSet has not been initialized yet");
-    if(!func)
-        ERROR({}, -EINVAL, false, "param &lt;func = NULL&gt; is invalid");
     // poll available channels
     struct epoll_event events[EPOLL_BATCH_SIZE];
     int ret = epoll_wait(m_epollfd, events, EPOLL_BATCH_SIZE, timeout);
     if(ret &lt; 0)
     {
         ret = -errno;
-        ERROR({}, ret, true, "epoll_wait(%d, events, %d, %d) fialed",
+        ERROR({}, ret, true, "epoll_wait(%d, events, %d, %d) failed: ",
             m_epollfd, EPOLL_BATCH_SIZE, timeout);
     }
     // count of active channel
@@ -746,11 +747,12 @@ ssize_t ChannelSet::pollSamples(int timeout, void* privdata,
                 break;
             if(ret &lt; 0)
                 ERROR({}, ret, false, "channel-&gt;readSample(&amp;sample) failed");
-            func(privdata, &amp;sample);
+            if(on_sample)
+                on_sample(privdata, &amp;sample);
             sample_count++;
         }
     }
-    for(auto it = exit_pids.begin(); it != exit_pids.end(); it++)
+    for(auto it = exit_pids.begin(); it != exit_pids.end(); ++it)
     {
         Entry entry;
         entry.pid = (*it);
@@ -758,6 +760,8 @@ ssize_t ChannelSet::pollSamples(int timeout, void* privdata,
         assert(found != m_entries.end());
         destroyChannels(found-&gt;channels);
         m_entries.erase(found);
+        if(on_exit)
+            on_exit(privdata, entry.pid);
     }
     return sample_count;
 }
