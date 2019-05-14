@@ -436,7 +436,7 @@ public:
      *      types: set of Channel::Type to sample
      * RETURN: 0 if ok, or a negative error code
      */
-    int init(std::set&lt;Channel::Type&gt; types);
+    int init(std::set&lt;Channel::Type&gt;&amp; types);
     
     /* Uninitialize the ChannelSet.
      */
@@ -462,7 +462,7 @@ public:
      * NOTE: For any process that is in this ChannelSet but not in &lt;pids&gt; will be removed,
      *      while for any process that is not in this ChannelSet but in &lt;pids&gt; will be added.
      */
-    int update(std::set&lt;pid_t&gt; pids);
+    int update(std::set&lt;pid_t&gt;&amp; pids);
 
     /* Set the period of all Channels.
      *      period: the new period to sample
@@ -529,7 +529,7 @@ ChannelSet::~ChannelSet()
     deinit();
 }
 
-int ChannelSet::init(std::set&lt;Channel::Type&gt; types)
+int ChannelSet::init(std::set&lt;Channel::Type&gt;&amp; types)
 {
     if(m_epollfd &gt;= 0)
         ERROR({}, -EINVAL, false, "this ChannelSet has been initialized already");
@@ -636,7 +636,7 @@ int ChannelSet::remove(pid_t pid)
     return 0;
 }
 
-int ChannelSet::update(std::set&lt;pid_t&gt; pids)
+int ChannelSet::update(std::set&lt;pid_t&gt;&amp; pids)
 {
     if(m_epollfd &lt; 0)
         ERROR({}, -EINVAL, false, "this ChannelSet has not been initialized yet");
