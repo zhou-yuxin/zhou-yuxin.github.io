@@ -1,0 +1,389 @@
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+
+<script src="../../../style.js"></script>
+
+<pre id="title">采样cgroup的跨NUMA访问</pre>
+
+<pre id="content">
+前面的两篇《#HREF"../基于perf的内存访问采样/index.html"#-HREF1基于perf的内存访问采样#-HREF2》和《#HREF"../获取虚拟页所在的NUMA节点/index.html"#-HREF1获取虚拟页所在的NUMA节点#-HREF2》都是为了这篇最终目的做准备的。有了perf来采集进程访问的虚拟地址，又能够将虚拟地址转换成节点，那么就可以采样进程访问的内存所在的节点了。同时，perf还能采样所在的CPU，而CPU号也很容易转换成NUMA号。于是一次采样是否跨NUMA，直接比较内存节点号与CPU节点号是否一致即可。
+实际使用中，通常是对一组进程做监测，比如一个cgroup。所以还需要封装一层，能够管理一组进程。
+在《#HREF"../基于perf的内存访问采样/index.html"#-HREF1基于perf的内存访问采样#-HREF2》中，ChannelSet已经能够管理一组进程的内存采样了，并且通过pollSamples()接口，还能得知进程的退出。因此，基本思路就是，实现一个CGroupMonitor类，能够从cgroup的cgroup.procs文件中得到该cgroup中所有的进程，并且为每个进程创建PageNode实例以供查询虚拟地址对应的NUMA节点号。而当调用ChannelSet的pollSamples()接口时，如果有进程退出，则把对应的PageNode实例删除。由于cpu号到NUMA节点号的转换非常简单，因此就顺带交给CGroupMonitor管理了。
+cgroupmonitor.h
++++code
+#ifndef CGROUPMONITOR_H
+#define CGROUPMONITOR_H
+
+#include "common.h"
+#include "pagenode.h"
+#include "channelset.h"
+
+#include &lt;set&gt;
+
+class CGroupMonitor
+{
+public:
+
+    struct Sample
+    {
+        uint32_t cpu_node;          // on which NUMA node the CPU is
+        uint32_t mem_node;          // on which NUMA node the memory is
+        Channel::Sample* detail;    // detailed information
+    };
+
+    CGroupMonitor();
+
+    ~CGroupMonitor();
+
+    /* Initialize the CGroupMonitor. Bind it the the given cgroup.
+     *      path: the path the the cgroup in the filesystem
+     * RETURN: 0 if ok, or a negative error code.
+     */
+    int bind(const char* path);
+
+    /* Uninitialize
+     */
+    void unbind();
+
+    /* Refresh the processes in the cgroup.
+     * RETURN: 0 if ok, or a negative error code.
+     * NOTE: call it if any new process is added into the cgroup. 
+     */
+    int update();
+
+    /* Set the period of all Channels of all processes in the cgroup.
+     *      period: the new period to sample
+     * RETURN: 0 if ok, or a negative error code
+     * NOTE: &lt;period&gt; means to trigger a sample every time &lt;period&gt; load/store instructions
+     *      are executed. If sampling is too fast, you can set a larger period. Otherwise,
+     *      If sampling is too slow, you can set a less period.
+     */
+    int setPeriod(unsigned long period);
+
+    /* Invalidate the cached information of given process.
+     *      pid: the PID of process
+     *      start: the start address
+     *      end: the end address
+     * RETURN: 0 if ok, or a negative error
+     * NOTE: the cached information in range [start, end) of &lt;pid&gt; is cleared 
+     */
+    int invalidate(pid_t pid, uint64_t start = 0, uint64_t end = 0xffffffffffffffffUL);
+
+    /* Poll samples from Channels of all processes in the cgroup.
+     *      timeout: the number of milliseconds to block.
+     *          -1 causes to block indefinitely until any sample is available,
+     *          while 0 causes to return immediately, even if no samples are available.
+     *      force_update: if the cached node is 'unaccessible', then re-fetch the node information
+     *      privdata: the user-defined argument passed to call-back functions, see below
+     *      on_sample: the callback function to handle with each sample
+     * RETURN: the count of samples handled, or a negative error code
+     * NOTE: Designing in callback style is to reduce the overhead of data copy.
+     */
+    ssize_t pollSamples(int timeout, bool force_update,
+        void* privdata,
+        void (*on_sample)(void* privdata, Sample* sample));
+
+private:
+    int onChannelSample(Channel::Sample* sample, bool force,
+        void* privdata,
+        void (*on_sample)(void* privdata, Sample* sample));
+
+    void onProcessExit(pid_t pid);
+
+private:
+    char* m_path;
+    ChannelSet m_channelset;
+
+    struct Entry
+    {
+        pid_t pid;
+        PageNode* pagenode;
+
+        bool operator &lt;(const Entry&amp; entry) const
+        {
+            return pid &lt; entry.pid;
+        }
+    };
+
+    std::set&lt;Entry&gt; m_entries;
+    uint8_t* m_cpu_nodes;
+    int m_cpu_count;
+};
+
+#endif
+---code
+cgroupmonitor.cpp
++++code
+#include "cgroupmonitor.h"
+
+#include &lt;numa.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;sys/sysinfo.h&gt;
+
+CGroupMonitor::CGroupMonitor()
+{
+    m_path = NULL;
+}
+
+CGroupMonitor::~CGroupMonitor()
+{
+    unbind();
+}
+
+int CGroupMonitor::bind(const char* path)
+{
+    if(m_path)
+        ERROR({}, -EINVAL, false, "This CGroupMonitor has bound to '%s' already", m_path);
+    std::set&lt;Channel::Type&gt; types;
+    types.insert(Channel::CHANNEL_LOAD);
+    types.insert(Channel::CHANNEL_STORE);
+    int ret = m_channelset.init(types);
+    if(ret)
+        ERROR({}, ret, false, "m_channelset.init(types) failed");
+    m_path = (char*)path;
+    ret = update();
+    if(ret)
+        ERROR(
+            {
+                m_path = NULL;
+                m_channelset.deinit();
+            },
+            ret, false, "update() failed");
+    m_path = strdup(path);
+    m_cpu_count = get_nprocs_conf();
+    assert(m_cpu_count &gt; 0);
+    m_cpu_nodes = new uint8_t[m_cpu_count];
+    memset(m_cpu_nodes, 255, m_cpu_count);
+    return 0;
+}
+
+void CGroupMonitor::unbind()
+{
+    if(m_path == NULL)
+        return;
+    m_channelset.deinit();
+    for(auto it = m_entries.begin(); it != m_entries.end(); ++it)
+        delete it-&gt;pagenode;
+    delete m_cpu_nodes;
+    free(m_path);
+    m_path = NULL;
+}
+
+// get pids from /path/to/cgroup/cgroup.procs
+static int getPids(const char* path, std::set&lt;pid_t&gt;&amp; pids)
+{
+    int dir_fd = open(path, O_DIRECTORY);
+    if(dir_fd &lt; 0)
+    {
+        int ret = -errno;
+        ERROR({}, ret, true, "open('%s', O_DIRECTORY) failed: ", path);
+    }
+    int fd = openat(dir_fd, "cgroup.procs", O_RDONLY);
+    if(fd &lt; 0)
+    {
+        int ret = -errno;
+        ERROR(close(dir_fd),
+            ret, true, "openat(%d, 'cgroup.procs', O_RDONLY) failed: ", dir_fd);
+    }
+    FILE* file = fdopen(fd, "r");
+    while(true)
+    {
+        pid_t pid;
+        int ret = fscanf(file, "%d", &amp;pid);
+        if(ret != 1)
+            break;
+        pids.insert(pid);
+    }
+    fclose(file);
+    return 0;
+}
+
+int CGroupMonitor::update()
+{
+    if(m_path == NULL)
+        ERROR({}, -EINVAL, false, "This CGroupMonitor has not bound yet");
+    std::set&lt;pid_t&gt; pids;
+    int ret = getPids(m_path, pids);
+    if(ret)
+        ERROR({}, ret, false, "getPids('%s', pids) failed", m_path);
+    ret = m_channelset.update(pids);
+    if(ret)
+        ERROR({}, ret, false, "m_channelset.update(pids) failed");
+    return 0;
+}
+
+int CGroupMonitor::setPeriod(unsigned long period)
+{
+    if(m_path == NULL)
+        ERROR({}, -EINVAL, false, "This CGroupMonitor has not bound yet");
+    int ret = m_channelset.setPeriod(period);
+    if(ret)
+        ERROR({}, ret, false, "m_channelset.setPeriod(%lu) failed", period);
+    return 0;
+}
+
+int CGroupMonitor::invalidate(pid_t pid, uint64_t start, uint64_t end)
+{
+    Entry fake;
+    fake.pid = pid;
+    auto it = m_entries.find(fake);
+    if(it == m_entries.end())
+        return 0;
+    int ret = it-&gt;pagenode-&gt;invalidate(start, end);
+    if(ret)
+        ERROR({}, ret, false, "pagenode-&gt;invalidate(%lx, %lx) failed", start, end);
+    return 0;
+}
+
+ssize_t CGroupMonitor::pollSamples(int timeout, bool force_update,
+    void* privdata,
+    void (*on_sample)(void* privdata, Sample* sample))
+{
+    if(m_path == NULL)
+        ERROR({}, -EINVAL, false, "This CGroupMonitor has not bound yet");
+    struct argument
+    {
+        CGroupMonitor* self;
+        bool force;
+        void* privdata;
+        void (*on_sample)(void* privdata, Sample* sample);
+    }
+    arg = 
+    {
+        .self = this,
+        .force = force_update,
+        .privdata = privdata,
+        .on_sample = on_sample,
+    };
+    ssize_t count = m_channelset.pollSamples(timeout, &amp;arg,
+        // for any Channel::Sample, wrap it to Sample,
+        //   with cpu_node and mem_node additionally)
+        [](void* privdata, Channel::Sample* sample)
+        {
+            auto* arg = (struct argument*)privdata;
+            arg-&gt;self-&gt;onChannelSample(sample, arg-&gt;force, arg-&gt;privdata, arg-&gt;on_sample);
+        },
+        // for any exited process, delete if from m_entries
+        [](void* privdata, pid_t pid)
+        {
+            auto* arg = (struct argument*)privdata;
+            arg-&gt;self-&gt;onProcessExit(pid);
+        });
+    if(count &lt; 0)
+        ERROR({}, count, false, "m_channelset.pollSamples(%d, ...) failed", timeout);
+    return count;
+}
+
+int CGroupMonitor::onChannelSample(Channel::Sample* sample, bool force,
+    void* privdata,
+    void (*on_sample)(void* privdata, Sample* sample))
+{
+    // convert cpu to numa node
+    int cpu = sample-&gt;cpu;
+    if(cpu &lt; 0 || cpu &gt;= m_cpu_count)
+        return 0;
+    int cpu_node = m_cpu_nodes[cpu];
+    if(cpu_node == 255)
+    {
+        cpu_node = numa_node_of_cpu(cpu);
+        if(cpu_node &lt; 0)
+        {
+            int ret = -errno;
+            ERROR({}, ret, true, "numa_node_of_cpu(%d) failed: ", cpu);
+        }
+        assert(cpu_node &lt; 255);
+        m_cpu_nodes[cpu] = cpu_node;
+    }
+    // convert memory address to numa node
+    Entry entry;
+    entry.pid = sample-&gt;pid;
+    auto it = m_entries.find(entry);
+    PageNode* pagenode;
+    if(it != m_entries.end())
+        pagenode = it-&gt;pagenode;
+    else
+    {
+        pagenode = new PageNode();
+        int ret = pagenode-&gt;bind(entry.pid);
+        if(ret)
+            ERROR(delete pagenode, ret, false, "pagenode-&gt;bind(%d) failed", entry.pid);
+        entry.pagenode = pagenode;
+        m_entries.insert(entry);
+    }
+    int mem_node = pagenode-&gt;where(sample-&gt;address, force);
+    if(mem_node &lt; 0)
+        ERROR({}, mem_node, false, "pagenode-&gt;where(%lx, %d) failed", sample-&gt;address, force);
+    else if(mem_node == 255)
+        return 0;
+    // call back user function
+    Sample s = 
+    {
+        .cpu_node = (uint32_t)cpu_node,
+        .mem_node = (uint32_t)mem_node,
+        .detail = sample,
+    };
+    if(on_sample)
+        on_sample(privdata, &amp;s);
+    return 0;
+}
+
+void CGroupMonitor::onProcessExit(pid_t pid)
+{
+    Entry fake;
+    fake.pid = pid;
+    auto it = m_entries.find(fake);
+    if(it == m_entries.end())
+        return;
+    delete it-&gt;pagenode;
+    m_entries.erase(it);
+}
+---code
+接下来做测试。把common.h、channel.h、channel.cpp、chanelset.h、channelset.cpp、pagenode.h、pagenode.cpp、cgroupmonitor.h和cgroupmonitor.cpp放在同一个目录下，并新建一个test.cpp：
++++code
+#include "cgroupmonitor.h"
+
+int main(int argc, char* argv[])
+{
+    unsigned long period;
+    const char* cgroup_path;
+    if(argc != 3 ||
+        sscanf(argv[1], "%lu", &amp;period) != 1)
+    {
+        printf("USAGE: %s &lt;period&gt; &lt;cgroup-path&gt;\n", argv[0]);
+        return 1;
+    }
+    cgroup_path = argv[2];
+    CGroupMonitor cgm;
+    int ret = cgm.bind(cgroup_path);
+    if(ret)
+        ERROR({}, ret, false, "cgm.bind('%s') failed", cgroup_path);
+    ret = cgm.setPeriod(period);
+    if(ret)
+        ERROR({}, ret, false, "cgm.setPeriod(%lu) failed", period);
+    while(true)
+    {
+        ssize_t count = cgm.pollSamples(1000, true, NULL,
+            [](void* privdata, CGroupMonitor::Sample* sample)
+            {
+                auto* detail = sample-&gt;detail;
+                printf("type: %x, cpu: %u, pid: %u, address: %lx, cpu node: %u, memory node: %u\n",
+                    detail-&gt;type, detail-&gt;cpu, detail-&gt;pid, detail-&gt;address,
+                    sample-&gt;cpu_node, sample-&gt;mem_node);
+            });
+        if(count &lt; 0)
+            ERROR({}, (int)count, false, "cgm.pollSamples(1000, ...) failed");
+    }
+    return 0;
+}
+---code
+使用如下命令编译：
++++code
+g++ -std=gnu++11 *.cpp -o test -lnuma
+---code
+假设有一个cgroup，路径为/sys/fs/cgroup/cpu/cgm_test/，可以使用如下命令：
++++code
+./test 100000 /sys/fs/cgroup/cpu/cgm_test/
+---code
+这个cgroup里面有两个进程，结果如下：
+1.png
+红框框里的就是跨NUMA访问了。
+</pre>

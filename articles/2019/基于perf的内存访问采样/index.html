@@ -318,6 +318,7 @@ int Channel::readSample(Sample* sample)
     assert(tail &lt;= head);
     if(tail == head)
         return -EAGAIN;
+    bool available = false;
     while(tail &lt; head)
     {
         // the data_head and data_tail never wrap, they are logical
@@ -325,20 +326,23 @@ int Channel::readSample(Sample* sample)
         auto* entry = (struct perf_sample*)((char*)m_buffer + PAGE_SIZE + position);
         tail += entry-&gt;header.size;
         // read the record
-        if(entry-&gt;header.type == PERF_RECORD_SAMPLE &amp;&amp; entry-&gt;id == m_id)
+        if(entry-&gt;header.type == PERF_RECORD_SAMPLE &amp;&amp; entry-&gt;id == m_id &amp;&amp;
+            #RED// this line is to filter the wrong pid caused by kernel bug#-RED
+            entry-&gt;pid == m_pid)
         {
             sample-&gt;type = m_type;
             sample-&gt;cpu = entry-&gt;cpu;
             sample-&gt;pid = entry-&gt;pid;
             sample-&gt;tid = entry-&gt;tid;
             sample-&gt;address = entry-&gt;address;
+            available = true;
             break;
         }
     }
     assert(tail &lt;= head);
     // update data_tail to notify kernel write new data
     meta-&gt;data_tail = tail;
-    return 0;
+    return available ? 0 : -EAGAIN;
 }
 
 pid_t Channel::getPid()
