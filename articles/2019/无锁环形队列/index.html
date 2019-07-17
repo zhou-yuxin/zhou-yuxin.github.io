@@ -1,5 +1,3 @@
-<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-
 <script src="../../../style.js"></script>
 
 <pre id="title">无锁环形队列</pre>
@@ -199,10 +197,124 @@ public:
 };
 #endif
 ---code
+===============================最终=============================
+然而，在实际的应用中，有可能只需要Pop阻塞，而不需要Push阻塞（比如使用ring_buffer实现某种资源管理器，当需要资源时，使用Pop获得一个空闲资源，用完后使用Push归还。那么可以肯定的是，归还时一定是有“空槽”可以直接归还成功的）。这种情况下，slot_available就是多余的，只会增加性能开销。因此，我需要能够使用条件编译、或者更灵活的模板来实现“定制化”功能。最终的代码如下：
+ring_buffer.h
++++code
+#pragma once
+
+#include &lt;common.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;semaphore.h&gt;
+
+// T: 负载类型
+// block_pop: 若为true，当队列为空时，会阻塞等待。若为false，请确保pop时队列一定不为空
+// block_push: 若为true，当队列为满时，会阻塞等待。若为false，请确保push时队列一定不为满
+// busy_wait: 若slot存在争抢，是否忙等（否则放弃时间片）
+template &lt;typename T, bool block_pop, bool block_push, bool busy_wait = false&gt;
+class RingBuffer
+{
+private:
+    enum State
+    {
+        IDLE = 0,       // 该slot没有数据
+        PUTTING,        // 有一个线程正在放入数据
+        VALID,          // 该slot有数据
+        TAKING,         // 有一个线程正在取出数据
+    };
+
+    size_t capacity;            // 容量
+    T* slots;                   // 所有的slot
+    State* states;              // 每一个slot的状态
+    std::atomic&lt;size_t&gt; head;   // 逻辑上的头（不回滚）
+    std::atomic&lt;size_t&gt; tail;   // 逻辑上的尾（不回滚）
+    sem_t data_available;       // 可以取得的数据个数
+    sem_t slot_available;       // 可以使用的slot个数
+
+private:
+    void wait()
+    {
+        if(!busy_wait)
+            sleep(0);
+    }
+
+public:
+    // capacity: 最大容量
+    RingBuffer(size_t _capacity) : capacity(_capacity), head(0), tail(0)
+    {
+        assert(capacity &gt; 0);
+        slots = new T[capacity];
+        states = new State[capacity];
+        for(size_t i = 0; i &lt; capacity; i++)
+            states[i] = State::IDLE;
+        if(block_pop)
+            DO_WITH_ASSERT(sem_init(&amp;data_available, 0, 0), _ret_ == 0);
+        if(block_push)
+            DO_WITH_ASSERT(sem_init(&amp;slot_available, 0, capacity), _ret_ == 0);
+    }
+
+    ~RingBuffer()
+    {
+        delete[] slots;
+        delete[] states;
+        if(block_pop)
+            DO_WITH_ASSERT(sem_destroy(&amp;data_available), _ret_ == 0);
+        if(block_push)
+            DO_WITH_ASSERT(sem_destroy(&amp;slot_available), _ret_ == 0);
+    }
+
+    // 向队列塞入（多线程安全）
+    void Push(T data)
+    {
+        if(block_push)
+            DO_WITH_ASSERT(sem_wait(&amp;slot_available), _ret_ == 0);
+        auto index = (tail++) % capacity;
+        auto* slot = slots + index;
+        auto* state = states + index;
+        // 争抢放入权
+        while(!__sync_bool_compare_and_swap(state, State::IDLE, State::PUTTING))
+            wait();
+        *slot = data;
+        // 必然有且只有一个线程（即当前线程）会修改state，所以必然一次性成功
+        DO_WITH_ASSERT(__sync_lock_test_and_set(state, State::VALID), _ret_ == State::PUTTING);
+        if(block_pop)
+            DO_WITH_ASSERT(sem_post(&amp;data_available), _ret_ == 0);
+    }
+
+    // 从队列取出（多线程安全）
+    T Pop()
+    {
+        if(block_pop)
+            DO_WITH_ASSERT(sem_wait(&amp;data_available), _ret_ == 0);
+        auto index = (head++) % capacity;
+        auto* slot = slots + index;
+        auto* state = states + index;
+        // 争抢取出权
+        while(!__sync_bool_compare_and_swap(state, State::VALID, State::TAKING))
+            wait();
+        T data = *slot;
+        // 必然有且只有一个线程（即当前线程）会修改state，所以必然一次性成功
+        DO_WITH_ASSERT(__sync_lock_test_and_set(state, State::IDLE), _ret_ == State::TAKING);
+        if(block_push)
+            DO_WITH_ASSERT(sem_post(&amp;slot_available), _ret_ == 0);
+        return data;
+    }
+
+    // 获取当前队列长度（多线程安全）
+    size_t Length()
+    {
+        size_t head_snap = head.load();
+        size_t tail_snap = tail.load();
+        if(head_snap &lt; tail_snap)
+            return tail_snap - head_snap;
+        else
+            return 0;
+    }
+};
+---code
 依赖的common.h如下：
 +++code
-#ifndef COMMON_H
-#define COMMON_H
+#pragma once
 
 #include &lt;errno.h&gt;
 #include &lt;stdio.h&gt;
@@ -251,7 +363,5 @@ public:
     size_t _offset_ = (size_t)(&amp;(((type*)0)-&gt;member));  \
     (type*)((size_t)(ptr) -  _offset_);                 \
 })
-
-#endif
 ---code
 </pre>

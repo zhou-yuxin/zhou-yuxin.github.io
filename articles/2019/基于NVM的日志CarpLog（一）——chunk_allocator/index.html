@@ -1,0 +1,160 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">基于NVM的日志CarpLog（一）——chunk_allocator</pre>
+
+<pre id="content">
+这半年都是在优化rocksdb。rocksdb有两大组件——WAL和Memtable。Memtable是真正所需的数据结构，可以理解为一个存放了键值对的哈希表。但是，作为一个持久化数据库，rocksdb必须保证数据不会因为异常退出（进程被杀死或者系统断电等）而丢失。因此，当Memtable过大时，会被刷入磁盘。但是，如果Memtable被刷入磁盘之前系统崩溃了呢？这就是WAL(Write Ahead Log)存在的意义——所有的写操作都会先被写入WAL中（并且确保落入磁盘），然后才写Memtable。当Memtable落盘之后，就可以删除WAL了。这样，如果断电，可以重放WAL中的操作，重建Memtable。
+结果，WAL成了系统性能瓶颈。原因主要有两方面：
+#UL
+#LI
+WAL是一个磁盘文件，必须得串行地、顺序地写入（否则，文件内容不可预期）；
+#-LI
+#LI
+为了确保落盘（而不是驻留在Page Cache里），需要调用fsync()，非常耗时。
+#-LI
+#-UL
+几乎所有数据库系统都会引入日志系统，以保证操作的持久性、原子性，但是也因此大幅牺牲了性能。比如rocksdb中，Memtable的插入是可以多线程并行，可是所有线程不得不串行地写入WAL。
+本项目的目标就是利用新型的非易失性存储器(NVM)来实现一个可以并发写入的、保证原子性、持久化，并且可以回收空间的日志系统：
+#UL
+#LI
+并发(Concurrent)：很好理解，就是真正意义上的多个线程同时写入，而不是每次单个线程串行写入；
+#-LI
+#LI
+原子性(Atomic)：用户通过接口Write(data, length)写入一条记录时，如果成功，那么下次读取时必然读到完整的记录（data, length)，反之，一个字节也读取不到。换言之，读取日志时，不可能读到一条不完整的日志（哪怕写入中途断电）；
+#-LI
+#LI
+持久化(Persistent)：如果Write(data, length)返回成功，那么即使下一刻就异常崩溃，那么重启时，也能保证这条记录能够被读取到；
+#-LI
+#LI
+可回收(Recyclable)：一般的日志，由于基于文件，只能追加内容(append-only)，而无法删除其中某一条记录（结果就是，当日志过大，且其中有较多垃圾数据时，就得重写日志，并把老的日志文件删除，比如Redis的AOF rewrite，大大增加了软件复杂度，并导致性能抖动）。可回收意味着每一条日志都可以被删除，其占用的存储空间可以被重用。
+#-LI
+#-UL
+我要实现的日志系统满足以上四个特性，因此名曰CarpLog。
+在这个系统中，首先需要一个内存分配器，用于管理NVM空间。当有一条新的记录待写时，分配合适大小的NVM块。当删除一条记录时，则释放其占用的NVM块。但是，一般的内存分配器都无法胜任，因为它必须提供#REDmalloc_at#-RED的功能（关于malloc_at的意义，参见《#HREF../../2018/面向非易失存储器（NVM）的内存分配器——libnvmalloc/index.html#-HREF1面向非易失存储器（NVM）的内存分配器——libnvmalloc#-HREF2》）。那么是否可以直接使用《#HREF../../2018/面向非易失存储器（NVM）的内存分配器——libnvmalloc/index.html#-HREF1面向非易失存储器（NVM）的内存分配器——libnvmalloc#-HREF2》中的libnvmalloc呢？理论上是可行的，但是实际上有更好的选择。
+细想就会发现，CarpLog对NVM分配的需求与一般的应用场景相比，有以下两点重要区别：
+#UL
+#LI
+CarpLog不要求内存连续：记录是一个逻辑概念，其在内存上的存储结构对用户而言是不可见的。因此，即使分配的是离散的NVM块，也可以通过链表串在一起来表示一个记录。写和读都提供相应的接口即可，而不是向用户暴露裸内存地址；
+#-LI
+#LI
+CarpLog不追求内存利用率：由于记录是可以回收的，因此，即使存在大量的内存浪费也不是什么问题。比如说，rocksdb中，一个Memtable最大容量是64MB，那么如果我分配一个1GB的NVM空间给CarpLog使用，即使CarpLog的内存利用率只有10%（比如分配一个1KB的NVM块，实际只写入100字节），也完全够用。这样，当Memtable达到64MB时，CarpLog大致也写入了64MB实际内容，最糟糕的情况下，也最多占用640MB的NVM空间。
+#-LI
+#-UL
+正是因为CarpLog对分配的NVM块“不挑剔”，所以我们可以利用这个特性做一个优化——把NVM分成相同大小的chunk（比如都是1KB），NVM就按照1KB chunk来分配。如此一来，极大简化了内存分配器的逻辑（因此也必然有性能提升），同时不存在内存外碎片。
+理解了这点以后，CarpLog的chunk_allocator就非常简单了。当用户指定NVM容量为capacity，每一个chunk大小为chunk_size时，就能够计算出chunk个数chunk_count = capacity / chunk_size。然后创建一个有chunk_size个bit的bitmap，且都初始化为0（每个bit表示对应的chunk是否被分配）。接下来，用户可以调用AllocAt()，把所有已经占用的chunk对应的bit值为1。最后，用户调用AllocAtFinish()，表示不会有更多AllocAt()调用了，此时chunk_allocator遍历bitmap，把所有bit为0的chunk的编号加入一个容量为chunk_count的ring_buffer中。接下来，Alloc()操作只是简单地从ring_buffer中Pop()出一个chunk id，而Free()只是把往ring_buffer中Push()入一个chunk id。
+于是，《#HREF../无锁环形队列/index.html#-HREF1无锁环形队列#-HREF2》中的common.h有这么多没有用到的宏定义的原因，也得到了解释^_^（就是为了CarpLog而写的）。
+代码呼之欲出：
+chunk_allocator.hpp
++++code
+#pragma once
+
+#include &lt;common.h&gt;
+#include &lt;ring_buffer.hpp&gt;
+
+namespace CarpLog
+{
+
+class ChunkAllocator
+{
+private:
+    size_t chunk_count;                     // chunk总数
+    uint8_t* bitmap;                        // 用于标记各个chunk是否分配
+    RingBuffer&lt;size_t, true, false&gt; pool;   // 所有空闲chunk的编号
+                                            // 如果上层逻辑正确，那么pool肯定不会满
+#ifndef NDEBUG
+    bool ready_to_alloc;                    // 是否进入alloc/free阶段
+#endif
+
+public:
+    // chunk_count：chunk总数
+    ChunkAllocator(size_t _chunk_count) : chunk_count(_chunk_count), pool(_chunk_count)
+    {
+        assert(chunk_count &gt; 0);
+        auto byte_count = DIV_CEIL(chunk_count, 8);
+        bitmap = new uint8_t[byte_count];
+        memset(bitmap, 0, byte_count);
+#ifndef NDEBUG
+        ready_to_alloc = false;
+#endif
+    }
+
+    ~ChunkAllocator()
+    {
+#ifndef NDEBUG
+        assert(bitmap);
+        delete bitmap;
+#endif
+    }
+
+    // 把第chunk_index个chunk标记为已分配（多线程安全）
+    bool AllocAt(size_t chunk_index)
+    {
+        assert(bitmap);
+        assert(!ready_to_alloc);
+        if(chunk_index &gt;= chunk_count)
+            ERROR({}, false, false, "The chunk of index %lu is out of range", chunk_index);
+        auto byte_index = chunk_index / 8;
+        auto bit_index = chunk_index % 8;
+        // 并发置位，并获取原值
+        auto byte = __sync_fetch_and_or(bitmap + byte_index, 1 &lt;&lt; bit_index);
+        if((byte &gt;&gt; bit_index) &amp; 1)
+            ERROR({}, false, false, "The chunk of index %lu is allocated", chunk_index);
+        return true;
+    }
+
+    // 结束Allocat阶段，进入Alloc/Free阶段（只能单线程调用）
+    void AllocAtFinish()
+    {
+        assert(bitmap);
+        assert(!ready_to_alloc);
+        for(size_t i = 0; i &lt; chunk_count; i++)
+        {
+            auto byte_index = i / 8;
+            auto bit_index = i % 8;
+            auto&amp; byte = bitmap[byte_index];
+            if(!((byte &gt;&gt; bit_index) &amp; 1))
+                pool.Push(i);
+        }
+#ifndef NDEBUG
+        ready_to_alloc = true;
+#else
+        delete bitmap;
+        bitmap = nullptr;
+#endif
+    }
+
+    // 分配一个chunk，返回编号（多线程安全）
+    size_t Alloc()
+    {
+        size_t chunk_index = pool.Pop();
+#ifndef NDEBUG
+        assert(bitmap);
+        assert(ready_to_alloc);
+        assert(chunk_index &lt; chunk_count);
+        auto byte_index = chunk_index / 8;
+        auto bit_index = chunk_index % 8;        
+        auto byte = __sync_fetch_and_or(bitmap + byte_index, 1 &lt;&lt; bit_index);
+        assert(!((byte &gt;&gt; bit_index) &amp; 1));
+#endif
+        return chunk_index;
+    }
+
+    // 释放指定编号的chunk（多线程安全）
+    void Free(size_t chunk_index)
+    {
+#ifndef NDEBUG
+        assert(bitmap);
+        assert(ready_to_alloc);
+        assert(chunk_index &lt; chunk_count);
+        auto byte_index = chunk_index / 8;
+        auto bit_index = chunk_index % 8;        
+        auto byte = __sync_fetch_and_and(bitmap + byte_index, ~(1 &lt;&lt; bit_index));
+        assert((byte &gt;&gt; bit_index) &amp; 1);
+#endif
+        pool.Push(chunk_index);
+    }
+};
+
+}
+---code
+</pre>
