@@ -1,0 +1,398 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">基于NVM的日志CarpLog（二）——record</pre>
+
+<pre id="content">
+实现并发写入的关键就是record。用户通过一次write()调用获得的就是一个record实例，具体而言：
++++code
+Record* record = log.Write(data, length);
+---code
+record的结构是多个chunk的链，每一个chunk的末尾8字节指向了下一个chunk。第一个chunk的开头的两个8字节分别是序列号（sequence number）与负载长度（即用户传入的length)。比如chunk_size是64字节，用户传入了一个长度为150字节的数据，那么产生的record的内部结构如图所示：
+1.png
+在Write()内部，通过length可以计算出需要多少个chunk（比如这里需要3个）。然后分配第一个chunk，写入序列号和长度，然后写入负载，再分配第二个chunk，在第一个chunk末尾写入其chunk_id。类似的，在写第二个chunk时，可以先分配好第三个chunk。最后一个chunk的最后8字节写入0。这样，每一个chunk的写入都是顺序写（对NVM友好）。由于到目前为止，整个record都是孤立的（没有挂入全局链表等操作），因此在中途任意时刻断电都没有关系。需要注意的是，所有写入都需要使用MOVNT指令簇，这样可以绕开cache，对NVM只写而不读，从而优化性能。都写完后，调用一次sfence()，确保后续逻辑都可以建立在“record已经持久化”的假设上（否则可能因为乱序执行，某些MOVNT指令还没执行）。
+在《#HREF../基于NVM的日志CarpLog（一）——chunk_allocator/index.html#-HREF1基于NVM的日志CarpLog（一）——chunk_allocator#-HREF2》中给出的chunk_allocator是多线程安全（而且是真正的并发操作）的，而Record本身又是可以独立地写，所以多个线程调用Write()时，是并行地写多个Record。
+当一个record写完后，需要挂入一个全局的链表。每个record最后一个chunk末尾8字节用来指向下一个record的第一个chunk的id。于是这个链表长这样：
+2.png
+于是，这里出现了“竞态”，即对链表的争抢。最容易想到的肯定是对链表加锁，谁抢到了谁挂入链表尾部。但是如果这样，挂入链表就成了串行操作，会成为性能瓶颈。
+然后到了“自作聪明”时刻——我想到了能否参考rocksdb里面那种通过CAS操作实现的并发链表操作？每一个线程使用CAS操作抢到某个瞬间的链表尾，并把自己设置为当前链表尾。每个线程得到了它的前节点p后（这个线程持有的记录r同时也可能是另一个线程看到的前节点p'），就把p的next指向自己。但是在NVM中这种方法会破坏CARP中的P特性（持久化），为何？假设现在链表尾部是记录r0。两个用户线程T1和T2分别创建了记录r1和r2，并且都通过CAS操作去争取链表尾。假设T1先抢到了并原子性地把链表尾从r0改成了r1，之后T2抢到了并原子性地把链表尾从r1改成了r2。T1（T2）下一步是把r0（r1）的next改为r1（r2）。如果中途系统没有崩溃，那么一切安然无恙。但是，如果由于OS调度关系，T2先执行完返回，而T1迟迟没有修改r0的next，此时系统崩溃，那么NVM上这三条记录的链接关系如下：
+3.png
+也就是说，虽然r1指向了r2，但是r0依旧是全局链表的尾。因此重启读取日志时，r1和r2全都无法恢复。但是，持久化特性要求，既然T2返回了，那么恢复时必须要能够读取到r2的。因此这种方法虽然可以并行，但是不满足功能需求。
+最后的方案出奇地简单——使用多条链表！假设使用16条链表，那么最初这16条链表放入一个ring_buffer中。当有线程需要挂入链表时，那么从ring_buffer中Pop()出一条链表，然后就可以安心地挂入，最后把链表Push()回ring_buffer中。因此，这个ring_buffer中存放的都是空闲链表。而恢复时，只需要依次遍历各条链表，然后按照序列号排序record即可（即使单条链表，也依旧需要排序）。于是，挂链表也成了并发操作！
+当然，代码并没有这么简单，因为还需要考虑到将来删除record的功能。删除record时，必须要能够从链表中脱链，因此所有record需要在DRAM中构成双向链表。由于脱链也需要操作链表，所以与挂入链表的操作构成了“竞态”。这个没有太好的办法避免，我采用的办法是，每条链表有一个自旋锁，当需要delete时，就对所在的链表加锁后操作。如果是要挂入链表，则对从ring_buffer中Pop()出的链表做try_lock()，如果没法上锁，则把垓链表Push()回去，然后重新Pop()一条链表重试。这样一来，大多数情况下可以并发操作，如果遇到挂入链表与delete冲突，那么delete优先，挂入操作则去寻找别的空闲链表。
+record.hpp
++++code
+#pragma once
+
+#include &lt;string&gt;
+#include &lt;common.h&gt;
+#include &lt;pthread.h&gt;
+#include &lt;chunk_allocator.hpp&gt;
+
+namespace CarpLog
+{
+
+class Record
+{
+    friend class Log;
+
+private:
+    struct Meta
+    {
+        size_t chunk_size;              // 每个chunk的大小
+        void* nvm_base;                 // NVM映射基地址
+        ChunkAllocator* allocator;      // chunk分配器
+    };
+
+    struct Linkage
+    {
+        Linkage* prev;          // 前一个挂载点
+        Linkage* next;          // 后一个挂载点
+        size_t next_record;     // 后一个record的第一个chunk
+        uint8_t* nvm_addr;      // NVM上保存next_record的位置
+
+        Linkage() :
+            prev(nullptr), next(nullptr), next_record(0), nvm_addr(nullptr)
+        {
+        }
+    };
+
+    struct List
+    {
+        Linkage head;               // 链表头部挂载点
+        Linkage* tail;              // 当前链表的尾部
+        pthread_spinlock_t lock;    // 对于链表的操作需要加锁
+
+        List() : tail(&amp;head)
+        {
+            DO_WITH_ASSERT(pthread_spin_init(&amp;lock, 0), _ret_ == 0);
+        }
+
+        ~List()
+        {
+            DO_WITH_ASSERT(pthread_spin_destroy(&amp;lock), _ret_ == 0);
+        }
+    };
+
+    Meta* meta;                 // 所有Record共享元数据
+    size_t sequence;            // 序列号
+    size_t length;              // 保存的数据的长度
+    size_t chunk_count;         // 占用的chunk个数
+    size_t* chunks;             // 占用的各个chunk的编号
+    Linkage linkage;            // 挂载点
+    List* list;                 // 所属链表
+
+private:
+    // 用于写入一条新的记录（多线程安全）
+    // meta: 元数据
+    // sequence: 序列号
+    // data, length: 用户数据及长度
+    Record(Meta* _meta, size_t _sequence, const uint8_t* data, size_t _length) :
+        meta(_meta), sequence(_sequence), length(_length), list(nullptr)
+    {
+        assert(data);
+        assert(length);
+        auto chunk_size = meta-&gt;chunk_size;
+        auto nvm_base = meta-&gt;nvm_base;
+        auto* allocator = meta-&gt;allocator;
+        assert(chunk_size &gt; 3 * sizeof(size_t));
+        assert(chunk_size % sizeof(size_t) == 0);
+        assert(nvm_base);
+        assert((size_t)nvm_base % sizeof(size_t) == 0);
+        assert(allocator);
+        // 每个chunk末尾8字节用于存放下一个chunk编号，而第一个chunk的开头还要存放sequence和length
+        chunk_count = DIV_CEIL(length + 2 * sizeof(size_t), chunk_size - sizeof(size_t));
+        assert(chunk_count);
+        chunks = new size_t[chunk_count];
+        size_t chunk_index = 0;
+        auto rest_len = length;
+        // 当前正在操作的chunk
+        auto chunk = allocator-&gt;Alloc();
+        bool is_first = true, is_last;
+        while(rest_len)
+        {
+            chunks[chunk_index++] = chunk;
+            // 当前chunk可以负载的数据容量
+            auto payload_capacity = is_first ?
+                chunk_size - 3 * sizeof(size_t) : chunk_size - sizeof(size_t);
+            size_t payload_len;
+            size_t next_chunk;
+            // 如果当前chunk没法把剩余的数据都装下
+            if(rest_len &gt; payload_capacity)
+            {
+                is_last = false;
+                payload_len = payload_capacity;
+                // 提前分配好下一个chunk
+                next_chunk = allocator-&gt;Alloc();
+            }
+            else
+            {
+                is_last = true;
+                payload_len = rest_len;
+            }
+            auto chunk_offset = chunk * chunk_size;
+            auto* nvm_addr = (uint8_t*)nvm_base + chunk_offset;
+            if(is_first)
+            {
+                // 第一个chunk的开头写sequence
+                SetSizeType(nvm_addr, sequence);
+                nvm_addr += sizeof(size_t);
+                // 接着是length
+                SetSizeType(nvm_addr, length);
+                nvm_addr += sizeof(size_t);
+            }
+            // 写入用户数据载荷
+            CopyPayload(nvm_addr, data, payload_len);
+            // 定位到当前chunk的最后8字节（链接点）
+            nvm_addr = (uint8_t*)nvm_base + chunk_offset + chunk_size - sizeof(size_t);
+            //如果是最后一个chunk，那么写入0，表示结尾
+            if(is_last)
+            {
+                linkage.nvm_addr = nvm_addr;
+                SetSizeType(nvm_addr, 0);
+            }
+            // 否则写入下一个chunk编号
+            else
+                SetSizeType(nvm_addr, next_chunk);
+            data += payload_len;
+            rest_len -= payload_len;
+            chunk = next_chunk;
+            is_first = false;
+        }
+        assert(is_last);
+        assert(chunk_index == chunk_count);
+        // 确保所有对NVM的写都已经完成
+        __builtin_ia32_sfence();
+    }
+
+    // 用于恢复一条记录（只能单线程操作）
+    // meta: 元数据
+    // list: 所属链表
+    Record(Meta* _meta, List* _list) : meta(_meta), list(_list)
+    {
+        auto chunk_size = meta-&gt;chunk_size;
+        auto nvm_base = meta-&gt;nvm_base;
+        auto* allocator = meta-&gt;allocator;
+        assert(chunk_size &gt; 3 * sizeof(size_t));
+        assert(chunk_size % sizeof(size_t) == 0);
+        assert(nvm_base);
+        assert((size_t)nvm_base % sizeof(size_t) == 0);
+        assert(allocator);
+        assert(list);
+        assert(list-&gt;tail);
+        // 当前链表的末尾指向了当前record的第一个chunk
+        auto chunk = list-&gt;tail-&gt;next_record;
+        assert(chunk);
+        // 定位到第一个chunk的开头
+        auto* nvm_addr = (uint8_t*)nvm_base + chunk * chunk_size;
+        // 读取序列号
+        sequence = *((size_t*)nvm_addr);
+        nvm_addr += sizeof(size_t);
+        // 读取数据长度
+        length = *((size_t*)nvm_addr);
+        // 每个chunk末尾8字节用于存放下一个chunk编号，而第一个chunk的开头还要存放sequence和length
+        chunk_count = DIV_CEIL(length + 2 * sizeof(size_t), chunk_size - sizeof(size_t));
+        assert(chunk_count);
+        chunks = new size_t[chunk_count];
+        for(size_t i = 0; i &lt; chunk_count; i++)
+        {
+            DO_WITH_ASSERT(allocator-&gt;AllocAt(chunk), _ret_);
+            chunks[i] = chunk;
+            // 定位到当前chunk的链接点
+            nvm_addr = (uint8_t*)nvm_base + (chunk + 1) * chunk_size - sizeof(size_t);
+            // 读取下一个chunk
+            chunk = *((size_t*)nvm_addr);
+        }
+        linkage.nvm_addr = nvm_addr;
+        linkage.next_record = chunk;
+        // 把自己的挂载点加入链表末尾
+        assert(!list-&gt;tail-&gt;next);
+        list-&gt;tail-&gt;next = &amp;linkage;
+        linkage.prev = list-&gt;tail;
+        list-&gt;tail = &amp;linkage;
+    }
+
+    // 把当前record链接到list末尾（可保证原子操作）
+    void Link(List* _list)
+    {
+        assert(_list);
+        assert(!list);
+        list = _list; 
+        auto* tail = list-&gt;tail;
+        assert(tail);
+        assert(!tail-&gt;next);
+        assert(!linkage.prev);
+        tail-&gt;next = &amp;linkage;
+        linkage.prev = tail;
+        assert(chunk_count);
+        auto first_chunk = chunks[0];
+        assert(first_chunk);
+        assert(tail-&gt;next_record == 0);
+        tail-&gt;next_record = first_chunk;
+        assert(tail-&gt;nvm_addr);
+        SetSizeType(tail-&gt;nvm_addr, first_chunk);
+        list-&gt;tail = &amp;linkage;
+        __builtin_ia32_sfence();
+    }
+
+    // 使用NT方式写入一个size_t
+    static void SetSizeType(uint8_t* dst, size_t value)
+    {
+        assert(sizeof(size_t) == 8);
+        assert((size_t)dst % sizeof(size_t) == 0);
+        __builtin_ia32_movnti64((long long*)dst, value);
+    }
+
+    // 使用NT方式写入一段数据
+    static void CopyPayload(uint8_t* dst, const uint8_t* src, size_t len)
+    {
+        assert(len);
+        assert(sizeof(size_t) == 8);
+        assert((size_t)dst % sizeof(size_t) == 0);
+        while(len &gt;= 8)
+        {
+            __builtin_ia32_movnti64((long long*)dst, (*((uint64_t*)src)));
+            dst += 8;
+            src += 8;
+            len -= 8;
+        }
+        if(len)
+        {
+            uint8_t tail[8];
+            for(size_t i = 0; i &lt; len; i++)
+                tail[i] = src[i];
+            __builtin_ia32_movnti64((long long*)dst, (*((uint64_t*)tail)));
+        }
+    }
+
+public:
+    // 释放该record（可保证原子操作）
+    ~Record()
+    {
+        assert(list);
+        DO_WITH_ASSERT(pthread_spin_lock(&amp;(list-&gt;lock)), _ret_ == 0);
+        // 即使是链表中的第一条record，其linkage.prev指向carplog提供的全局挂载点，必然不为空
+        assert(linkage.prev);
+        // 不是最后一个
+        if(linkage.next)
+        {
+            assert(list-&gt;tail != &amp;linkage);
+            // 脱链，让前一个挂载点指向后一个挂载点
+            linkage.next-&gt;prev = linkage.prev;
+            linkage.prev-&gt;next = linkage.next;
+            linkage.prev-&gt;next_record = linkage.next_record;
+            SetSizeType(linkage.prev-&gt;nvm_addr, linkage.next_record);
+        }
+        else
+        {
+            assert(list-&gt;tail == &amp;linkage);
+            // 脱链，让链表尾部指向前一个挂载点
+            linkage.prev-&gt;next = nullptr;
+            linkage.prev-&gt;next_record = 0;
+            SetSizeType(linkage.prev-&gt;nvm_addr, 0);
+            list-&gt;tail = linkage.prev;
+        }
+        __builtin_ia32_sfence();
+        DO_WITH_ASSERT(pthread_spin_unlock(&amp;(list-&gt;lock)), _ret_ == 0);
+        // 释放占用的chunk
+        auto* allocator = meta-&gt;allocator;
+        for(size_t i = 0; i &lt; chunk_count; i++)
+            allocator-&gt;Free(chunks[i]);
+        delete[] chunks;
+    }
+
+    // 获取该record的序列号
+    size_t GetSequence() const
+    {
+        return sequence;
+    }
+
+    // 获取该record的载荷长度
+    size_t GetLength() const
+    {
+        return length;
+    }
+
+    // 读取用户数据（通用版）
+    // buffer: 缓冲区，请确保其长度不小于GetLength()
+    void GetPayload(void* buffer) const
+    {
+        assert(buffer);
+        struct AppendOperator
+        {
+            uint8_t* buffer;
+
+            void operator ()(const void* slice, size_t len)
+            {
+                memcpy(buffer, slice, len);
+                buffer += len;
+            }
+        }
+        append_operator;
+        append_operator.buffer = (uint8_t*)buffer;
+        GetPayloadTemplate(append_operator);
+    }
+
+    // 将负载转换为string（读取用户数据）
+    operator std::string () const
+    {
+        struct AppendOperator
+        {
+            std::string str;
+
+            void operator ()(const void* slice, size_t len)
+            {
+                str.append((const char*)slice, len);
+            }
+        }
+        append_operator;
+        GetPayloadTemplate(append_operator);
+        assert(append_operator.str.length() == length);
+        return append_operator.str;
+    }
+
+    // 读取用户数据（通用版）
+    // append_operator需要实现append_operator(const void* slice, size_t len)
+    template &lt;typename T&gt;
+    void GetPayloadTemplate(T&amp; append_operator) const
+    {
+        auto chunk_size = meta-&gt;chunk_size;
+        auto nvm_base = meta-&gt;nvm_base;
+        size_t rest_len = length;
+        for(size_t i = 0; i &lt; chunk_count; i++)
+        {
+            // 该chunk负载区起始地址于容量
+            uint8_t* nvm_addr = (uint8_t*)nvm_base + chunks[i] * chunk_size;
+            size_t payload_capacity = chunk_size - sizeof(size_t);
+            // 第一个chunk开头有sequence和length，跳过
+            if(i == 0)
+            {
+                nvm_addr += 2 * sizeof(size_t);
+                payload_capacity -= 2 * sizeof(size_t);
+            }
+            // 该chunk实际负载长度
+            size_t payload_len;
+            if(rest_len &gt; payload_capacity)
+            {
+                assert(i &lt; chunk_count - 1);
+                payload_len = payload_capacity;
+            }
+            else
+            {
+                assert(i == chunk_count - 1);
+                payload_len = rest_len;
+            }
+            // 从NVM读取
+            append_operator((const void*)nvm_addr, payload_len);
+            assert(rest_len &gt;= payload_len);
+            rest_len -= payload_len;
+        }
+        assert(rest_len == 0);
+    }
+};
+
+}
+---code
+其中挂载点Linkage的概念比较抽象，可以用下图来解释：
+4.png
+Record本身是一个在DRAM中的数据结构，每一个Record都有一个Linkage，并且指向了前后两个Record的Linkage。换言之，所有Record通过Linkage构成了双向链表。Linkage的nvm_addr字段记录了该record最后一个chunk末尾8字节的地址。Linkage的next_record字段存储的是nvm_addr指向的8字节中的数据，也就是下一个record开头的chunk id。理论上，next_record字段是不需要的，因为通过*nvm_addr即可从NVM上读取到。但是出于性能考虑，加入next_record字段，可以使得在正常运行过程中，可以全程不需要读NVM。
+</pre>

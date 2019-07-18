@@ -357,11 +357,5 @@ public:
     assert((p) &gt; 0);                            \
     (n) / (p);                                  \
 })
-
-#define CONTAINER_OF(type, member, ptr)                 \
-({                                                      \
-    size_t _offset_ = (size_t)(&amp;(((type*)0)-&gt;member));  \
-    (type*)((size_t)(ptr) -  _offset_);                 \
-})
 ---code
 </pre>
