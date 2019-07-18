@@ -1,0 +1,322 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">基于NVM的日志CarpLog（三）——log</pre>
+
+<pre id="content">
+Log与Record存在密切的逻辑耦合。Record负责了具体的记录格式的读写，而Log则在更高的层次上组织Record，比如NVM设备映射、日志恢复、链表分配等工作。
+Log构造时接收了capacity、chunk_size和list_count三个参数。capacity指定了占用的NVM空间大小(比如4GB)，chunk_size指定了每一个chunk的大小（比如1KB）。由这两个参数，就能计算出总共有多少个chunk。那么如何组织各个Record呢？在《#HREF../基于NVM的日志CarpLog（二）——record/index.html#-HREF1基于NVM的日志CarpLog（二）——record#-HREF2》中已经知道，Record是以多条链表的形式组织在一起的。这里还有一个问题待解决：每条链表的头在哪里？或者说，哪里记录每条链表的第一个record？
+假设用户指定list_count=16，那么NVM最开头的16*8=128字节用来表示16个8字节整数，每个整数就是一个链表的头，指向了该链表第一个record的第一个chunk的id。所以每个链表头也可以使用一个Record::Linkage来表达，于是，Record就不需要区分一个挂载点到底是另一个Record的末尾还是链表的头。整个系统的结构如图所示：
+1.png
+图中展示了有两条链表的情况。
+用于存储链表头部的chunk称作超级chunk，而超级chunk上每个8字节都叫做超级挂载点。即使超级chunk没满，也不用做数据chunk。显然，chunk0必然是超级chunk，这也就是为什么可以使用next_record=0表示没有后续chunk。
+当要恢复Record时，只要依次沿着每一条链表读取，然后把所有Record按照序列号排序即可。
+carplog.hpp
++++code
+#pragma once
+
+#include &lt;atomic&gt;
+#include &lt;vector&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;common.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;algorithm&gt;
+#include &lt;pthread.h&gt;
+#include &lt;record.hpp&gt;
+#include &lt;sys/mman.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;ring_buffer.hpp&gt;
+#include &lt;chunk_allocator.hpp&gt;
+
+namespace CarpLog
+{
+
+class Log
+{
+private:
+    Record::Meta meta;              // 元数据
+    size_t chunk_count;             // 总共有多少个chunk
+    ChunkAllocator allocator;       // chunk分配器
+    std::atomic&lt;size_t&gt; sequence;   // 当前序列号
+    size_t list_count;              // 挂载链表数目
+    Record::List* lists;            // 各条挂载链表
+    RingBuffer&lt;Record::List*, true, false&gt; idle_lists;  // 当前空闲的链表（非末尾正在挂载的链表）
+#ifndef NDEBUG
+    bool ready_to_write;
+#endif
+
+public:
+    // 初始化log
+    // capacity: 最大容量
+    // chunk_size: 每个chunk的大小
+    // list_count: 挂载链表数目（原则上，list_count越大，锁冲突越小）
+    Log(size_t capacity, size_t chunk_size, size_t _list_count) : 
+        chunk_count(DIV_FLOOR(capacity, chunk_size)), allocator(chunk_count), sequence(0), 
+        list_count(_list_count), idle_lists(list_count)
+    {
+        assert(chunk_count);
+        assert(list_count);
+        meta.chunk_size = chunk_size;
+        meta.nvm_base = nullptr;
+        meta.allocator = &amp;allocator;
+        lists = new Record::List[list_count];
+        for(size_t i = 0; i &lt; list_count; i++)
+            idle_lists.Push(lists + i);
+        // 开头若干chunk用作超级挂载点（链表头）
+        size_t super_chunk_count = DIV_CEIL(list_count * sizeof(size_t), chunk_size);
+        for(size_t i = 0; i &lt; super_chunk_count; i++)
+            DO_WITH_ASSERT(allocator.AllocAt(i), _ret_);
+#ifndef NDEBUG
+        ready_to_write = false;
+#endif
+    }
+
+    ~Log()
+    {
+        // TODO: release all records
+        if(meta.nvm_base)
+        {
+            size_t file_size = chunk_count * meta.chunk_size;
+            DO_WITH_ASSERT(munmap(meta.nvm_base, file_size), _ret_ == 0);
+        }
+        delete[] lists;
+    }
+    
+    // 打开指定文件
+    // file_path: 文件路径
+    // p_is_new: 可选输出，是否为新文件
+    // 注：如果是新文件，则会自动调用Reset()
+    int Open(const char* file_path, bool* p_is_new = nullptr)
+    {
+        if(meta.nvm_base)
+            ERROR({}, -EINVAL, false, "Open() has been called already");
+        int ret;
+        int fd = open(file_path, O_RDWR);
+        bool is_new = false;
+        if(fd &lt; 0)
+        {
+            ret = errno;
+            // 如果不存在文件，则新建
+            if(ret == ENOENT)
+            {
+                fd = open(file_path, O_RDWR | O_CREAT);
+                if(fd &lt; 0)
+                {
+                    ret = -errno;
+                    ERROR({}, ret, true, "open('%s', O_RDWR | O_CREAT) failed: ", file_path);
+                }
+                is_new = true;
+            }
+            else
+                ERROR({}, -ret, true, "open('%s', O_RDWR) failed: ", file_path);
+        }
+        // 文件应有长度
+        size_t file_size = chunk_count * meta.chunk_size;
+        // 对于新创建的文件，使用fallocate()分配指定长度
+        if(is_new)
+        {
+            if(fallocate(fd, 0, 0, file_size) &lt; 0)
+            {
+                ret = -errno;
+                ERROR(DO_WITH_ASSERT(close(fd), _ret_ == 0),
+                    ret, true, "fallocate(%d, 0, 0, %lu) failed: ", fd, file_size);
+            }
+        }
+        // 对于已有文件，检查长度是否正确
+        else
+        {
+            struct stat stat;
+            if(fstat(fd, &amp;stat) &lt; 0)
+            {
+                ret = -errno;
+                ERROR(DO_WITH_ASSERT(close(fd), _ret_ == 0),
+                    ret, true, "fstat(%d, &amp;stat) failed: ", fd);
+            }
+            if((size_t)stat.st_size != file_size)
+                ERROR(DO_WITH_ASSERT(close(fd), _ret_ == 0),
+                    -EINVAL, false, "file '%s' is broken", file_path);
+        }
+        // 映射NVM
+        void* raw = mmap(0, file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        // 不管映射成功或失败，都可以关闭文件
+        DO_WITH_ASSERT(close(fd), _ret_ == 0);
+        if(raw == MAP_FAILED)
+        {
+            int ret = -errno;
+            ERROR({}, ret, true,
+                "mmap(0, %lu, PROT_READ | PROT_WRITE, MMAP_SHARED, %d, 0) failed: ",
+                    file_size, fd);
+        }
+        assert(raw);
+        assert((size_t)raw % sizeof(size_t) == 0);
+        meta.nvm_base = raw;
+        // 初始化超级挂载点的地址
+        for(size_t i = 0; i &lt; list_count; ++i)
+            lists[i].head.nvm_addr = (uint8_t*)meta.nvm_base + i * sizeof(size_t);
+        // 如果是新文件，重置挂载点（否则会读到垃圾数据）
+        if(is_new)
+            Reset();
+        if(p_is_new)
+            *p_is_new = is_new;
+        return 0;
+    }
+    
+    // 向日志中写入数据（多线程安全）
+    // data, length：用户数据及长度
+    // seq_addition: 序列号增量（该用户数据需要占用多少个序列号
+    Record* Write(const uint8_t* data, size_t length, size_t seq_addition = 1)
+    {
+        assert(meta.nvm_base);
+        assert(ready_to_write);
+        // 无锁，并发地写入一条记录
+        auto* record = new Record(&amp;meta, sequence.fetch_add(seq_addition), data, length);
+        // 开始确定应该挂入哪条链表
+        Record::List* list;
+        while(true)
+        {
+            // 取出一条空闲链表
+            list = idle_lists.Pop();
+            // “空闲”链表不一定真的空闲，当delete record时，也会锁上链表
+            int ret = pthread_spin_trylock(&amp;(list-&gt;lock));
+            // 如果成功上锁，则表明真的是空闲的，抢到了控制权
+            if(ret == 0)
+                break;
+            // 否则“放生”链表，准备重新取出一条重试
+            assert(ret == EBUSY);
+            idle_lists.Push(list);
+        }
+        // 让record挂载到该链表
+        record-&gt;Link(list);
+        DO_WITH_ASSERT(pthread_spin_unlock(&amp;(list-&gt;lock)), _ret_ == 0);
+        // “放生”链表
+        idle_lists.Push(list);
+        return record;
+    }
+
+    // 重置日志（丢弃所有已有内容）
+    void Reset()
+    {
+        assert(meta.nvm_base);
+        assert(!ready_to_write);
+        for(size_t i = 0; i &lt; list_count; i++)
+        {
+            auto* list = lists + i;
+            assert(!list-&gt;head.next_record);
+            assert(list-&gt;head.nvm_addr);
+            // 所有超级挂载点都表示结尾即可
+            Record::SetSizeType(list-&gt;head.nvm_addr, 0);
+        }
+        allocator.AllocAtFinish();
+#ifndef NDEBUG
+        ready_to_write = true;
+#endif
+    }
+
+    // 恢复日志
+    // 返回所有Record，按序列号排序
+    std::vector&lt;Record*&gt; Recover()
+    {
+        assert(meta.nvm_base);
+        assert(!ready_to_write);
+        std::vector&lt;Record*&gt; records;
+        for(size_t i = 0; i &lt; list_count; i++)
+        {
+            auto* list = lists + i;
+            assert(!list-&gt;head.next_record);
+            assert(list-&gt;head.nvm_addr);
+            // 读取超级挂载点指向的record
+            list-&gt;head.next_record = *((size_t*)list-&gt;head.nvm_addr);
+            // 若指向有效record
+            while(list-&gt;tail-&gt;next_record)
+            {
+                // 构建record
+                auto* record = new Record(&amp;meta, list);
+                records.push_back(record);
+            }
+        }
+        // 初始化allocator，标记占用（Record构造函数内会进行malloc_at())
+        allocator.AllocAtFinish();
+        std::sort(records.begin(), records.end(), [](const Record* a, const Record* b)
+            {
+                return a-&gt;GetSequence() &lt; b-&gt;GetSequence();
+            });
+        // 存储最大的序列号
+        if(!records.empty())
+            sequence.store((*(records.rbegin()))-&gt;GetSequence());
+#ifndef NDEBUG
+        ready_to_write = true;
+#endif
+        return records;
+    }
+};
+
+}
+---code
+把common.h, ring_buffer.hpp, chunk_allocator.hpp, record.hpp和carplog.hpp都放到src目录下，写一个test看看：
+test_carplog.cpp:
++++code
+#include &lt;common.h&gt;
+#include &lt;sys/time.h&gt;
+#include &lt;carplog.hpp&gt;
+
+uint64_t current_us()
+{
+    struct timeval tv;
+    gettimeofday(&amp;tv, NULL);
+    return tv.tv_sec * 1000000UL + tv.tv_usec;
+}
+
+int main(int argc, char** argv)
+{
+    size_t THREADS;
+    sscanf(argv[1], "%lu", &amp;THREADS);
+    printf("%lu\n", THREADS);
+
+    auto time1 = current_us();
+    CarpLog::Log log(100UL &lt;&lt; 30, 1280, 1024);
+    auto time2 = current_us();
+    bool is_new;
+    log.Open("/mnt/pmem8/carplog-test.bin", &amp;is_new);
+    auto time3 = current_us();
+    if(!is_new)
+    {
+        // auto records = log.Recover();
+        // for(auto&amp; record : records)
+        //     printf("%lu %lu\n", record-&gt;GetSequence(), record-&gt;GetLength());
+       log.Reset();
+    }
+    auto time4 = current_us();
+    printf("%lu, %lu, %lu\n", time2 - time1, time3 - time2, time4 - time3);
+    pthread_t threads[THREADS];
+    for(int i = 0; i &lt; THREADS; i++)
+        DO_WITH_ASSERT(pthread_create(threads + i, NULL, [](void* arg) -&gt; void*
+            {
+                auto* l = (CarpLog::Log*)arg;
+                char buffer[1024];
+                memset(buffer, 'x', 1024);
+                size_t loop = 1000000;
+                for(size_t i = 0; i &lt; loop; i++)
+                {
+                    auto* record = l-&gt;Write((uint8_t*)buffer, sizeof(buffer));
+                    // printf("%s\n", ((std::string)*record).c_str());
+                   delete record;
+                }
+                return NULL;
+            },
+            &amp;log), _ret_ == 0);
+    for(int i = 0; i &lt; THREADS; i++)
+    {
+        void* thread_ret;
+        DO_WITH_ASSERT(pthread_join(threads[i], &amp;thread_ret), _ret_ == 0);
+    }
+    return 0;
+}
+---code
+使用如下命令编译运行：
++++code
+g++ -std=gnu++11 test_carplog.cpp -o t -Isrc -pthread -O3 -DNDEBUG
+./t 16
+---code
+即以16线程开始写入，每个线程写入1000000条1KB数据，并且立即删除。
+4.jpg
+可以看到，NVM写入带宽达到2310MB/s，而读带宽为0。
+</pre>
