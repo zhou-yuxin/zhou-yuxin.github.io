@@ -15,7 +15,8 @@ function format_content(raw)
         [/#OL/g, "<ol>"], [/#-OL/g, "</ol>"],
         [/#LI/g, "<li>"], [/#-LI/g, "</li>"],
         [/#EM/g, "<em>"], [/#-EM/g, "</em>"],
-        [/#SUP/g, "<sup>"], [/#-SUP/g, "</sup>"],];
+        [/#SUP/g, "<sup>"], [/#-SUP/g, "</sup>"],
+        [/#SUB/g, "<sub>"], [/#-SUB/g, "</sub>"]];
     for(var i = 0; i < items.length; i++)
     {
         item = items[i];

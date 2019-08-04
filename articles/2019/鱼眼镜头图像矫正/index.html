@@ -1,0 +1,297 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">鱼眼镜头图像矫正</pre>
+
+<pre id="content">
+也没啥原因，就是突发奇想，想探索一下鱼眼镜头成像原理。
+鱼眼图像就是类似下面这种：
+1.jpg
+那么怎么变成平面图像呢（就是我们平常拍摄的无畸变的照片）？这就需要搞清楚镜头的成像原理。
+这里先讲成像模型的#RED各向同性#-RED特性。所谓各向同性，即如果现实中点P到光轴的水平距离和竖直距离分别为x和y，而在图像中，该点P'到图像中心的水平距离和竖直距离分别为x'和y'，那么必定有
++++code
+x / y = x' / y'。
+---code
+如果把坐标系换作极坐标，表述会更简单些：如果一个点在现实中的坐标是(θ, L)，那么在各向同性的成像模型中，该点在图像中的坐标是(θ, f(L))。
+举个例子。选取上图中屋檐的角点P，点P在图像的中心点O的右上方大约30度方向。
+2.jpg
+那么在矫正后的平面图像中，屋檐的角点一定也在图像中心的右上方30度角方向：
+3.jpg
+换言之，任何#RED各向同性#-RED的成像模型，#RED不会改变点的方向，只会改变到中心的距离#-RED。
+所以接下来只需要关注不同模型之间，点到中心的距离L是如果变化的即可。
+任何成像模型都可以简化为下图：
+4.png
+假设某一个存在于现实世界中的点P与光轴构成夹角θ，我们可以确信一件事，即所有处于射线OP上的点（比如图中的P#SUB1#-SUB和P#SUB2#-SUB，都对应图像上唯一确定的一点，不论是什么成像模型。也就是说，现实中的成像夹角θ，唯一对应了鱼眼图像上的一点，也唯一对于了平面图像上的一点。由此可知，鱼眼图像上的一点与平面图像上的一点是一一对应的（即图中的P#SUB平#-SUB与P#SUB曲#-SUB一一对应）。
+那么具体是怎样的对应关系呢？仍以上图为例，假设成像平面到光心的距离是D，那么P#SUB平#-SUB到光轴的距离为：
++++code
+L#SUB平#-SUB = D × tan(θ)
+---code
+成像曲面上也是类似的，如果我们认定成像曲面是以光心为球心，R为半径的部分球面的话，那么P#SUB曲#-SUB到光轴的曲面距离为：
++++code
+L#SUB曲#-SUB = R × θ
+---code
+所以可以得到
++++code
+L#SUB曲#-SUB = R × atan(L#SUB平#-SUB / D)
+---code
+另外，由于各向同性，所以平面图像上的P(x, y)与鱼眼图像上的P'(x', y')存在转换关系（以图像中心为原点的坐标）：
++++code
+（x', y') = L#SUB曲#-SUB / L#SUB平#-SUB × (x, y)
+---code
+展开公式可得
++++code
+（x', y') = R × atan(L#SUB平#-SUB / D) / L#SUB平#-SUB × (x, y)
+          = R × atan(sqrt(x#SUP2#-SUP + y#SUP2#-SUP) / D) / sqrt(x#SUP2#-SUP + y#SUP2#-SUP) × (x, y)
+---code
+至此，已经可以写出代码了：
++++code
+// 将鱼眼图像转换成平面图像
+// src: 鱼眼图像
+// size: 目标图像（平面图像）尺寸
+// R: 鱼眼镜头成像半径（固有参数）
+// D: 平面镜头焦距（D越大，就相当于平时拍照时拉近，中心越清晰，但是视野就越小）
+// 返回：平面图像
+cv::Mat Decode(const cv::Mat&amp; src, cv::Size size, float R, float D)
+{
+    // 鱼眼图像中心坐标
+    auto src_center_x = (float)src.cols / 2.0f;
+    auto src_center_y = (float)src.rows / 2.0f;
+    // 目标图像
+    cv::Mat dst(size, src.type());
+    // 目标图像的中心点坐标
+    auto dst_center_x = size.width / 2;
+    auto dst_center_y = size.height / 2;
+    // 遍历目标图像的每一行（先行后列地绘制目标图像的每一个像素点）
+    for(int dst_y = 0; dst_y &lt; size.height; dst_y++)
+    {
+        // 该行的原始数据数组
+        auto* dst_row = dst.ptr&lt;uint8_t&gt;(dst_y);
+        // y坐标相对于中心点的偏移
+        auto dst_dy = dst_y - dst_center_y;
+        // 遍历该行的每一个像素点
+        for(int dst_x = 0; dst_x &lt; size.width; dst_x++)
+        {
+            // x坐标相对于中心点的偏移
+            auto dst_dx = dst_x - dst_center_x;
+            // 该点到中心点的距离
+            auto dst_l = sqrtf(dst_dx * dst_dx + dst_dy * dst_dy);
+            // 成像角
+            auto angle = atanf(dst_l / D);
+            // 鱼眼图像上，该点对应的点距离鱼眼中心点的距离
+            auto src_l = R * angle;
+            // 缩放比例 
+            auto k = dst_l == 0.0f ? 0.0f : src_l / dst_l;
+            // 鱼眼图上对应的dx, dy
+            auto src_dx = k * dst_dx;
+            auto src_dy = k * dst_dy;
+            // 鱼眼图上的x, y
+            auto src_x = src_center_x + src_dx;
+            auto src_y = src_center_y + src_dy;
+            // 从鱼眼图上获取(src_x, src_y)的颜色，填充给dst_row的第dst_x个像素
+            // 注意，src_x和src_y都是浮点数，所以要采用某种插值算法
+            GetMixedPixel(dst_row, dst_x, src, src_x, src_y);
+        }
+    }
+    return dst;
+}
+---code
+这段代码完成了平面图像上的每一个像素点到鱼眼图像上的坐标的映射（即汲取鱼眼图像上的像素去填充平面图像上的像素），但是最后依赖于函数GetMixedPixel()。这是因为，平面图像上的物理像素点（整数坐标）经过映射后会变成鱼眼图像上的逻辑像素点（浮点数坐标），比如坐标（1.23, 5.67）。因此，需要使用某种插值算法来获得该逻辑点的颜色。另外，该函数也需要处理不同通道数的图片的问题。具体算法可以采用最近邻或者双线性插值（具体实现在后面给出，因为不是本文重点）。
+但是呢，上面的代码是基于一个拍脑袋的假设：“成像曲面是以光心为球心，R为半径的部分球面”。为了更加具有可扩展性，完整的代码应该是这样的：
+fisheye.hpp
++++code
+#pragma once
+
+#include &lt;opencv2/opencv.hpp&gt;
+
+// 将鱼眼图像转换成平面图像
+// src: 鱼眼图像
+// size: 目标图像（平面图像）尺寸
+// D: 平面镜头焦距（D越大，就相当于拍照时拉近，越清晰，但是视野越小）
+// func_fisheye_model(float theta) -&gt; float: 鱼眼镜头成像模型
+// func_get_pixel(uint8_t* dst_row, int dst_x, 
+//      const cv::Mat&amp; src, float src_x, float src_y) -&gt; void： 
+//      插值算法
+// 返回：平面图像
+template &lt;typename T1, typename T2&gt;
+cv::Mat DecodeFishEye(const cv::Mat&amp; src, cv::Size size, float D,
+    T1 func_fisheye_model, T2 func_get_pixel)
+{
+    // 鱼眼图像中心坐标
+    auto src_center_x = (float)src.cols / 2.0f;
+    auto src_center_y = (float)src.rows / 2.0f;
+    // 目标图像
+    cv::Mat dst(size, src.type());
+    // 目标图像的中心点坐标
+    auto dst_center_x = size.width / 2;
+    auto dst_center_y = size.height / 2;
+    // 遍历目标图像的每一行（先行后列地绘制目标图像的每一个像素点）
+    for(int dst_y = 0; dst_y &lt; size.height; dst_y++)
+    {
+        // 该行的原始数据数组
+        auto* dst_row = dst.ptr&lt;uint8_t&gt;(dst_y);
+        // y坐标相对于中心点的偏移
+        auto dst_dy = dst_y - dst_center_y;
+        // 遍历该行的每一个像素点
+        for(int dst_x = 0; dst_x &lt; size.width; dst_x++)
+        {
+            // x坐标相对于中心点的偏移
+            auto dst_dx = dst_x - dst_center_x;
+            // 该点到中心点的距离
+            auto dst_l = sqrtf(dst_dx * dst_dx + dst_dy * dst_dy);
+            // 成像角θ
+            auto theta = atanf(dst_l / D);
+            // 鱼眼图像上，该点对应的点距离鱼眼中心点的距离
+            auto src_l = func_fisheye_model(theta);
+            // 缩放比例 
+            auto k = dst_l == 0.0f ? 0.0f : src_l / dst_l;
+            // 鱼眼图上对应的dx, dy
+            auto src_dx = k * dst_dx;
+            auto src_dy = k * dst_dy;
+            // 鱼眼图上的x, y
+            auto src_x = src_center_x + src_dx;
+            auto src_y = src_center_y + src_dy;
+            // 从鱼眼图上获取(src_x, src_y)的颜色，填充给dst_row的第dst_x个像素
+            // 注意，src_x和src_y都是浮点数，所以要采用某种插值算法
+            func_get_pixel(dst_row, dst_x, src, src_x, src_y);
+        }
+    }
+    return dst;
+}
+---code
+最近邻算法的实现：
++++code
+// 最近邻算法
+void NearestPolation(uint8_t* dst_row, int dst_x, 
+    const cv::Mat&amp; src, float src_x, float src_y)
+{
+    // 通道数
+    auto channels = src.channels();
+    // 超出边界则填0
+    if(isnanf(src_x) || isnanf(src_y) || 
+        src_x &lt; 0.0f || src_x &gt;= src.cols - 1 || src_y &lt; 0.0f || src_y &gt;= src.rows - 1)
+    {
+        memset(dst_row + dst_x * channels, 0, channels);
+        return;
+    }
+    // 最近邻
+    auto x = (int)roundf(src_x);
+    auto y = (int)roundf(src_y);
+    assert(0 &lt;= x &amp;&amp; x &lt; src.cols);
+    assert(0 &lt;= y &amp;&amp; y &lt; src.rows);
+    auto* src_row = src.ptr&lt;uint8_t&gt;(y);
+    memcpy(dst_row + dst_x * channels, src_row + x * channels, channels);
+}
+---code
+双线性插值算法的实现：
++++code
+// 双线性插值算法
+void BilinearInterPolation(uint8_t* dst_row, int dst_x, 
+    const cv::Mat&amp; src, float src_x, float src_y)
+{
+    // 通道数
+    auto channels = src.channels();
+    // 超出边界则填0
+    if(isnanf(src_x) || isnanf(src_y) || 
+        src_x &lt; 0.0f || src_x &gt;= src.cols - 1 || src_y &lt; 0.0f || src_y &gt;= src.rows - 1)
+    {
+        memset(dst_row + dst_x * channels, 0, channels);
+        return;
+    }
+    // 最近的左上角点的坐标
+    auto left = floorf(src_x);
+    auto top = floorf(src_y);
+    // 右方权重
+    auto w_right = src_x - left;
+    // 下方权重
+    auto w_bottom = src_y - top;
+    assert(0.0f &lt;= w_right &amp;&amp; w_right &lt;= 1.0f);
+    assert(0.0f &lt;= w_bottom &amp;&amp; w_bottom &lt;= 1.0f);
+    // 左方权重（与右方权重互补）
+    auto w_left = 1.0f - w_right;
+    // 上方权重（与下方权重互补）
+    auto w_top = 1.0f - w_bottom;
+    // 四个邻近点的权重
+    float weights[2][2];
+    // 左上角点权重
+    weights[0][0] = w_left * w_top;
+    // 右上角点权重
+    weights[0][1] = w_right * w_top;
+    // 左下角点权重
+    weights[1][0] = w_left * w_bottom;
+    // 右下角点权重
+    weights[1][1] = w_right * w_bottom;
+    // 各个通道的加权均值 （初始化为0）
+    float values[channels];
+    for(int i = 0; i &lt; channels; i++)
+        values[i] = 0;
+    // 左上角点的坐标（整数）
+    auto base_x = (int)left;
+    auto base_y = (int)top;
+    // 遍历四个点
+    for(int dy = 0; dy &lt; 2; dy++)
+    {
+        // y坐标
+        auto y = base_y + dy;
+        assert(0 &lt;= y &amp;&amp; y &lt; src.rows);
+        // 该行像素数据
+        auto* src_row = src.ptr&lt;uint8_t&gt;(y);
+        for(int dx = 0; dx &lt; 2; dx++)
+        {
+            // x坐标
+            auto x = base_x + dx;
+            assert(0 &lt;= x &amp;&amp; x &lt; src.cols);
+            // 该点权重
+            auto weight = weights[dy][dx];
+            auto index_base = x * channels;
+            for(int i = 0; i &lt; channels; i++)
+                values[i] += weight * src_row[index_base + i];
+        }
+    }
+    auto index_base = dst_x * channels;
+    for(int i = 0; i &lt; channels; i++)
+        dst_row[index_base + i] = (uint8_t)values[i];
+}
+---code
+写一个测试代码：
+test.cpp
++++code
+#include "fisheye.hpp"
+
+#RED// 这里省略了需要的插值算法，需要从上面复制#-RED
+
+int main(int argc, char* argv[])
+{
+    float R, D;
+    if(sscanf(argv[1], "%f", &amp;R) != 1 || sscanf(argv[2], "%f", &amp;D) != 1)
+        return 0;
+    auto src = cv::imread(argv[3]);
+    auto dst = DecodeFishEye(src, cv::Size(600, 600), D,
+        [R](float theta)
+        {
+            return R * theta;
+        },
+        BilinearInterPolation);
+    cv::imshow("dst", dst);
+    cv::waitKey();
+    return 0;
+}
+---code
+编译成可执行的程序t，做以下测试：
++++code
+./t 180 80 a.jpg
+---code
+a.jpg
+t-a.jpg
++++code
+./t 147 50 b.jpg
+---code
+b.jpg
+t-b.jpg
+事实上，经过测试发现，越是边缘的图像扭曲越是厉害，这说明
++++code
+[R](float theta)
+{
+    return R * theta;
+}
+---code
+这个模型还是不够精确。这个需要后期试验调整。不过有一点是肯定的，即越是边缘的图像，压缩率越高，所以矫正之后就会越模糊。
+</pre>
