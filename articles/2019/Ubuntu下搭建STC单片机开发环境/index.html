@@ -1,0 +1,63 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">Ubuntu下搭建STC单片机开发环境</pre>
+
+<pre id="content">
+过去开发STC单片机一直是基于Windows平台的，用Keil C51和STC官方提供的烧录软件。可是Windows上基本都是图形化工具，虽然上手容易，但是图形化界面也限制了开发效率。一直很想研究一下怎么在Linux上开发STC单片机。
+我用的是Ubuntu 16.04桌面版。
+首先安装sdcc，全称Small Device C Compiler，是一个转为8位MCU设计的C编译器。sdcc如同gcc，可以把C源码编译、链接成单片机的可执行文件。最简单的安装方法是：
++++code
+sudo apt install sdcc
+---code
+当然，也可以从源码编译安装，具体可以查看#HREFhttp://sdcc.sourceforge.net/#-HREF1sdcc官网#-HREF2。
+我们可以写一个小程序来试验一下，main.c：
++++code
+#include &lt;8051.h&gt;
+
+void delay(unsigned long loop) {
+    while (loop) {
+        loop--;
+    }
+}
+
+void main() {
+    while (1) {
+        delay(100000);
+        P1_7 = 0;
+        delay(100000);
+        P1_7 = 1;
+    }
+}
+---code
+使用如下命令一次性编译、链接：
++++code
+sdcc main.c
+---code
+sdcc也可以像gcc那样使用-c参数指定只编译、不链接等等。
+命令执行后，会看到目录下产生了一堆main.*文件，其中有一个main.ihx就是我们要的文件。
+一开始我很困惑，在Windows上用Keil生成的程序是*.hex格式的，这个ihx是什么鬼？没有关系，在安装sdcc时自动安装了packihx这个工具，能把ihx文件转为hex文件：
++++code
+packihx main.ihx > main.hex
+---code
+接下来就可以烧录啦。如果没有开发板，可以按照《#HREF../../2015/搭建51单片机最小系统——以STC12C2052为例/index.html#-HREF1搭建51单片机最小系统——以STC12C2052为例#-HREF2》中的说明，搭建好stc51最小系统。
+用两个可用的烧录工具，一个是#HREFhttps://github.com/laborer/stcflash#-HREF1stcflash#-HREF2，另一个是#HREFhttps://github.com/grigorig/stcgal#-HREF1stcgal#-HREF2。个人推荐后者。
+安装很简单：
++++code
+sudo pip3 install stcgal
+---code
+如果之前没有安装过pip3的话，需要先安装pip3：
++++code
+sudo apt install python3-pip
+---code
+可以正式开始烧录了。把USB-TTL插入电脑，应该会出现/dev/ttyUSB0（如果有多个，那么找到对应那个）。然后执行命令：
++++code
+sudo stcgal main.hex
+---code
+此时会出现“Waiting for MCU, please cycle power:”字眼，需要重新插拔一下单片机电源，然后就会开始下载：
+1.jpg
+我之所以推荐使用stcgal而不是stcflash，是因为stcgal可以额外配置很多的参数。比如STC12C2052这款单片机，可以选择使用内部RC震荡器还是外部时钟源。那么在烧录时可以带上这些配置，比如：
++++code
+sudo stcgal clock_source=internal main.hex
+---code
+具体参数可以查看github。
+</pre>
