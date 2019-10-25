@@ -1,0 +1,50 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">Ubuntu下搭建NodeMCU开发环境</pre>
+
+<pre id="content">
+NodeMCU除了作为一个廉价的Wifi芯片之外，一个很大的优势是有丰富的函数库和交互式Lua编程环境。在试验新的外设模块时，如果使用C等编译性的语言，每次修改一点就需要编译、烧录、从头执行一遍才能看到结果。而如果有交互式编程，那么可以输入一行执行一行，对于了解外设模块大有帮助。
+NodeMCU的开发大致分为构建固件、烧录固件、交互式编程和上传代码。
+构建固件最便捷的方法是使用#HREFhttp://nodemcu-build.com/#-HREF1Cloud Build Service#-HREF2，当然其他的构建方法可以参看#HREFhttps://nodemcu.readthedocs.io/en/master/build/#-HREF1NodeMCU Documentation#-HREF2。我通过前者获得了#HREF./nodemcu-master-11-modules-2019-10-25-06-42-25-float.bin#-HREF1nodemcu-master-11-modules-2019-10-25-06-42-25-float.bin#-HREF2。接下来就需要烧录到NodeMCU中。
+烧录软件使用#HREFhttps://github.com/espressif/esptool#-HREF1esptool#-HREF2，可以用如下命令安装：
++++code
+sudo pip install esptool
+---code
+安装之后，就可以烧录到NodeMCU中了：
++++code
+sudo esptool.py --port /dev/ttyUSB0 write_flash 0x00000 nodemcu-master-11-modules-2019-10-25-06-42-25-float.bin
+---code
+1.jpg
+这里需要注意，由于我用的是ESP8266-12F开发板，自带了USB-TTL芯片以及软件复位等电路，所以命令本身就能控制NodeMCU进入烧录模式。如果是ESP8266-01等只有8个引脚的芯片，需要把GPIO0拉低才能、重新上电，才能进入烧录模式（详见《#HREFhttps://nodemcu.readthedocs.io/en/master/flash/#putting-device-into-flash-mode#-HREF1Putting Device Into Flash Mode#-HREF2》）。之后，就可以使用串口工具与NodeMCU交互了。我推荐使用picocom，安装很简单：
++++code
+sudo apt install picocom
+---code
+新的固件默认串口波特率是115200，使用如下命令进入串口：
++++code
+sudo picocom -b 115200 /dev/ttyUSB0
+---code
+先按Ctrl+A然后再按Ctrl+Q就能退出。进入串口后，按一下NodeMCU上的Reset键就能重启，然后看到如下输出：
+2.jpg
+当然，正如输出所示，当前没有init.lua。如果有init.lua，那么NodeMCU会先执行init.lua然后进入交互模式。我们来一段代码：
+init.lua
++++code
+n = 0
+t = tmr.create()
+t:alarm(1000, tmr.ALARM_AUTO, function()
+    print(n)
+    n = n + 1
+    if n == 10 then
+        t:stop()
+    end
+end)
+---code
+然后可以使用#HREFhttps://github.com/4refr0nt/luatool#-HREF1luatool#-HREF2工具上传代码。luatool就是单个python文件，依赖于pyserial，可能需要安装一下：
++++code
+sudo pip install pyserial
+---code
+然后下载luatool.py，执行命令：
++++code
+sudo python ./luatool.py --port /dev/ttyUSB0 --baud 115200 --src ./init.lua
+---code
+这个工具就会一行行地写入代码。
+</pre>
