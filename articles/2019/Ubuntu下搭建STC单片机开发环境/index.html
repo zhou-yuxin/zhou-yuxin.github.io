@@ -57,7 +57,8 @@ sudo stcgal main.hex
 1.jpg
 我之所以推荐使用stcgal而不是stcflash，是因为stcgal可以额外配置很多的参数。比如STC12C2052这款单片机，可以选择使用内部RC震荡器还是外部时钟源。那么在烧录时可以带上这些配置，比如：
 +++code
-sudo stcgal clock_source=internal main.hex
+sudo stcgal -o clock_source=internal main.hex
 ---code
-具体参数可以查看github。
+具体参数可以查看。
+另外我发现，stcgal是可以直接下载ihx格式的文件的。
 </pre>
