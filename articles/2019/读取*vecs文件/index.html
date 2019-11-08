@@ -1,0 +1,283 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">读取*vecs文件</pre>
+
+<pre id="content">
+最近在研究Faiss，一个Facebook出的向量搜索数据库。Faiss自带了很多#HREFhttp://corpus-texmex.irisa.fr/#-HREF1测试数据#-HREF2，包括整个数据集、训练集和查询集。这三个向量集都是fvecs格式的。为了读取这些数据，我研究了一下fvecs格式（当然，也有ivecs格式）。其实*vecs格式都挺简单的：
+1.png
+代码如vecs.h中的struct vectors所示。
+但是呢，我后来发现，也就只有训练数据集需要一次性都加载到内存，而base set只需要每次读出一部分，调用add()加入数据库即可。如果把base set一次性读出来，那么就会占用特别多的内存。
+因此，我又开发了struct vectors_scope，可以看作有一个滑动窗口，每次读取一小部分数据出来。
+vecs.h
++++code
+#ifndef VECS_H
+#define VECS_H
+
+#include &lt;memory&gt;
+#include &lt;errno.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;assert.h&gt;
+
+template &lt;typename T, class A = std::allocator&lt;T&gt;&gt;
+struct vectors {
+    size_t d;   // dimension
+    size_t n;   // count
+    T* data;    // raw data array
+
+    vectors() : d(0), n(0), data(nullptr) {}
+
+    ~vectors() {
+        if (data) {
+            A().deallocate(data, n * d);
+        }
+    }
+
+    int load(const char* fpath) {
+        FILE* f = fopen(fpath, &quot;r&quot;);
+        if (!f) {
+            return errno;
+        }
+        // auto close file
+        struct file_closer {
+            FILE* f;
+
+            ~file_closer() {
+                fclose(f);
+            }
+        }
+        closer;
+        closer.f = f;
+        // get dimension
+        uint32_t dim;
+        if (fread(&amp;dim, sizeof(dim), 1, f) != 1) {
+            return errno;
+        }
+        // get file total size
+        if (fseek(f, 0, SEEK_END) &lt; 0) {
+            return errno;
+        }
+        off_t sz = ftello(f);
+        if (sz &lt; 0) {
+            return errno;
+        }
+        size_t row_sz = sizeof(T) * dim + sizeof(uint32_t);
+        if (sz % row_sz != 0) {
+            return EINVAL;
+        }
+        // vector count
+        size_t num = sz / row_sz;
+        // read vectors from head
+        if (fseek(f, 0, SEEK_SET) &lt; 0) {
+            return errno;
+        }
+        T* buffer = A().allocate(num * dim);
+        T* cur = buffer;
+        size_t v_sz = sizeof(T) * dim;
+        for (size_t i = 0; i &lt; num; i++) {
+            if (fseek(f, sizeof(uint32_t), SEEK_CUR) &lt; 0 ||
+                    fread(cur, v_sz, 1, f) != 1) {
+                return errno;
+            }
+            cur += dim;
+        }
+        d = dim;
+        n = num;
+        data = buffer;
+        return 0;
+    }
+
+    T* operator [](size_t index) {
+        assert(index &lt; n);
+        return data + index * d;
+    }
+
+    const T* operator [](size_t index) const {
+        assert(index &lt; n);
+        return data + index * d;
+    }
+};
+
+template &lt;typename T, class A = std::allocator&lt;T&gt;&gt;
+struct vectors_scope {
+    FILE* f;            // backend source file
+    size_t d;           // dimension
+    size_t n;           // total count
+    struct {
+        size_t offset;  // offset of scope
+        size_t n;       // count in scope
+        T* data;        // raw data array
+    }
+    scope;
+
+    vectors_scope() : f(nullptr), d(0), n(0) {
+        scope.offset = 0;
+        scope.n = 0;
+        scope.data = nullptr;
+    }
+
+    ~vectors_scope() {
+        if (f) {
+            fclose(f);
+        }
+        if (scope.data) {
+            A().deallocate(scope.data, scope.n * d);
+        }
+    }
+
+    int open(const char* fpath) {
+        FILE* file = fopen(fpath, &quot;r&quot;);
+        if (!file) {
+            return errno;
+        }
+        // auto close file
+        struct file_closer {
+            FILE* f;
+
+            ~file_closer() {
+                if (f) {
+                    fclose(f);
+                }
+            }
+        }
+        closer;
+        closer.f = file;
+        // get dimension
+        uint32_t dim;
+        if (fread(&amp;dim, sizeof(dim), 1, file) != 1) {
+            return errno;
+        }
+        // get file total size
+        if (fseek(file, 0, SEEK_END) &lt; 0) {
+            return errno;
+        }
+        off_t sz = ftello(file);
+        if (sz &lt; 0) {
+            return errno;
+        }
+        size_t row_sz = sizeof(T) * dim + sizeof(uint32_t);
+        if (sz % row_sz != 0) {
+            return EINVAL;
+        }
+        // vector count
+        size_t num = sz / row_sz;
+        // prepare to read vectors from head
+        if (fseek(file, 0, SEEK_SET) &lt; 0) {
+            return errno;
+        }
+        // don't close file
+        closer.f = nullptr;
+        f = file;
+        d = dim;
+        n = num;
+        return 0;
+    }
+
+    int next(size_t count) {
+        if (scope.offset == n) {
+            return 0;
+        }
+        size_t rest = n - scope.offset;
+        if (rest &lt; count) {
+            count = rest;
+        }
+        A a;
+        if (!scope.data) {
+            scope.data = a.allocate(count * d);
+        }
+        else if (scope.n != count) {
+            a.deallocate(scope.data, scope.n * d);
+            scope.data = a.allocate(count * d);
+        }
+        T* cur = scope.data;
+        size_t v_sz = sizeof(T) * d;
+        for (size_t i = 0; i &lt; count; i++) {
+            if (fseek(f, sizeof(uint32_t), SEEK_CUR) &lt; 0 ||
+                    fread(cur, v_sz, 1, f) != 1) {
+                return errno;
+            }
+            cur += d;
+        }
+        scope.n = count;
+        scope.offset += count;
+        return EAGAIN;
+    }
+
+    T* operator [](size_t index) {
+        assert(index &lt; n);
+        return scope.data + index * d;
+    }
+
+    const T* operator [](size_t index) const {
+        assert(index &lt; n);
+        return scope.data + index * d;
+    }
+};
+
+#endif
+---code
+使用示例如下：
+test.cpp
++++code
+#include &lt;iostream&gt;
+#include &lt;string.h&gt;
+#include &quot;vecs.h&quot;
+
+template &lt;typename T&gt;
+void print_vector(T* vector, size_t dimension) {
+    std::cout &lt;&lt; &quot;[ &quot;;
+    for (size_t i = 0; i &lt; dimension; i++) {
+        std::cout &lt;&lt; vector[i] &lt;&lt; &quot;, &quot;;
+    }
+    std::cout &lt;&lt; &quot;]&quot; &lt;&lt; std::endl;
+}
+
+int main () {
+    int ret;
+
+    vectors&lt;float&gt; xt;
+    // 一次性全部加载到内存
+    ret = xt.load(&quot;sift_learn.fvecs&quot;);
+    if (ret) {
+        fprintf(stderr, &quot;load sift_learn.fvecs failed: %s\n&quot;,
+                    strerror(ret));
+        return ret;
+    }
+    printf(&quot;train: dimension = %lu, count = %lu\n&quot;, xt.d, xt.n);
+    // 打印所有向量
+    for(size_t i = 0; i &lt; xt.n; i++) {
+        print_vector(xt[i], xt.d);
+    }
+
+    vectors_scope&lt;float&gt; xb;
+    // 打开文件
+    ret = xb.open(&quot;sift_base.fvecs&quot;);
+    if (ret) {
+        fprintf(stderr, &quot;open sift_base.fvecs failed: %s\n&quot;,
+                    strerror(ret));
+        return ret;
+    }
+    printf(&quot;base: dimension = %lu, count = %lu\n&quot;, xt.d, xt.n);
+    // 每次读出1000条
+    size_t batch_size = 1000;
+    while (true) {
+        // 下一批
+        ret = xb.next(batch_size);
+        // 0表示结束
+        if (ret == 0) {
+            break;
+        }
+        // EAGAIN表示还有数据
+        if (ret != EAGAIN) {
+            fprintf(stderr, &quot;load sift_base.fvecs failed: %s\n&quot;,
+                        strerror(ret));
+            return ret;
+        }
+        for (size_t i = 0; i &lt; batch_size; i++) {
+            print_vector(xb[i], xb.d);
+        }
+    }
+
+    return 0;
+}
+---code
+</pre>
