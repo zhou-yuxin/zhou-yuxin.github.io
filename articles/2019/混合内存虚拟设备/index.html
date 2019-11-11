@@ -1,0 +1,237 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">混合内存虚拟设备</pre>
+
+<pre id="content">
+对于不需要持久化的场景，NVM的优势在于价格低廉。如果某个workload对内存容量要求很大，但是对于读写带宽（尤其是写带宽）要求比较小（比如一个读多写少的Redis），那么就可以使用NVM替换一部分的内存。这样既能满足性能要求，又降低了成本。
+在这种场景中，我们希望有较细的混合粒度。什么意思呢？我们需要让DRAM和NVM交织（interleave）在一起，假设我们希望DRAM:NVM为1:2，那么最好第一个字节是在DRAM，第二、三字节在NVM上，如此循环。我们说此时的粒度是“1字节”。如果第一个N字节在DRAM上，第二、三个N字节在NVM上，如此循环，那么我们说此时的粒度是“N字节”。可以想见，N越小越好，因为如果N很大，那么不同区域内存访问的带宽、延迟将会有明显的差异。
+AD mode肯定是不适用的。因此在AD mode下，NVM映射为连续的一段地址空间，因此DRAM和NVM是以很大的粒度混合的。如果通过mmap/mremap等把NVM和DRAM交替地映射到地址空间，那么也很难在粒度和内核资源之间折中。比如说，使用mmap以1MB的粒度交替映射，那么1TB的空间将要占用一百万个VMA（Virtual Memory Area，一种内核记录虚地址空间分段情况的数据结构），内核资源会被耗尽。
+此时我们需要NUMA mode，即把NVM当作一个NUMA节点。这个特性加入了Kernel 5.1及以上版本。需要以下开启Kernel编译选项：
++++code
+CONFIG_MEMCG_KMEM=y
+CONFIG_DEV_DAX_KMEM=m
+---code
+把NVM从Memory Mode切换到AD mode的命令为：
++++code
+ipmctl create -goal
+ndctl create-namespace
+---code
+从AD mode切换到NUMA mode的命令为：
++++code
+modprobe -r dax_pmem_compat
+modprobe -i dax_pmem
+daxctl reconfigure-device --mode=system-ram --region=0 all  # 把socket 0上的NVM变成NUMA mode
+daxctl reconfigure-device --mode=system-ram --region=1 all  # 把socket 1上的NVM变成NUMA mode
+---code
+具体的使用可以查看PMDK上#HREFhttps://pmem.io/ndctl/#-HREF1ndctl和daxctl的说明#-HREF2。
+在NUMA mode下，我们可以通过操作页表来实现“页粒度”的混合。具体的操作上，有两种方式：
+#OL
+#LI
+在用户态，通过move_pages()迁移页；
+#-LI
+#LI
+在内核态，触发page fault绑定页。
+#-LI
+#-OL
+方法一最大的优势在于可以用户态实现，但是缺点也很明显，首先如何及时地得知哪些页可以迁移了（未映射的页不能迁移），其次迁移会引入额外性能开销，最后有些页不能迁移。方法二的优势就是方法一的缺点。
+我的设计就是，实现一个内核模块hybridmem.ko，导出/dev/hybridmem虚拟设备文件，然后用户进程open()、mmap()就能获得一段交织的内存。
+hybridmem.c：
++++code
+#include &lt;linux/fs.h&gt;
+#include &lt;linux/mm.h&gt;
+#include &lt;linux/cdev.h&gt;
+#include &lt;linux/slab.h&gt;
+#include &lt;linux/module.h&gt;
+
+MODULE_LICENSE(&quot;Dual BSD/GPL&quot;);
+
+#define MODULE_NAME         &quot;hybridmem&quot;
+
+//=============================================================================
+
+struct pattern {
+    size_t len;
+    uint8_t nodes[];
+};
+
+static ssize_t write(struct file* file, const char* buf, size_t len,
+                        loff_t* offset) {
+    if (len) {
+        size_t struct_size = sizeof(size_t) + len;
+        struct pattern* pattern = kmalloc(struct_size, GFP_KERNEL);
+        if (!pattern) {
+            printk(KERN_ERR &quot;failed to kmalloc(%lu)\n&quot;, struct_size);
+            return -ENOMEM;
+        }
+        pattern-&gt;len = len;
+        if (copy_from_user(pattern-&gt;nodes, buf, len) != 0) {
+            printk(KERN_ERR &quot;failed to copy_from_user(pattern-&gt;nodes, %p, &quot;
+                            &quot;%lu)\n&quot;, buf, len);
+            kfree(pattern);
+            return -EIO;
+        }
+        if (file-&gt;private_data) {
+            kfree(file-&gt;private_data);
+        }
+        file-&gt;private_data = pattern;
+    }
+    else if (file-&gt;private_data) {
+        kfree(file-&gt;private_data);
+        file-&gt;private_data = NULL;
+    }
+    return len;
+}
+
+static vm_fault_t fault(struct vm_fault* vmf) {
+    struct pattern* pattern = vmf-&gt;vma-&gt;vm_file-&gt;private_data;
+    int node;
+    struct page* page;
+    if (pattern) {
+        unsigned long pfn = vmf-&gt;address &gt;&gt; PAGE_SHIFT;
+        node = pattern-&gt;nodes[pfn % pattern-&gt;len];
+        if (node &gt;= MAX_NUMNODES || !node_online(node)) {
+            return VM_FAULT_SIGBUS;
+        }
+    }
+    else {
+        node = NUMA_NO_NODE;
+    }
+    page = alloc_pages_node(node, GFP_HIGHUSER_MOVABLE, 0);
+    if (!page) {
+        printk(KERN_ERR &quot;failed to allocate a page on node %d\n&quot;, node);
+        return VM_FAULT_OOM;
+    }
+    vmf-&gt;page = page;
+    return 0;
+}
+
+static struct vm_operations_struct vma_ops = {
+    .fault = fault,
+};
+
+static int mmap(struct file* file, struct vm_area_struct* vma) {
+    if (!(vma-&gt;vm_flags &amp; VM_SHARED)) {
+        printk(KERN_ERR &quot;%s only supports shared mapping\n&quot;, MODULE_NAME);
+        return -EINVAL;
+    }
+    vma-&gt;vm_ops = &amp;vma_ops;
+    return 0;
+}
+
+static int release(struct inode* inode, struct file* file) {
+    if (file-&gt;private_data) {
+        kfree(file-&gt;private_data);
+    }
+    return 0;
+}
+
+static struct file_operations fops = {
+    .owner = THIS_MODULE,
+    .write = write,
+    .mmap = mmap,
+    .release = release,
+};
+
+//=============================================================================
+
+static dev_t number;
+static struct cdev cdev;
+static struct class* class;
+static struct device* device;
+
+static int init(void) {
+    int ret;
+    ret = alloc_chrdev_region(&amp;number, 0, 1, MODULE_NAME);
+    if (ret &lt; 0) {
+        printk(KERN_ERR &quot;failed to alloc_chrdev_region(&amp;number, 0, 1, &quot;
+                        &quot;'%s')\n&quot;, MODULE_NAME);
+        return ret;
+    }
+    cdev_init(&amp;cdev, &amp;fops);
+    ret = cdev_add(&amp;cdev, number, 1);
+    if (ret &lt; 0) {
+        printk(KERN_ERR &quot;failed to cdev_add(&amp;cdev, number, 1)\n&quot;);
+        goto clean_1;
+    }
+    ret = -1;
+    class = class_create(THIS_MODULE, MODULE_NAME);
+    if (IS_ERR(class)) {
+        printk(KERN_ERR &quot;failed to class_create(THIS_MODULE, '%s')\n&quot;,
+                            MODULE_NAME);
+        goto clean_2;
+    }
+    device = device_create(class, NULL, number, NULL, MODULE_NAME);
+    if (IS_ERR(device)) {
+        printk(KERN_ERR &quot;failed to device_create(class, NULL, number, NULL, &quot;
+                        &quot;'%s')\n&quot;, MODULE_NAME);
+        goto clean_3;
+    }
+    return 0;
+
+clean_3:
+    class_destroy(class);
+clean_2:
+    cdev_del(&amp;cdev);
+clean_1:
+    unregister_chrdev_region(number, 1);
+    return ret;
+}
+
+static void cleanup(void) {
+    device_destroy(class, number);
+    class_destroy(class);
+    cdev_del(&amp;cdev);
+    unregister_chrdev_region(number, 1);
+}
+
+module_init(init);
+module_exit(cleanup);
+---code
+Makefile:
++++code
+obj-m := hybridmem.o
+KERNEL_DIR := /lib/modules/$(shell uname -r)/build
+PWD := $(shell pwd)
+
+all:
+    make -C $(KERNEL_DIR) M=$(PWD) modules
+
+clean:
+    rm -f *.o *.ko *.mod.c
+
+.PHONY: clean
+---code
+代码在Kernel 5.3.9上测试通过。
+使用如下：
++++code
+make
+sudo insmod hybridmem.ko
+---code
+就能看到多了一个/dev/hybridmem。
+测试用例如下：
+test.c
++++code
+#include &lt;fcntl.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/mman.h&gt;
+
+int main() {
+    int fd = open(&quot;/dev/hybridmem&quot;, O_RDWR);
+    assert(fd &gt; 0);
+    ssize_t len = write(fd, &quot;\x00\x02\x02&quot;, 3);
+    assert(len == 3);
+    size_t size = 1UL &lt;&lt; 30;
+    void* ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, fd, 0);
+    assert(ptr != MAP_FAILED);
+    while (1) {
+        memset(ptr, 0, size);
+    }
+    return 0;
+}
+---code
+上述用例中，通过write()告知hybridmem内存需要按照Node = {0, 2, 2}这样的周期来交织，因此三分之一的页来自Node 0，三分之二的页来自Node 2。
+</pre>
