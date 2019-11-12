@@ -1,0 +1,327 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">STL容器使用自定义内存分配器（以/dev/hybridmem为例）</pre>
+
+<pre id="content">
+过去把Redis迁移到NVM上的代码改动很繁琐，一个很重要的原因就是Redis使用C语言开发，malloc/free分散的到处都是。如果是C++的话，让STL容器使用NVM就很容易（至少对于不需要持久化的场景是这样）。这是因为，所有的STL容器的模板参数里都有alloc，即内存分配器。默认情况下，STL容器使用默认的内存分配器，即std::allocator。如果我们提供了自定义的内存分配器，就可以控制内存的分配和释放了。
+举个例子，我们自定义一个使用malloc/free来管理内存的内存分配器：
++++code
+#include &lt;vector&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+template &lt;typename T&gt;
+class MyAllocator : public std::allocator&lt;T&gt; {
+public:
+    template &lt;typename U&gt;
+    struct rebind {
+        typedef MyAllocator&lt;U&gt; other;
+    };
+
+public:
+    T* allocate(size_t n, const void* hint = 0) {
+        printf(&quot;allocate(%lu, %p)\n&quot;, n, hint);
+        return (T*)malloc(n * sizeof(T));
+    }
+
+    void deallocate(T* ptr, size_t n) {
+        printf(&quot;deallocate(%p, %lu)\n&quot;, ptr, n);
+        free(ptr);
+    }
+};
+
+int main() {
+    std::vector&lt;int, MyAllocator&lt;int&gt;&gt; v;
+    for (int i = 0; i &lt; 1000; i++) {
+        v.push_back(i);
+    }
+    return 0;
+}
+---code
+这段代码的运行结果是：
++++code
+allocate(1, (nil))
+allocate(2, (nil))
+deallocate(0x1761280, 1)
+allocate(4, (nil))
+deallocate(0x17612a0, 2)
+allocate(8, (nil))
+deallocate(0x1761280, 4)
+allocate(16, (nil))
+deallocate(0x17612c0, 8)
+allocate(32, (nil))
+deallocate(0x17612f0, 16)
+allocate(64, (nil))
+deallocate(0x1761340, 32)
+allocate(128, (nil))
+deallocate(0x17613d0, 64)
+allocate(256, (nil))
+deallocate(0x17614e0, 128)
+allocate(512, (nil))
+deallocate(0x17616f0, 256)
+allocate(1024, (nil))
+deallocate(0x1761b00, 512)
+deallocate(0x1762310, 1024)
+---code
+可以看到，MyAllocator成功地捕获了std::vector的内存分配和释放。对于一般的应用场景，MyAllocator这样的写法是最最简单的，只是重新定义了allocate()和deallocate()，其他繁琐的定义都fallback给std::allocator即可。这里需要注意一点，struct rebind一定不能省略。
+很简单吧~
+这里再提供一个使用《#HREF../混合内存虚拟设备/index.html#-HREF1混合内存虚拟设备#-HREF2》中提供的/dev/hybridmem虚拟设备的内存分配器。这个内存分配器，使用/dev/hybridmem来分页，使用jemalloc来做更细粒度的分配。代码如下：
+hybridmem.h
++++code
+#ifndef HYBRIDMEM_H
+#define HYBRIDMEM_H
+
+#include &lt;memory&gt;
+#include &lt;string&gt;
+#include &lt;stdexcept&gt;
+
+#include &lt;fcntl.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/mman.h&gt;
+#include &lt;jemalloc/jemalloc.h&gt;
+
+#define HYBRIDMEM_DEV       &quot;/dev/hybridmem&quot;
+
+//=============================================================================
+
+class GenericHybridmemAllocator {
+private:
+    struct my_extent_hooks_t : extent_hooks_t {
+        GenericHybridmemAllocator* self;
+    };
+
+    void* m_base;
+    size_t m_capacity;
+    size_t m_allocated;
+    my_extent_hooks_t m_extent_hooks;
+    unsigned m_arena_index;
+    int m_flags;
+
+public:
+    GenericHybridmemAllocator(size_t capacity, const std::string&amp; pattern) {
+        int err;
+        char errmsg[256];
+        int fd = open(HYBRIDMEM_DEV, O_RDWR);
+        if (fd &lt; 0) {
+            sprintf(errmsg, &quot;failed to open '%s': %s&quot;, HYBRIDMEM_DEV,
+                        strerror(errno));
+            throw std::runtime_error(errmsg);
+        }
+        ssize_t len = write(fd, pattern.data(), pattern.length());
+        if (len != pattern.length()) {
+            err = errno;
+            close(fd);
+            sprintf(errmsg, &quot;failed to write pattern: %s&quot;, strerror(err));
+            throw std::runtime_error(errmsg);
+        }
+        m_base = mmap(NULL, capacity, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, fd, 0);
+        err = errno;
+        close(fd);
+        if (m_base == MAP_FAILED) {
+            sprintf(errmsg, &quot;failed to mmap %lu-size area: %s&quot;, capacity,
+                        strerror(err));
+            throw std::runtime_error(errmsg);
+        }
+        m_capacity = capacity;
+        m_allocated = 0;
+        redirect_extent_hooks();
+        size_t index_size = sizeof(m_arena_index);
+        err = mallctl(&quot;arenas.create&quot;,
+                        (void*)&amp;m_arena_index, &amp;index_size, NULL, 0);
+        if (err) {
+            munmap(m_base, capacity);
+            sprintf(errmsg, &quot;failed to create arena: %s&quot;, strerror(err));
+            throw std::runtime_error(errmsg);
+        }
+        char cmd[64];
+        sprintf(cmd, &quot;arena.%u.extent_hooks&quot;, m_arena_index);
+        extent_hooks_t* phooks = &amp;m_extent_hooks;
+        err = mallctl(cmd, NULL, NULL, (void*)&amp;phooks, sizeof(phooks));
+        if (err) {
+            munmap(m_base, capacity);
+            sprintf(cmd, &quot;arena.%u.destroy&quot;, m_arena_index);
+            mallctl(cmd, NULL, NULL, NULL, 0);
+            sprintf(errmsg, &quot;failed to bind extent hooks: %s&quot;,
+                        strerror(err));
+            throw std::runtime_error(errmsg);
+        }
+        m_flags = MALLOCX_ARENA(m_arena_index) | MALLOCX_TCACHE_NONE;
+    }
+
+    ~GenericHybridmemAllocator() {
+        char cmd[64];
+        sprintf(cmd, &quot;arena.%u.destroy&quot;, m_arena_index);
+        mallctl(cmd, NULL, NULL, NULL, 0);
+        munmap(m_base, m_capacity);
+    }
+
+    void* malloc(size_t size) {
+        return mallocx(size, m_flags);
+    }
+
+    void dalloc(void* ptr) {
+        dallocx(ptr, m_flags);
+    }
+
+    void sdalloc(void* ptr, size_t size) {
+        sdallocx(ptr, size, m_flags);
+    }
+
+private:
+    void redirect_extent_hooks() {
+        auto alloc = [](extent_hooks_t* extent_hooks,
+                        void* new_addr, size_t size, size_t alignment,
+                        bool* zero, bool* commit,
+                        unsigned /*arena_index*/) -&gt; void* {
+            auto* self = ((my_extent_hooks_t*)extent_hooks)-&gt;self;
+            return self-&gt;extent_alloc(new_addr, size, alignment,
+                                        zero, commit);
+        };
+        auto purge_lazy = [](extent_hooks_t* extent_hooks,
+                                void* addr, size_t size, size_t offset,
+                                size_t length,
+                                unsigned /*arena_index*/) -&gt; bool {
+            auto* self = ((my_extent_hooks_t*)extent_hooks)-&gt;self;
+            return self-&gt;extent_purge_lazy(addr, size, offset, length);
+        };
+        auto purge_forced = [](extent_hooks_t* extent_hooks,
+                                void* addr, size_t size, size_t offset,
+                                size_t length,
+                                unsigned /*arena_index*/) -&gt; bool {
+            auto* self = ((my_extent_hooks_t*)extent_hooks)-&gt;self;
+            return self-&gt;extent_purge_forced(addr, size, offset, length);
+        };
+        auto split = [](extent_hooks_t *extent_hooks,
+                        void *addr, size_t size, size_t size1, size_t size2,
+                        bool committed, unsigned /*arena_index*/) -&gt; bool {
+            auto* self = ((my_extent_hooks_t*)extent_hooks)-&gt;self;
+            return self-&gt;extent_split(addr, size, size1, size2, committed);
+        };
+        auto merge = [](extent_hooks_t* extent_hooks,
+                        void *addr1, size_t size1, void *addr2, size_t size2,
+                        bool committed, unsigned /*arena_index*/) -&gt; bool {
+            auto* self = ((my_extent_hooks_t*)extent_hooks)-&gt;self;
+            return self-&gt;extent_merge(addr1, size1, addr2, size2, committed);
+        };
+        memset(&amp;m_extent_hooks, 0, sizeof(m_extent_hooks));
+        m_extent_hooks.alloc = alloc;
+        m_extent_hooks.purge_lazy  = purge_lazy;
+        m_extent_hooks.purge_forced = purge_forced;
+        m_extent_hooks.split = split;
+        m_extent_hooks.merge = merge;
+        m_extent_hooks.self = this;
+    }
+
+    void* extent_alloc(void* new_addr, size_t size, size_t alignment,
+                        bool* zero, bool* commit) {
+        size_t addr;
+        if (new_addr) {
+            addr = (size_t)new_addr;            
+        }
+        else {
+            addr = (size_t)m_base + m_allocated;
+            size_t mod = addr % alignment;
+            if (mod != 0) {
+                addr += alignment - mod;
+            }
+        }
+        assert(addr % alignment == 0);
+        assert((size_t)m_base + m_allocated &lt;= addr);
+        size_t allocated = addr + size - (size_t)m_base;
+        if (allocated &gt; m_capacity) {
+            return NULL;
+        }
+        assert(m_allocated &lt; allocated);
+        m_allocated = allocated;
+        *zero = false;
+        *commit = false;
+        return (void*)addr;
+    }
+
+    bool extent_purge_lazy(void* addr, size_t size, size_t offset,
+                            size_t length) {
+        int ret = madvise((char*)addr + offset, length, MADV_FREE);
+        return ret == 0 ? false : true;
+    }
+
+    bool extent_purge_forced(void* addr, size_t size, size_t offset,
+                            size_t length) {
+        int ret = madvise((char*)addr + offset, length, MADV_REMOVE);
+        return ret == 0 ? false : true;
+    }
+
+    bool extent_split(void *addr, size_t size, size_t size1, size_t size2,
+                        bool committed) {
+        // success to split
+        return false;
+    }
+
+    bool extent_merge(void *addr1, size_t size1, void *addr2, size_t size2,
+                        bool committed) {
+        // success to merge
+        return false;
+    }
+};
+
+//=============================================================================
+
+template &lt;typename T&gt;
+class STLHybridmemAllocator : public std::allocator&lt;T&gt; {
+public:
+    template &lt;typename U&gt;
+    struct rebind {
+        typedef STLHybridmemAllocator&lt;U&gt; other;
+    };
+
+    static GenericHybridmemAllocator* engine;
+
+public:
+    T* allocate(size_t n, const void* hint = 0) {
+        assert(engine);
+        void* ptr = engine-&gt;malloc(n * sizeof(T));
+        if (!ptr) {
+            throw std::bad_alloc();
+        }
+        return (T*)ptr;
+    }
+
+    void deallocate(T* ptr, size_t n) {
+        assert(engine);
+        engine-&gt;sdalloc(ptr, n * sizeof(T));
+    }
+};
+
+template &lt;typename T&gt;
+GenericHybridmemAllocator* STLHybridmemAllocator&lt;T&gt;::engine = NULL;
+
+#endif
+---code
+代码中，GenericHybridmemAllocator提供了一个基于/dev/hybridmem和jemalloc的通用分配器，而STLHybridmemAllocator则基于GenericHybridmemAllocator提供了std::allocator的接口。
+使用也非常简单：
++++code
+#include &lt;vector&gt;
+#include &lt;string.h&gt;
+#include &lt;hybridmem.h&gt;
+
+#define LENGTH   1000000000
+
+int main() {
+    GenericHybridmemAllocator a(1UL &lt;&lt; 40, std::string(&quot;\x00\x02\x02&quot;, 3));
+    STLHybridmemAllocator&lt;int&gt;::engine = &amp;a;
+    std::vector&lt;int, STLHybridmemAllocator&lt;int&gt;&gt; v;
+    v.reserve(LENGTH);
+    while (1) {
+        for (int i = 0; i &lt; LENGTH; i++) {
+            v[i] = i;
+        }
+    }
+    return 0;
+}
+---code
+需要注意的是，hybridmem.h基于jemalloc 5.0以上版本，编译时需要增加-ljemalloc参数。
+</pre>
