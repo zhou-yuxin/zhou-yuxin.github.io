@@ -1,0 +1,328 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">51单片机用定时器实现8路PWM</pre>
+
+<pre id="content">
+制作航模需要用到控制芯片，我打算使用最简单顺手的8051。其实三年前我就在8051上实现了使用定时器输出PWM，见《#HREF../../2016/51单片机产生PWM波/index.html#-HREF151单片机产生PWM波#-HREF2》。但是当年能力太弱，实现的PWM有如下几个问题：
+#OL
+#LI
+一个定时器只能提供一路PWM；
+#-LI
+#LI
+PWM信号不稳定，舵机会抖动。
+#-LI
+#-OL
+第一个问题是显而易见的，因为当时代码能力太弱，没法设计多路PWM。第二个问题的原因需要考察代码。在上一个实现中，我把定时器设置为16位定时器模式。这种模式下，需要在中断例程中重新填装THn和TLn的值，而这正是信号不稳定的根源：#RED在中断例程中填装THn和TLn的指令本身就需要消耗若干时钟周期，于是导致实际的中断间隔与预期的会有偏差#-RED。
+因此，这一次的实现中，我采用了8位自动重装定时器模式，即每次TLn溢出后，硬件会自动把THn的值填入TLn中，重启一轮定时。这样，就能保证中断间隔是恒定的、严格符合预期的。
+由此产生了一个新的问题：间隔是恒定的，那么怎么实现可调的脉宽呢？我的方案是：中断间隔设为较小的值，所有的脉宽都是中断间隔的整数倍。举个例子，假设系统晶振频率是12MHz，那么一个系统周期就是1us。在THn中填入100，那么每100us触发一次定时器中断。如果我想要得到周期是10ms，高电平脉宽1ms的PWM，只需要在第100*n次中断时把电平拉高，每100*n + 10次中断时把电平拉低即可。换言之，100us就是PWM模块的最小时间粒度。因此，我的方案其实是牺牲了PWM脉宽的粒度以换取稳定性。
+以四路PWM、时间粒度为100us、一个周期长度为50个时间粒度的PWM模块为例。PWM模块中维护了period=50（周期），current（当前时间）以及两张表，如图所示：
+1.png
+period在初始化时就固定了。current初始化为0，之后每一个定时器中断时都会加一。每一个Channel对应了表中的一行，各个Channel根据value升序排序，value即高电平时间（脉宽）。所以table中的含义为：通道2脉宽10个时间粒度（10×100us=1000us）、通道1脉宽14个时间粒度（14×100us=1400us）、通道3脉宽20个时间粒度（20×100us=2000us）、通道0脉宽45个时间粒度（45×100us=4500us）。当current增加到seek所指向的value时，就把该行的channel对应的引脚置为低电平，然后seek加一（向下移动）。当current增加到period时，current重置为0，并且把reload table中的内容复制到table中。
+那么为什么要有reload table呢？因为PWM模块支持动态地调整各个通道的脉宽。用户每次调整脉宽后，都需要对表格重新排序。可是定时器中断所访问的table是不可以改变的（直到下一个周期开始，否则会打乱逻辑），因此，我们必须改在另一张表里，并且改完后排序。当current重置为0时，再把reload table复制到table中。
+那么这里就涉及到并发访问的问题——如果在修改reload table的过程中，下一轮周期开始了，那么读到的reload table处于一个不一致状态。所以我们需要额外的一个bit，来表明当期的reload table是否“安全”。当用户需要修改reload table时，先把bit清零，修改完之后再把bit置一。在修改过程中，发生了定时器中断，如果bit为1，则可以安全地复制，否则跳过复制，使用原来的table中的数据。
+pwm.h
++++code
+#ifndef PWM_H
+#define PWM_H
+
+#include &lt;8051.h&gt;
+#include &lt;stdint.h&gt;
+
+// which timer to use, 0 or 1
+#define PWM_TIMER_NO                1
+
+// which interrupt to use,
+// usually timer 0 -&gt; int 1, and timer 1 -&gt; int 3
+#define PWM_INTERRUPT_NO            3
+
+// PWM use high interrupt prority or not
+#define PWM_INTERRUPT_PRIORITY      1
+
+// the count of PWM channels, no more than 8
+#define PWM_CHANNEL_COUNT           8
+
+// need PWM_CHANNEL_n, n = 0,1,2,...,(PWM_CHANNEL_COUNT-1)
+// direct logical channel to output pins
+#define PWM_CHANNEL_0               P1_0
+#define PWM_CHANNEL_1               P1_1
+#define PWM_CHANNEL_2               P1_2
+#define PWM_CHANNEL_3               P1_3
+#define PWM_CHANNEL_4               P1_4
+#define PWM_CHANNEL_5               P1_5
+#define PWM_CHANNEL_6               P1_6
+#define PWM_CHANNEL_7               P1_7
+
+// define the data type of PWM ticks,
+// recommand to use uint8_t if period is less than 255 ticks.
+// typedef uint8_t pwm_ticks_t;
+typedef uint16_t pwm_ticks_t;
+
+// initialize PWM module.
+// grain is the timer ticks of the min unit in PWM modules,
+// for example, grain = 100 means a timer interrupt is triggered
+// every 100 timer ticks.
+// if period = 200, then the period of all channels are
+// 200 * grain timer ticks.
+void pwm_init(uint8_t grain, pwm_ticks_t period);
+
+// set the width (high level time) of a channel.
+// if width = 10, then the length of high level is
+// 10 * grain timer ticks
+void pwm_set(uint8_t channel, pwm_ticks_t width);
+
+// sdcc requires that a prototype of the ISR must be present
+// or included in the file that contains the function main().
+// so the file contains main() should include this header file,
+// and user shouldn't call it manually.
+void pwm_on_timer() __interrupt(PWM_INTERRUPT_NO);
+
+#endif
+---code
+可以看到，通过PWM_CHANNEL_COUNT和PWM_CHANNEL_n宏定义，最多定义8个Channel。
+pwm.c
++++code
+#include &lt;pwm.h&gt;
+
+static pwm_ticks_t g_period;
+static pwm_ticks_t g_current;   // current step, &lt;= g_period
+static uint8_t g_seek;          // next g_channels[i], g_values[i]
+
+static uint8_t g_channels[PWM_CHANNEL_COUNT];
+static pwm_ticks_t g_values[PWM_CHANNEL_COUNT];
+
+static uint8_t g_reload_channels[PWM_CHANNEL_COUNT];
+static pwm_ticks_t g_reload_values[PWM_CHANNEL_COUNT];
+
+static __bit g_safe;            // whether g_reload_* are being modified
+
+static void output_high(uint8_t channel) {
+    (void)channel;          // avoid 'unreferenced' warning
+__asm
+    mov a, dpl              ; 'channel' is passed by dpl 
+    mov	b, #0x03            ; each entry of jump table is setb + ret, 3 bytes
+    mul	ab
+    mov dpl, #00001$        ; dptr &lt;- #$00001$
+    mov dph, #00001$ &gt;&gt; 8
+    jmp @a+dptr             ; jump to 00001$ + channel * 3
+00001$:
+__endasm;
+#if PWM_CHANNEL_COUNT &gt; 0
+    PWM_CHANNEL_0 = 1;      // setb PWM_CHANNEL_0
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 1
+    PWM_CHANNEL_1 = 1;      // setb PWM_CHANNEL_1
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 2
+    PWM_CHANNEL_2 = 1;      // setb PWM_CHANNEL_2
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 3
+    PWM_CHANNEL_3 = 1;      // setb PWM_CHANNEL_3
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 4
+    PWM_CHANNEL_4 = 1;      // setb PWM_CHANNEL_4
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 5
+    PWM_CHANNEL_5 = 1;      // setb PWM_CHANNEL_5
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 6
+    PWM_CHANNEL_6 = 1;      // setb PWM_CHANNEL_6
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 7
+    PWM_CHANNEL_7 = 1;      // setb PWM_CHANNEL_7
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+}
+
+static void output_low(uint8_t channel) {
+    (void)channel;          // avoid 'unreferenced' warning
+__asm
+    mov a, dpl              ; 'channel' is passed by dpl 
+    mov	b, #0x03            ; each entry of jump table is clr + ret, 3 bytes
+    mul	ab
+    mov dpl, #00002$        ; dptr &lt;- #00002$
+    mov dph, #00002$ &gt;&gt; 8
+    jmp @a+dptr             ; jump to 00002$ + channel * 3
+00002$:
+__endasm;
+#if PWM_CHANNEL_COUNT &gt; 0
+    PWM_CHANNEL_0 = 0;      // clr PWM_CHANNEL_0
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 1
+    PWM_CHANNEL_1 = 0;      // clr PWM_CHANNEL_1
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 2
+    PWM_CHANNEL_2 = 0;      // clr PWM_CHANNEL_2
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 3
+    PWM_CHANNEL_3 = 0;      // clr PWM_CHANNEL_3
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 4
+    PWM_CHANNEL_4 = 0;      // clr PWM_CHANNEL_4
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 5
+    PWM_CHANNEL_5 = 0;      // clr PWM_CHANNEL_5
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 6
+    PWM_CHANNEL_6 = 0;      // clr PWM_CHANNEL_6
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+#if PWM_CHANNEL_COUNT &gt; 7
+    PWM_CHANNEL_7 = 0;      // clr PWM_CHANNEL_7
+    __asm__ (&quot;ret&quot;);        // ret
+#endif
+}
+
+#if PWM_TIMER_NO == 0
+#define SET_TMOD    TMOD = (TMOD &amp; 0xF0) | 0x02
+#define THx         TH0
+#define TLx         TL0
+#define PTx         PT0
+#define ETx         ET0
+#define TRx         TR0
+#elif PWM_TIMER_NO == 1
+#define SET_TMOD    TMOD = (TMOD &amp; 0x0F) | 0x20
+#define THx         TH1
+#define TLx         TL1
+#define PTx         PT1
+#define ETx         ET1
+#define TRx         TR1
+#endif
+
+void pwm_init(uint8_t grain, pwm_ticks_t period) {
+    uint8_t i;
+    g_period = period;
+    g_current = 0;
+    g_seek = PWM_CHANNEL_COUNT;
+    for (i = 0; i &lt; PWM_CHANNEL_COUNT; i++) {
+        g_channels[i] = i;
+        g_values[i] = 0;
+        g_reload_channels[i] = i;
+        g_reload_values[i] = 0;
+        output_low(i);
+    }
+    g_safe = 1;
+    SET_TMOD;
+    THx = 256 - grain;
+    TLx = THx;
+    PTx = PWM_INTERRUPT_PRIORITY;
+    ETx = 1;
+    TRx = 1;
+    EA = 1;
+}
+
+void pwm_set(uint8_t channel, pwm_ticks_t width) {
+    uint8_t i, j;
+    g_safe = 0;
+    // find the entry of given channel and set it
+    for (i = 0; i &lt; PWM_CHANNEL_COUNT; i++) {
+        if (g_reload_channels[i] == channel) {
+            g_reload_values[i] = width;
+            break;
+        }
+    }
+    // Bubble Sort g_reload_* by g_reload_values
+    for (j = PWM_CHANNEL_COUNT - 1; j &gt; 0; j--) {
+        for (i = 0; i &lt; j; i++) {
+            if (g_reload_values[i] &gt; g_reload_values[i + 1]) {
+                uint8_t tmp_channel;
+                pwm_ticks_t tmp_value;
+                tmp_channel = g_reload_channels[i];
+                g_reload_channels[i] = g_reload_channels[i + 1];
+                g_reload_channels[i + 1] = tmp_channel;
+                tmp_value = g_reload_values[i];
+                g_reload_values[i] = g_reload_values[i + 1];
+                g_reload_values[i + 1] = tmp_value;
+            }
+        }
+    }
+    g_safe = 1;
+}
+
+void pwm_on_timer() __interrupt(PWM_INTERRUPT_NO) {
+    g_current++;
+    if (g_current == g_period) {
+        uint8_t i;
+        if (g_safe) {
+            for (i = 0; i &lt; PWM_CHANNEL_COUNT; i++) {
+                g_channels[i] = g_reload_channels[i];
+                g_values[i] = g_reload_values[i];
+            }
+        }
+        // set all 0-width channel to low
+        for (i = 0; i &lt; PWM_CHANNEL_COUNT; i++) {
+            if (g_values[i]) {
+                break;
+            }
+            output_low(g_channels[i]);
+        }
+        // g_seek points to next non-0-width channel
+        g_seek = i;
+        // set all non-0-width channel to high
+        for (; i &lt; PWM_CHANNEL_COUNT; i++) {
+            output_high(g_channels[i]);
+        }
+        // start of next period
+        g_current = 0;
+    }
+    else {
+        while (g_seek &lt; PWM_CHANNEL_COUNT) {
+            if (g_current != g_values[g_seek]) {
+                break;
+            }
+            // it's time to set next channel to low
+            output_low(g_channels[g_seek]);
+            g_seek++;
+        }
+    }
+}
+---code
+具体到代码，会有很多细节，其中很重要的一点就是output_high()和output_low()的实现。为了防止舵机抖动，一个很重要的考量就是，定时器中断中，current == period时的所有执行路径必须都是固定时长的，所以output_high()和output_low()也需要固定时长，不管输入哪个channel。这两个函数的实现采用了散转指令技术，即
++++code
+jmp @a+dptr
+---code
+这条指令。在sdcc的内嵌汇编中，需要分别给dpl和dph赋值，才能构建16位的dptr。以output_high()为例，假设4路PWM，那么伪代码为：
++++code
+void output_high(uint8_t channel) {
+    mov a, dpl
+    mov	b, #0x03
+    mul	ab
+    mov dpl, #00001$
+    mov dph, #00001$ >> 8
+    jmp @a+dptr
+00001$:
+    setb PWM_CHANNEL_0
+    ret
+    setb PWM_CHANNEL_1
+    ret
+    setb PWM_CHANNEL_2
+    ret
+    setb PWM_CHANNEL_3
+    ret
+}
+---code
+通过jmp，可以跳到（00001$ + channel * 3）的地址上执行。为什么第一句是mov a, dpl呢？因为sdcc中对于单个参数的函数，是通过dpl传参的。为什么要乘以3呢？因为setb指令是2字节，ret指令是1字节，因此每一个通道占用3字节。
+PWM模块需要注意一点：定时器中断的执行时间必须要小于grain，否则会出错。扩展开来，则是几个注意点：
+#UL
+#LI
+grain不能太小，对于传统8051，200是个比较保险的值；
+#-LI
+#LI
+PWM_CHANNEL_COUNT越小越好，这样定时器中断的开销更小。
+#-LI
+#-UL
+可喜的是，STC的51单片机基本都是1T的（单周期），指令的执行时间大大缩短，所以grain可以大幅缩小，定时精度大幅提高。我试过，在STC12C2052上，grain=20、PWM_CHANNEL_COUNT=8一样可以正常工作。
+另外，由于g_current == g_period时的执行路径很长，因此导致实际脉宽比预期的短（各个channel即使设置相同的脉宽也可能有所不同，毕竟软件实现），但是好在周期比较固定（忽略g_safe的影响），舵机不会抖动。
+</pre>
