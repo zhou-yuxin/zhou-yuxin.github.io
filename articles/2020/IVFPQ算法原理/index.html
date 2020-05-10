@@ -1,0 +1,78 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">IVFPQ算法原理</pre>
+
+<pre id="content">
+==============================问题描述================================
+
+“在d维空间中存在n个点y#SUB0#-SUB, y#SUB1#-SUB, y#SUB2#-SUB, ..., y#SUBn-1#-SUB，现给定一个点x，查询距离x最近的k个点”就是典型的KNN问题。
+
+===============================IVF算法================================
+
+最容易想到的就是暴力搜索，即把x与每一个y的距离都计算出来。但是，当n非常大时，暴力搜索的性能非常糟糕。那么是否可以牺牲一定的精度，而换取性能的提升呢？答案是肯定的。通常而言，真实业务中的点不会是完全随机分布的，都是具有明显的分布的，而且很多时候都是可聚类的。以d=2为例，假设有很多点在平面上分布如下：
+1.png
+虽然点的数量很多，但是宏观上看，大致可以分为5堆。这通过聚类（Clustering）算法即可得到。那么，当我给定一个查询点x时，只需要确定x属于（或者说，最接近）哪个聚类，然后在该聚类内部做暴力搜索即可。假设n个点被分到了c个聚类中，那么平均而言一次查询需要计算c+n/c个距离，远小于n。于是，性能可以大幅提升，代价就是可能会漏掉潜在的最近邻。利用聚类特性，小幅牺牲精度，只搜索很小的一个子集，这就是IVF算法的基本思想。
+当然，实际使用中，可以设置nprobe。nprobe的含义是“对最接近x的nprobe个聚类内部做暴力搜索”。当nprobe=1时就是上述的算法，而当nprobe等于聚类个数时，则是另一个极端，即纯暴力搜索。因此，nprobe相当于是一个在性能与精度之间权衡的可调开关。
+
+=================================PQ算法=================================
+
+相比于IVF算法，PQ算法就没有那么直观了，核心部分必须结合代数才能讲清楚。先以d=2的平面为例，假设存在n个点y#SUB0#-SUB, y#SUB1#-SUB, y#SUB2#-SUB, ..., y#SUBn-1#-SUB。把这些点做聚类，归到ksub个聚类中，得到ksub个聚类中心点c#SUB0#-SUB, c#SUB1#-SUB, c#SUB2#-SUB, ..., c#SUBksub-1#-SUB。则每一个y#SUBi#-SUB都有对应的聚类中心的编号，记作code#SUBi#-SUB，显然，code#SUBi#-SUB取值为0到ksub-1的整数。比如下图中，聚类得10个聚类中心，那么所有红色点的code都是0，所有绿色点的code都是1，等等。
+2.png
+给定一个x，分别计算出x到ksub个聚类中心c#SUB0#-SUB, c#SUB1#-SUB, c#SUB2#-SUB, ..., c#SUBksub-1#-SUB的距离，得到cdis#SUB0#-SUB, cdis#SUB1#-SUB, cdis#SUB2#-SUB, ..., cdis#SUBksub-1#-SUB。如果把x到y#SUBi#-SUB的距离dis#SUBi#-SUB近似看作x到y#SUBi#-SUB所在聚类的中心c#SUBcode#SUBi#-SUB#-SUB的距离，那么有dis#SUBi#-SUB≈cdis#SUBcode#SUBi#-SUB#-SUB。对于一个x，只需要计算ksub次距离得到ksub个cdis，之后对于每一个y#SUBi#-SUB，都只需要查询cdis中的第code#SUBi#-SUB项即可。计算量非常少，只需要一次查表。尽管相对于暴力搜索，性能能大幅提升（计算变查表），但是精度牺牲也非常巨大。假设n=10#SUP6#-SUP，而ksub是256，那么对于某个查询x，这10#SUP6#-SUP个点只可能有256种距离，同一个聚类中的点都被看作距离相同。这是一种何等“粗犷”的近似啊！
+别急，PQ算法一个强项就在于降维。刚刚只讨论了d=2的情况，现在看看常见的d=128的情况如何利用PQ呢？我们把128个维度两两成组（n个点的第2i维和第2i+1维放在一起，得到n个2维平面上的点），那么得到64个2维空间，每个2维空间中都有n个点。我们把y#SUBi#-SUB在第m个平面上的投影点记作y#SUBi,m#-SUB。对于这64个平面，每个都做PQ算法得到ksub个聚类，我们把第m个平面上的第j个聚类中心记作c#SUBm,j#-SUB。对于一个x，也把它投影到这64个平面中，得到64个2维点x#SUBm#-SUB。
+x到y#SUBi#-SUB的L2距离公式是dis#SUBi#-SUB=(x#SUB:0#-SUB-y#SUBi:0#-SUB)#SUP2#-SUP+(x#SUB:1#-SUB-y#SUBi:1#-SUB)#SUP2#-SUP+(x#SUB:2#-SUB-y#SUBi:2#-SUB)#SUP2#-SUP+...+(x#SUB:127#-SUB-y#SUBi:127#-SUB)#SUP2#-SUP，其中x#SUB:p#-SUB表示x在第p维度上的分量，同理，y#SUBi:p#-SUB表示y#SUBi#-SUB在第p维度上的分量。如果我们把公式中的128项也两两成组，就会得到dis#SUBi#-SUB=[(x#SUB:0#-SUB-y#SUBi:0#-SUB)#SUP2#-SUP+(x#SUB:1#-SUB-y#SUBi:1#-SUB)#SUP2#-SUP]+[(x#SUB:2#-SUB-y#SUBi:2#-SUB)#SUP2#-SUP+(x#SUB:3#-SUB-y#SUBi:3#-SUB)#SUP2#-SUP]+...+[(x#SUB:126#-SUB-y#SUBi:126#-SUB)#SUP2#-SUP+(x#SUB:127#-SUB-y#SUBi:127#-SUB)#SUP2#-SUP]。此时，你是否惊觉，用中括号包起来的64项，分别就是x#SUBm#-SUB到y#SUBi,m#-SUB的L2距离？！换言之，高维度空间中的x到yi的L2距离，就等于其各个子空间中投影的L2距离的和。而根据PQ算法，第m个平面中，x#SUBm#-SUB到y#SUBi,m#-SUB的距离可以看作x#SUBm#-SUB到y#SUBi,m#-SUB对应的聚类中心的距离。
+于是，PQ算法在高维空间中的计算流程也清楚了：
+#OL
+#LI把维度为d的高维空间拆分成M个子空间（比如两两成组，128维变成64个2维平面）;#-LI
+#LI把n个点投影在各个子空间中，对于每个子空间space#SUBm#-SUB，聚类得到ksub个聚类中心c#SUBm,0#-SUB, c#SUBm,1#-SUB， c#SUBm,2#-SUB, ..., c#SUBm,ksub-1#-SUB。共有M*ksub个聚类中心;#-LI
+#LI当给定查询x时，依次计算x在M个space#SUBm#-SUB中的投影x#SUBm#-SUB到c#SUBm,0#-SUB, c#SUBm,1#-SUB, c#SUBm,2#-SUB, ..., c#SUBm,ksub-1#-SUB的距离cdis#SUBm,0#-SUB, cdis#SUBm,1#-SUB, cdis#SUBm,2#-SUB, ..., cdis#SUBm,ksub-1#-SUB。共有M*ksub个距离；#-LI
+#LI遍历所有y#SUBi#-SUB。对于某个y，根据聚类结果可以得知其在M个子空间中对应的聚类中心的编号分别为code#SUB0#-SUB, code#SUB1#-SUB, code#SUB2#-SUB, ..., code#SUBM-1#-SUB:
+#OL
+#LIx#SUBm#-SUB到y在space#SUBm#-SUB中的投影的距离dis#SUBm#-SUB近似看作x#SUBm#-SUB到c#SUBm,code#SUBm#-SUB#-SUB的距离，即cdis#SUBm,code#SUBm#-SUB#-SUB；#-LI
+#LI把所有的cdis#SUBm,code#SUBm#-SUB#-SUB相加，即把m个子空间中的近似距离相加，得到d维空间中x到y的近似距离。#-LI
+#-OL
+#-LI
+#-OL
+可以发现，PQ算法中，只需要计算x到M*ksub个低维聚类中心的距离，之后的每个y只需要M次查表和M次加法即可。
+
+===============================IVFPQ算法================================
+
+IVF算法与PQ算法都得到了以精度换速度的目标，那么是否可以结合起来呢？答案是肯定的。拍脑袋就立刻可以想到两个方案：
+#OL
+#LI先用IVF算法把n个点分成几个大类，在每个大类里面，再用聚类局部的PQ算法降维；#-LI
+#LI先用IVF算法把n个点分成几个大类，在每个大类里面，再用全局唯一的PQ算法降维；#-LI
+#-OL
+两种方案的唯一区别就在于PQ算法是聚类局部的（每个聚类都有自己的PQ）还是全局唯一的。第一种方案有一个明显的缺点，即训练时间会非常的长。以常用的IVF1024,PQ64为例，有1024个IVF的聚类，就要做1024次PQ算法。而每次PQ算法中，要对64个平面分别做聚类。因此需要执行非常多次的聚类算法，会消耗大量时间。事实上，Faiss也是采用了第二种方案。
+当给定一个查询x时，先利用IVF算法选定nprobe个需要搜索的聚类。为了简化描述，下文中的y#SUBi#-SUB用来指代一个聚类内部的所有的y，而不是全局视角的y。一个聚类是使用一段连续内存保存了该聚类内部的所有的点的。比如数据维度是128，选用PQ64的话，则每个128维的y#SUBi#-SUB被PQ64算法处理成了64个code#SUBi,m#-SUB。假设聚类内部有s个y，那么该聚类使用一个s*64字节的连续内存表示，其中第i个连续64字节就是code#SUBi,0#-SUB, code#SUBi,1#-SUB, code#SUBi,2#-SUB, ..., code#SUBi,63#-SUB，即y#SUBi#-SUB在64个子平面中的投影y#SUBi,m#-SUB对应的聚类中心编号。只需要先计算x在M个子平面中的投影x#SUBm#-SUB到各个子平面中的各个聚类中心c#SUBm,j#-SUB的距离，得到M*ksub个距离：
+cdis#SUB0,0#-SUB, cdis#SUB0,1#-SUB, cdis#SUB0,2#-SUB, ..., cdis#SUB0,ksub-1#-SUB
+cdis#SUB1,0#-SUB, cdis#SUB1,1#-SUB, cdis#SUB1,2#-SUB, ..., cdis#SUB1,ksub-1#-SUB
+                           ...
+cdis#SUBm-1,0#-SUB, cdis#SUBm-1,1#-SUB, cdis#SUBm-1,2#-SUB, ..., cdis#SUBm-1,ksub-1#-SUB
+之后，对于某个y#SUBi#-SUB，其到x的近似距离为64个cdis#SUBm,code#SUBi,m#-SUB#-SUB之和。除了增加了IVF的前置处理外，其余一模一样。
+===============================IVFPQ算法（残差版）================================
+其实，Faiss中的IVFPQ算法还有另一个方案，也是默认方案，更加复杂，当然精度也更好。上述算法中，对于全局的y做PQ精度损失过大，Faiss中的默认方案使用“残差”来解决这个问题。n个点先使用IVF算法做聚类，然后对于所有y#SUBi#-SUB，计算其与其所在的聚类的中心的差（叫做“残差”），得到r#SUBi#-SUB。r#SUBi#-SUB的数学含义即为y#SUBi#-SUB相对于其聚类中心的偏移。之后，对这n个r#SUBi#-SUB做一次PQ算法。与原始算法相比，区别在于使用残差做PQ，而不是原始向量。为什么要这样呢？回想一下图2，其中有10个聚类。如果先把原始的y变成残差，就会发现这些残差都是围绕在原点附近。该操作等效于把所有的聚类中心都平移到了原点，使得所有点都聚焦到原点。
+3.png
+由于点变得更加聚拢，所以同样分为ksub个聚类时，平均而言每个聚类的区域会更小，做距离近似时，误差会更小。
+使用PQ算法，即可计算得到x与每个r#SUBi#-SUB的近似距离。可是，我们需要的却是x与每个y#SUBi#-SUB的距离，而不是与r#SUBi#-SUB的距离！这怎么办？
+先来看一些PQ算法的扩展。假设把128维空间两两成组，拆分为64个2维平面。假设r#SUBi#-SUB在第m个平面中的投影是r#SUBi,m#-SUB。某个128维的x到r#SUBi#-SUB的内积距离公式为x#SUB:0#-SUBr#SUBi:0#-SUB+x#SUB:1#-SUBr#SUBi:1#-SUB+x#SUB:2#-SUBr#SUBi:2#-SUB+...+x#SUB:127#-SUBr#SUBi:127#-SUB。如果把公式中的128项两两成组，则为(x#SUB:0#-SUBr#SUBi:0#-SUB+x#SUB:1#-SUBr#SUBi:1#-SUB)+(x#SUB:2#-SUBr#SUBi:2#-SUB+x#SUB:3#-SUBr#SUBi:3#-SUB)+...+(x#SUB:126#-SUBr#SUBi:126#-SUB+x#SUB:127#-SUBr#SUBi:127#-SUB)。与L2距离类似，你会发现括号包起来的64项，分别为x在第m个平面中的投影x#SUBm#-SUB到r#SUBi,m#-SUB的内积距离。由此证明，内积距离与L2一样可以通过累加各个子维度的距离得到高维距离，因此PQ算法对于内积距离一样适用。
+我们把y#SUBi#-SUB所在的IVF聚类的中心点记为C#SUBy#SUBi#-SUB#-SUB，则有：
+(x-y#SUBi#-SUB)#SUP2#-SUP=[x-(C#SUBy#SUBi#-SUB#-SUB+r#SUBi#-SUB)]#SUP2#-SUP=[(x-C#SUBy#SUBi#-SUB#-SUB)-r#SUBi#-SUB]#SUP2#-SUP=(x-C#SUBy#SUBi#-SUB#-SUB)#SUP2#-SUP+r#SUBi#-SUB#SUP2#-SUP-2(x-C#SUBy#SUBi#-SUB#-SUB)r#SUBi#-SUB=(x-C#SUBy#SUBi#-SUB#-SUB)#SUP2#-SUP+r#SUBi#-SUB#SUP2#-SUP+2C#SUBy#SUBi#-SUB#-SUBr#SUBi#-SUB-2xr#SUBi#-SUB
+第一项的数学含义为x到当前IVF聚类中心的L2距离，这在计算IVF的时候就已经得到，且对于某个聚类内部的所有点都是不变量，我们记作coarse_dis。后面三项展开来则为：
+r#SUBi:0#-SUB#SUP2#-SUP+r#SUBi:1#-SUB#SUP2#-SUP+r#SUBi:2#-SUB#SUP2#-SUP+r#SUBi:3#-SUB#SUP2#-SUP+...+r#SUBi:127#-SUB#SUP2#-SUP
++2C#SUBy#SUBi#-SUB:0#-SUBr#SUBi:0#-SUB+2C#SUBy#SUBi#-SUB:1#-SUBr#SUBi:1#-SUB+2C#SUBy#SUBi#-SUB:2#-SUBr#SUBi:2#-SUB+2C#SUBy#SUBi#-SUB:3#-SUBr#SUBi:3#-SUB+...+2C#SUBy#SUBi#-SUB:127#-SUBr#SUBi:127#-SUB
+-2x#SUB:0#-SUBr#SUBi:0#-SUB-2x#SUB:1#-SUBr#SUBi:1#-SUB-2x#SUB:2#-SUBr#SUBi:2#-SUB-2x#SUB:3#-SUBr#SUBi:3#-SUB-...-2x#SUB:127#-SUBr#SUBi:127#-SUB
+如果重新排列这些项成如下顺序：
+(r#SUBi:0#-SUB#SUP2#-SUP+r#SUBi:1#-SUB#SUP2#-SUP)+2(C#SUBy#SUBi#-SUB:0#-SUBr#SUBi:0#-SUB+C#SUBy#SUBi#-SUB:1#-SUBr#SUBi:1#-SUB)-2(x#SUB:0#-SUBr#SUBi:0#-SUB+x#SUB:1#-SUBr#SUBi:1#-SUB)
++(r#SUBi:2#-SUB#SUP2#-SUP+r#SUBi:3#-SUB#SUP2#-SUP)+2(C#SUBy#SUBi#-SUB:2#-SUBr#SUBi:2#-SUB+C#SUBy#SUBi#-SUB:3#-SUBr#SUBi:3#-SUB)-2(x#SUB:2#-SUBr#SUBi:2#-SUB+x#SUB:3#-SUBr#SUBi:3#-SUB)
+        ...
++(r#SUBi:126#-SUB#SUP2#-SUP+r#SUBi:127#-SUB#SUP2#-SUP)+2(C#SUBy#SUBi#-SUB:126#-SUBr#SUBi:126#-SUB+C#SUBy#SUBi#-SUB:127#-SUBr#SUBi:127#-SUB)-2(x#SUB:126#-SUBr#SUBi:126#-SUB+x#SUB:127#-SUBr#SUBi:127#-SUB)
+不难发现，第m行表达式=(r#SUBi,m#-SUB的L2长度)+2(C#SUBy#SUBi#-SUB,m#-SUB到r#SUBi,m#-SUB的内积距离)-2(x#SUBm#-SUB到r#SUBi,m#-SUB的内积距离)
+由于对r#SUBi#-SUB做了PQ处理，因此每一行可以近似为(c#SUBm,code#SUBi,m#-SUB#-SUB的L2长度)+2(C#SUBy#SUBi#-SUB,m#-SUB到c#SUBm,code#SUBi,m#-SUB#-SUB的内积距离)-2(x#SUBm#-SUB到c#SUBm,code#SUBi,m#-SUB#-SUB的内积距离)，其中c#SUBm,code#SUBi,m#-SUB#-SUB是r#SUBi#-SUB在第m个平面中的投影r#SUBi,m#-SUB对应的聚类中心。在给定查询向量与待搜索的聚类的情况下，即x和C#SUBy#SUBi#-SUB#-SUB确定的情况下，只要计算好
+simtab#SUBm,j#-SUB=c#SUBm,j#-SUB#SUP2#-SUP+2C#SUBy#SUBi#-SUB,m#-SUBc#SUBm,j#-SUB-2x#SUBm#-SUBc#SUBm,j#-SUB
+其中m取值为0到M-1，即M个子平面，j取值0到ksub-1，即每个子平面中的ksub个聚类，得到M*ksub个simtab表项。之后遍历聚类内部的每一个r#SUBi#-SUB，得到其code#SUBi,0#-SUB, code#SUBi,1#-SUB, code#SUBi,2#-SUB, ..., code#SUBi,M-1#-SUB，计算
+dis#SUBi#-SUB=coarse_dis+simtab#SUB0,code#SUBi,0#-SUB#-SUB+simtab#SUB1,code#SUBi,1#-SUB#-SUB+simtab#SUB2,code#SUBi,2#-SUB#-SUB+...+simtab#SUBM-1,code#SUBi,M-1#-SUB#-SUB即可。
+==================================总结===================================
+IVFPQ中直接使用y#SUBi#-SUB做PQ，或是使用残差r#SUBi#-SUB做PQ，只是改变了一个M*ksub项数组（记为T）的计算方式，而最终的“查表、累加”的操作都是非常相似的，都有累加T#SUBm,code#SUBi,m#-SUB#-SUB的结构，即
+4.png
+这是整个IVFPQ算法的核心，也是性能优化的重点。
+</pre>
