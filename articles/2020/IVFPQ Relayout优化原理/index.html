@@ -1,0 +1,88 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">IVFPQ Relayout优化原理</pre>
+
+<pre id="content">
+在《#HREF../IVFPQ算法原理/index.html#-HREF1IVFPQ算法原理#-HREF2》中，我们已经得知，IVFPQ算法的核心是一个查表并累加的过程：
+1.png
+其中M是PQ算法压缩后的维度，比如64。T是一个拥有M*ksub个项的数组，逻辑上也可以看作一个二维数组，因此称为“表”。ksub是每个子空间中的聚类个数，常用的数值为256，这样可以使得code可以恰好用一个字节表示。
+为了更加直观，我们可以把这个公式展开，即：
+dis#SUB0#-SUB=coarse_dis+T#SUB0,code#SUB0,0#-SUB#-SUB+T#SUB1,code#SUB0,1#-SUB#-SUB+T#SUB2,code#SUB0,2#-SUB#-SUB+...+T#SUB64,code#SUB0,63#-SUB#-SUB
+dis#SUB1#-SUB=coarse_dis+T#SUB0,code#SUB1,0#-SUB#-SUB+T#SUB1,code#SUB1,1#-SUB#-SUB+T#SUB2,code#SUB1,2#-SUB#-SUB+...+T#SUB64,code#SUB1,63#-SUB#-SUB
+dis#SUB2#-SUB=coarse_dis+T#SUB0,code#SUB2,0#-SUB#-SUB+T#SUB1,code#SUB2,1#-SUB#-SUB+T#SUB2,code#SUB2,2#-SUB#-SUB+...+T#SUB64,code#SUB2,63#-SUB#-SUB
+dis#SUB3#-SUB=coarse_dis+T#SUB0,code#SUB3,0#-SUB#-SUB+T#SUB1,code#SUB3,1#-SUB#-SUB+T#SUB2,code#SUB3,2#-SUB#-SUB+...+T#SUB64,code#SUB3,63#-SUB#-SUB
+在计算机中，T是一个连续数组，所以T#SUBm,c#-SUB对应的就是T[m * ksub + c]。而code数组是各个y的code连续存放的，code#SUBi,m#-SUB就是code[i * M + m]。这里，二维数组采用了行优先的存储方式（读者可以自行证明在PQ的查表过程中列优先存储性能会更加糟糕）。在d=128，PQ64，ksub=256的情况下，执行的算法的伪代码如下：
++++code
+dis[0] = coarse_dis + T[0 * 256 + code[0]] + T[1 * 256 + code[1]] + T[2 * 256 + code[2]] + ... + T[63 * 256 + code[63]]
+dis[1] = coarse_dis + T[0 * 256 + code[64]] + T[1 * 256 + code[65]] + T[2 * 256 + code[66]] + ... + T[63 * 256 + code[127]]
+dis[2] = coarse_dis + T[0 * 256 + code[128]] + T[1 * 256 + code[129]] + T[2 * 256 + code[130]] + ... + T[63 * 256 + code[191]]
+dis[3] = coarse_dis + T[0 * 256 + code[192]] + T[1 * 256 + code[193]] + T[2 * 256 + code[194]] + ... + T[63 * 256 + code[255]]
+...
+---code
+不难发现，计算各个距离的过程中，对于code数组的访问是顺序的，但是对于T的访问是非常跳跃的。
+我希望能够以打包成组的方式计算距离。以组大小为4为例，首先把4个dis都初始化为coarse_dis：
++++code
+dis[0] = coarse_dis
+dis[1] = coarse_dis
+dis[2] = coarse_dis
+dis[3] = coarse_dis
+---code
+然后把这四个距离各自累加一项：
++++code
+dis[0] += T[0 * 256 + code[0]]
+dis[1] += T[0 * 256 + code[1]]
+dis[2] += T[0 * 256 + code[2]]
+dis[3] += T[0 * 256 + code[3]]
+---code
+然后再把这四个距离各自累加一项：
++++code
+dis[0] += T[1 * 256 + code[4]]
+dis[1] += T[1 * 256 + code[5]]
+dis[2] += T[1 * 256 + code[6]]
+dis[3] += T[1 * 256 + code[7]]
+---code
+然后再把这四个距离各自累加一项：
++++code
+dis[0] += T[2 * 256 + code[8]]
+dis[1] += T[2 * 256 + code[9]]
+dis[2] += T[2 * 256 + code[10]]
+dis[3] += T[2 * 256 + code[11]]
+---code
+如此累加64次，即64个子空间，就得到了4个距离。这样的访问过程中，code数组依然是顺序访问的，而T的访问局部性则得到了改善，由此可以提高cache命中率，提高性能。
+但是，仔细看，发现这样操作改变了dis的数学表达式！本来dis的表达式为：
++++code
+dis[0] = coarse_dis + T[0 * 256 + code[#RED0#-RED]] + T[1 * 256 + code[#RED1#-RED]] + T[2 * 256 + code[#RED2#-RED]] + ... + T[63 * 256 + code[#RED63#-RED]]
+dis[1] = coarse_dis + T[0 * 256 + code[#RED64#-RED]] + T[1 * 256 + code[#RED65#-RED]] + T[2 * 256 + code[#RED66#-RED]] + ... + T[63 * 256 + code[#RED127#-RED]]
+dis[2] = coarse_dis + T[0 * 256 + code[#RED128#-RED]] + T[1 * 256 + code[#RED129#-RED]] + T[2 * 256 + code[#RED130#-RED]] + ... + T[63 * 256 + code[#RED191#-RED]]
+dis[3] = coarse_dis + T[0 * 256 + code[#RED192#-RED]] + T[1 * 256 + code[#RED193#-RED]] + T[2 * 256 + code[#RED194#-RED]] + ... + T[63 * 256 + code[#RED255#-RED]]
+...
+---code
+现在却变成了：
++++code
+dis[0] = coarse_dis + T[0 * 256 + code[#RED0#-RED]] + T[1 * 256 + code[#RED4#-RED]] + T[2 * 256 + code[#RED8#-RED]] + ... + T[63 * 256 + code[#RED252#-RED]]
+dis[1] = coarse_dis + T[0 * 256 + code[#RED1#-RED]] + T[1 * 256 + code[#RED5#-RED]] + T[2 * 256 + code[#RED9#-RED]] + ... + T[63 * 256 + code[#RED253#-RED]]
+dis[2] = coarse_dis + T[0 * 256 + code[#RED2#-RED]] + T[1 * 256 + code[#RED6#-RED]] + T[2 * 256 + code[#RED10#-RED]] + ... + T[63 * 256 + code[#RED254#-RED]]
+dis[3] = coarse_dis + T[0 * 256 + code[#RED3#-RED]] + T[1 * 256 + code[#RED7#-RED]] + T[2 * 256 + code[#RED11#-RED]] + ... + T[63 * 256 + code[#RED255#-RED]]
+...
+---code
+换言之，如果既要保持code顺序访问，又要让T尽可能顺序访问，那么就不得不改变code的布局，比如把原来的code[64]迁移到现在的code[1]，把原来的code[130]迁移到现在的code[10]等等。这就是需要relayout的根本原因！
+relayout的代码如下：
+2.png
+仔细看还是很简单的，核心即为src指针每次向后挪动一项，而dst则要挪动group_size项。
+之后的查表累加过程也是教科书般的实现：
+3.png
+其中的this->dis0就是公式中的coarse_dis，this->sim_tab就是公式中的T。
+至此整个IVFPQ Relayout的原理与实现都结束啦！但是，如果你觉得这就是尽头了，那么真是太小瞧我的“榨机（压榨计算机）”能力了。除了上面的查表实现外，我还实现了一个几乎完全一样的函数，除了把group_size从函数的参数改为了模板参数：
+4.png
+对于一些常用的group_size，比如4、8，可以直接调用该模板的特化函数scan_list_with_table&lt;4&gt;、scan_list_with_table&lt;8&gt;等等。这样可以充分利用编译器的向量化优化。比如代码（假设GroupSize=4）中
++++code
+for (size_t i = 0; i &lt; 4; i++) {
+    dis_array[i] = this->dis0;
+}
+---code
+会被编译器优化为一条SSE指令：
++++code
+_mm_set_ps (mdis, this->dis0);
+---code
+于是Relayout在提高了cache命中率的同时，还使能了编译器的向量化优化！
+</pre>
