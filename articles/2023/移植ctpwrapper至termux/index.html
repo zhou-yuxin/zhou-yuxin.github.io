@@ -1,0 +1,63 @@
+<script src="../../../style.js"></script>
+
+<pre id="title">移植ctpwrapper至termux</pre>
+
+<pre id="content">
+国内的期货交易都是基于上海期货信息技术有限公司（简称“上期技术”）的CTP平台，所有的期货公司都支持CTP接入，几乎所有的期货交易软件也是使用的CTP与期货公司的后台通信。因此，任何人都可以基于CTP自己编写程序去做量化交易。
+
+上期技术官方CTP支持多个平台，包括Windows、Linux、MacOS、Android与IOS等。为Windows平台提供了C++头文件和预编译的动态库（.lib和.dll），动态库分为x86和x86_64两个版本。为Linux平台提供了C++头文件和预编译的动态库（.so），动态库仅有x86_64版本。Android平台则复杂些，开发包中包含了支持多种CPU架构的动态库（包括x86、x86_64、arm-v7a、arm64-v8a），以及封装成Java的接口源码，如此开发者只需用Java开发逻辑，便可以运行在基于不同CPU架构的Android平台上。由于不懂MacOS和IOS，这两个平台未作了解。
+
+出于开发与维护成本的考量，我的交易系统是基于Python的。Github上有若干个项目为CTP封装了Python接口，我使用的是#HREFhttps://github.com/nooperpudd/ctpwrapper#-HREF1ctpwrapper#-HREF2。经过一段长时间的开发，整个系统基本完成，并运行一段时间验证满足需求。后来，由于一些原因（涉及商业机密就不透露了），我期望能够将整个交易系统迁移到Android手机上。
+
+我遇到的第一个问题就是：Android的官方开发方式是Java，可是我已经基于Python全部开发完了，难道要用Java重写？显然我是不乐意的。那么第一个问题就成了：Android上能否运行Python？经过调研，发现了两种途径：
+#OL
+#LI用Java开发一个正常的Android App，其中嵌入一个Python解释器；#-LI
+#LIQPython；#-LI
+#-OL
+
+第一种方法很好理解，就如同在Android App中添加一个WebView，之后就全部用HTML+Javascript+CSS等Web前端技术开发一样。用Web前端技术开发Android App很流行，于是有PhoneGap这样的项目，不仅实现了这样的需求，还将Android原生能力（传感器、相机、蓝牙等）通过Javascript提供给开发者。同样地，用Python开发Android App也是一个兴起的领域，于是有了QPython。QPython首先是一个Python解释器，所以可以运行Python代码，当然也天然支持纯Python实现的各种第三方库。另外，QPython将许多常用的、但使用了C/C++或其他本地语言的第三方库移植到了Android平台上。最后，QPython还将Android诸多原生功能提供给Python代码。因此，QPython就是方案1的现成实现。就当我打算学习QPython时，突然想到，我的交易系统还会用到adb和各种命令行工具，虽然Android底层是Linux，也可以执行shell，可是自带的命令太少了，而且未经root的Android是无法安装系统软件的。因此，我要的不仅是一个Python运行环境，我要的是一个完整的Linux环境啊！
+
+就当我一筹莫展之时，发现了一个好东西——#HREFhttps://termux.dev/#-HREF1Termux#-HREF2。其自我介绍的第一句就是“Termux is an Android terminal emulator and Linux environment app that works directly with no rooting or setup required.”，就是可以不需要root就能模拟Linux环境。一开始我将信将疑，觉得应该是“阉割”了不少能力吧？后来实践证明，在应用层，普通Linux能做的Termux都能做！Python、ssh、adb、gcc(clang版)还有vim统统能用，只要不涉及内核模块的开发，Android+Termux就是Linux，使用感受与云主机一样。
+
+第一个问题刚解决，就遇到了第二个问题——ctpwrapper仅支持Windows-x86_64和Linux-x86_64两个平台。而我闲置的华为畅享9Plus用的是8核arm64的CPU，装上了Termux，等价于Linux-arm64。CTP官方没提供源码，没法自己编译。就当我快放弃时，灵光乍现——Android版CTP的开发包里提供了arm64的预编译动态库，Android在NDK层面就是Linux，这个动态库适用平台就是Linux-arm64，我拿出来，替换了ctpwrapper里用于Linux-x86_64的动态库，不就OK了？
+
+说干就干，首先从上期技术官网下载了Android版的开发包Tradeapi&Mduserapi_6.6.9_pro_Android.zip，在路径API/MdApi/MdApi_prod_release_v1.5-2022-09-26/jni/arm64-v8a下可以找到libthostmduserapi.so，在路径API/TradeApi(内含信息采集模块)/Java&Kotlin/TradeApi_prod_release_v1.11-2022-09-26/jni/arm64-v8a下可以找到libclientencode.so和libthosttraderapi.so，将这三个动态链接库复制出来。除此三个库之外，还有ibclientencode_wrap.so、libthostmduserapi_wrap.so和libthosttraderapi_wrap.so，是将对应的.so中的导出函数封装成JNI要求的函数名称，我们用不着。接着，从github下载了#HREFhttps://github.com/nooperpudd/ctpwrapper/archive/refs/tags/6.6.9.zip#-HREF1ctpwrapper-6.6.9.zip#-HREF2，解压至目录ctpwrapper-6.6.9。现在开始外科手术~
+
+第一步，将ctpwrapper-6.6.9中ctp/linux目录清空，将上述三个.so文件复制进来。
+
+第二步，打开ctpwrapper-6.6.9下的setup.py，找到ext_modules，将其中“thostmduserapi_se”换成“thostmduserapi”，“thosttraderapi_se”换成“thosttraderapi”（因为原来ctp/linux目录下的文件名变了，libthostmduserapi_so.so成了libthostmduserapi.so，libthosttraderapi_se.so成了libthosttraderapi.so），且在libraries数组中各增加一个“clientencode”（原因见Q&A）。并将第三个Cython_Extension注释掉（原因见Q&A），修改后代码如下：
+1.jpg
+
+第三步，在ctpwrapper目录下打开__init__.py，注释掉"from .datacollect import GetSystemInfo"，因为我们不编译信息采集模块。
+
+万事俱备，将ctpwrapper-6.6.9目录复制到Termux中（比如通过scp），然后执行命令：
++++code
+pip3 install ./ctpwrapper-6.6.9
+---code
+即可完成安装。
+
+===============================Q&A================================
+
+问：为何不编译信息采集模块？
+
+答：在CTP的Windows版本和Linux版本中，各自存在WinDataCollect.dll和LinuxDataCollect.so，其中导出了CTP_GetSystemInfo函数。可是，Android版的信息采集模块ibclientencode.so只实现了AES和RSA的函数，却并未导出CTP_GetSystemInfo函数。如果直接编译，那么在"import ctpwrapper"时会报错找不到GetSystemInfo函数。当然，如果需要，完全可以参考Java代码逻辑，自己实现一下。
+
+问：为何libraries数组需要在开头增加“clientencode”？
+
+答：其实ctpwrapper.MdApi和ctpwrapper.TraderApi这两个用Cython写的模块，各自仅依赖于libthostmduserapi.so和libthosttraderapi.so。但是，由于libthostmduserapi.so和libthosttraderapi.so又都依赖于libclientencode.so（这可以通过ldd查看），导致ctpwrapper.MdApi和ctpwrapper.TraderApi都间接依赖了libclientencode.so。如果不在libraries数组开头加“clientencode”，虽然编译链接时都是OK的，但是在运行时，会报错说找不到libclientencode.so。这个问题可以通过启动python前指定LD_LIBRARY_PATH解决，但是这太丑陋了。通过查看ctpwrapper安装目录可以看到，libthostmduserapi.so、libthosttraderapi.so和libclientencode.so明明都和MdApi.cpython-xxx.so、TraderApi.cpython-xxx.so在同一目录，凭什么前两者都能找到，偏偏libclientencode.so找不到呢？我先得探明为何可以找到libthostmduserapi.so、libthosttraderapi.so。Linux下，同一个目录并不是动态库的搜索路径，如果不指定LD_LIBRARY_PATH就能找到不在/usr/lib下的动态库，那只可能是把路径写在了MdApi.cpython-xxx.so和TraderApi.cpython-xxx.so里。果不其然，setup.py中的编译选项用了“-Wl,-rpath,$ORIGIN”：
+2.jpg
+也就是指定了链接器搜索当前目录。在编译MdApi.cpython-xxx.so时，指定了“-Wl,-rpath,$ORIGIN”，且指定了“-lthostmduserapi”，因此会在当前目录寻找libthostmduserapi.so。而当要加载libthostmduserapi.so时，libthostmduserapi.so中仅仅指明了需要libclientencode.so，却并未说明在哪里寻找，导致找不到libclientencode.so。
+明白了原因后，就能想到好几个解决方案：
+#OL
+#LI
+使用chrpath或者patchelf为libthostmduserapi.so、libthosttraderapi.so增加rpath；
+#-LI
+#LI
+在python代码中手动加载libclientencode.so；
+#-LI
+#LI
+如本文的方案，将libclientencode.so作为编译时参数写入生成目标中，且先于libthostmduserapi.so和libthosttraderapi.so。
+#-LI
+#-OL
+
+</pre>
